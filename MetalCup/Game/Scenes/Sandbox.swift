@@ -39,8 +39,8 @@ class Sandbox: Scene {
     
     override func doUpdate() {
         if(Mouse.IsMouseButtonPressed(button: .left)) {
-            cruiser.rotateX(Mouse.GetDY() * GameTime.DeltaTime * 0.8)
-            cruiser.rotateY(Mouse.GetDX() * GameTime.DeltaTime * 0.8)
+            cruiser.rotateX(Mouse.GetDY() * GameTime.DeltaTime * 0.5)
+            cruiser.rotateY(Mouse.GetDX() * GameTime.DeltaTime * 0.5)
         }
     }
 }
