@@ -6,6 +6,7 @@
 //
 
 #include <metal_stdlib>
+#include "Lighting.metal"
 #include "Shared.metal"
 using namespace metal;
 
@@ -13,10 +14,14 @@ vertex RasterizerData vertex_basic(const Vertex vert [[ stage_in ]],
                                    constant SceneConstants &sceneConstants [[ buffer(1) ]],
                                    constant ModelConstants &modelConstants [[ buffer(2) ]]) {
     RasterizerData rd;
-    rd.position = sceneConstants.projectionMatrix * sceneConstants.viewMatrix * modelConstants.modelMatrix * float4(vert.position, 1);
+    float4 worldPosition = modelConstants.modelMatrix * float4(vert.position, 1);
+    rd.position = sceneConstants.projectionMatrix * sceneConstants.viewMatrix * worldPosition;
     rd.color = vert.color;
     rd.texCoord = vert.texCoord;
     rd.totalGameTime = sceneConstants.totalGameTime;
+    rd.worldPosition = worldPosition.xyz;
+    rd.surfaceNormal = (modelConstants.modelMatrix * float4(vert.normal, 1.0)).xyz;
+    rd.toCamera = sceneConstants.cameraPosition - worldPosition.xyz;
     return rd;
 }
 
@@ -36,14 +41,9 @@ fragment half4 fragment_basic(RasterizerData rd [[ stage_in ]],
         color = rd.color;
     }
     if(material.isLit) {
-        float3 totalAmbient = float3(0,0,0);
-        for(int i = 0; i < lightCount; i++) {
-            LightData lightData = lightDatas[i];
-            float3 ambientIntensity = material.ambient * lightData.ambientIntensity;
-            float3 ambientColor = ambientIntensity * lightData.color;
-            totalAmbient += ambientColor;
-        }
-        float3 phongIntensity = totalAmbient; // + totalDiffuse + totalSpecular
+        float3 unitNormal = normalize(rd.surfaceNormal);
+        float3 unitToCamera = normalize(rd.toCamera);
+        float3 phongIntensity = Lighting::GetPhongIntensity(material, lightDatas, lightCount, rd.worldPosition, unitNormal, unitToCamera);
         color *= float4(phongIntensity, 1.0);
     }
     return half4(color.r, color.g, color.b, color.a);

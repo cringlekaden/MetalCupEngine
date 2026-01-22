@@ -8,10 +8,10 @@
 import MetalKit
 
 public enum ClearColor {
-    static let White: MTLClearColor = MTLClearColor(red: 1, green: 1, blue: 1, alpha: 1)
-    static let Blue: MTLClearColor = MTLClearColor(red: 0.54, green: 0.78, blue: 1, alpha: 1)
-    static let Grey: MTLClearColor = MTLClearColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 1)
-    static let Black: MTLClearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+    static let White = MTLClearColor(red: 1, green: 1, blue: 1, alpha: 1)
+    static let Blue = MTLClearColor(red: 0.54, green: 0.78, blue: 1, alpha: 1)
+    static let Grey = MTLClearColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 1)
+    static let Black = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
 }
 
 class Preferences {

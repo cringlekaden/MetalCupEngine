@@ -8,9 +8,7 @@
 class Cruiser: GameObject {
     
     init() {
-        super.init(meshType: .Cruiser)
-        super.setName("Cruiser")
+        super.init(name: "Cruiser", meshType: .Cruiser)
         setTexture(textureType: .Cruiser)
-//        setColor(SIMD4<Float>(0,1,0.5,1))
     }
 }

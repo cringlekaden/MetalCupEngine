@@ -8,8 +8,8 @@
 class PointLight: LightObject {
     
     init() {
-        super.init(meshType: .Sphere, name: "Point Light")
-        self.setMaterialColor(SIMD4<Float>(0.5,0.5,0,1))
+        super.init(name: "Point Light", meshType: .Sphere)
+        self.setMaterialColor(1,1,1,1)
         self.setScale(0.2)
     }
 }

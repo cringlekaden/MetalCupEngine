@@ -10,7 +10,6 @@ import simd
 class Quad: GameObject {
     
     init() {
-        super.init(meshType: .QuadCustom)
-        self.setName("Quad")
+        super.init(name: "Quad", meshType: .QuadCustom)
     }
 }

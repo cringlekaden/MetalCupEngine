@@ -11,10 +11,10 @@ class InstancedGameObject: Node {
     
     private var _modelConstantBuffer: MTLBuffer!
     private var _mesh: Mesh!
+    private var _material = Material()
     
     internal var _nodes: [Node] = []
     
-    var material = Material()
     
     init(meshType: MeshType, instanceCount: Int) {
         super.init(name: "Instanced GameObject")
@@ -26,7 +26,7 @@ class InstancedGameObject: Node {
     
     func generateInstances(_ instanceCount: Int) {
         for _ in 0..<instanceCount {
-            _nodes.append(Node())
+            _nodes.append(Node(name: "\(getName())_Instanced_Node"))
         }
     }
     
@@ -49,14 +49,14 @@ extension InstancedGameObject: Renderable {
         renderCommandEncoder.setTriangleFillMode(Preferences.isWireframeEnabled ? .lines : .fill)
         renderCommandEncoder.setDepthStencilState(Graphics.DepthStencilStates[.Less])
         renderCommandEncoder.setVertexBuffer(_modelConstantBuffer, offset: 0, index: 2)
-        renderCommandEncoder.setFragmentBytes(&material, length: Material.stride, index: 1)
+        renderCommandEncoder.setFragmentBytes(&_material, length: Material.stride, index: 1)
         _mesh.drawPrimitives(renderCommandEncoder)
     }
 }
 
 extension InstancedGameObject {
     public func setColor(_ color: SIMD4<Float>) {
-        self.material.color = color
-        self.material.useMaterialColor = true
+        self._material.color = color
+        self._material.useMaterialColor = true
     }
 }

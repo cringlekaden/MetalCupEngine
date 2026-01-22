@@ -17,8 +17,8 @@ class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipe
     private var _library: [RenderPipelineStateType: RenderPipelineState] = [:]
     
     override func fillLibrary() {
-        _library[.Basic] = RenderPipelineState(renderPipelineDescriptorType: .Basic)
-        _library[.Instanced] = RenderPipelineState(renderPipelineDescriptorType: .Instanced)
+        _library[.Basic] = BasicRenderPipelineState()
+        _library[.Instanced] = InstancedRenderPipelineState()
     }
     
     override subscript(_ type: RenderPipelineStateType)->MTLRenderPipelineState {
@@ -30,11 +30,37 @@ class RenderPipelineState {
     
     var renderPipelineState: MTLRenderPipelineState!
     
-    init(renderPipelineDescriptorType: RenderPipelineDescriptorType) {
+    init(renderPipelineDescriptor: MTLRenderPipelineDescriptor) {
         do {
-            renderPipelineState = try Engine.Device.makeRenderPipelineState(descriptor: Graphics.RenderPipelineDescriptors[renderPipelineDescriptorType])
+            renderPipelineState = try Engine.Device.makeRenderPipelineState(descriptor: renderPipelineDescriptor)
         } catch let error as NSError {
             print("ERROR::CREATE::RENDER_PIPELINE_STATE::__::\(error)")
         }
+    }
+}
+
+class BasicRenderPipelineState: RenderPipelineState {
+    
+    init() {
+        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
+        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.defaultColorPixelFormat
+        renderPipelineDescriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
+        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.BasicVertex]
+        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.BasicFragment]
+        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Basic]
+        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
+    }
+}
+
+class InstancedRenderPipelineState: RenderPipelineState {
+    
+    init() {
+        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
+        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.defaultColorPixelFormat
+        renderPipelineDescriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
+        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.InstancedVertex]
+        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.BasicFragment]
+        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Basic]
+        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
     }
 }

@@ -26,8 +26,8 @@ class Camera: Node {
         return matrix_identity_float4x4
     }
     
-    init(cameraType: CameraType) {
-        super.init(name: "Camera")
+    init(name: String, cameraType: CameraType) {
+        super.init(name: name)
         self.cameraType = cameraType
     }
 }

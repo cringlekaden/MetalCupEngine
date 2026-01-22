@@ -15,8 +15,13 @@ vertex RasterizerData vertex_instanced(const Vertex vert [[ stage_in ]],
                                        uint instanceId [[ instance_id ]]){
     RasterizerData rd;
     ModelConstants modelConstant = modelConstants[instanceId];
-    rd.position = sceneConstants.projectionMatrix * sceneConstants.viewMatrix * modelConstant.modelMatrix * float4(vert.position, 1);
+    float4 worldPosition = modelConstant.modelMatrix * float4(vert.position, 1.0);
+    rd.position = sceneConstants.projectionMatrix * sceneConstants.viewMatrix * worldPosition;
     rd.color = vert.color;
     rd.texCoord = vert.texCoord;
+    rd.totalGameTime = sceneConstants.totalGameTime;
+    rd.worldPosition = worldPosition.xyz;
+    rd.surfaceNormal = (modelConstant.modelMatrix * float4(vert.normal, 1.0)).xyz;
+    rd.toCamera = sceneConstants.cameraPosition - worldPosition.xyz;
     return rd;
 }

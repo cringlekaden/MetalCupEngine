@@ -73,7 +73,6 @@ class TextureLoader {
     public func loadTextureFromBundle() -> MTLTexture? {
         var result: MTLTexture?
         if let url = Bundle.main.url(forResource: _textureName, withExtension: _textureExtension) {
-            print(url)
             let textureLoader = MTKTextureLoader(device: Engine.Device)
             let options: [MTKTextureLoader.Option: Any] = [.origin : _origin!, .generateMipmaps: true, .SRGB: true]
             do {
