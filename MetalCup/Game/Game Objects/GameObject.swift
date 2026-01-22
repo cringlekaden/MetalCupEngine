@@ -41,7 +41,7 @@ extension GameObject: Renderable {
 }
 
 extension GameObject {
-    public func setColor(_ color: SIMD4<Float>) {
+    public func setMaterialColor(_ color: SIMD4<Float>) {
         self._material.color = color
         self._material.useMaterialColor = true
         self._material.useTexture = false
@@ -52,4 +52,11 @@ extension GameObject {
         self._material.useMaterialColor = false
         self._textureType = textureType
     }
+    
+    public func setMaterialIsLit(_ isLit: Bool) { self._material.isLit = isLit }
+    public func getMaterialIsLit() -> Bool { return self._material.isLit }
+    public func setMaterialAmbient(_ ambient: SIMD3<Float>) { self._material.ambient = ambient }
+    public func setMaterialAmbient(_ ambient: Float) { self._material.ambient = SIMD3<Float>(ambient, ambient, ambient) }
+    public func addMaterialAmbient(_ amount: Float) { self._material.ambient += amount }
+    public func getMaterialAmbient() -> SIMD3<Float> { return self._material.ambient }
 }

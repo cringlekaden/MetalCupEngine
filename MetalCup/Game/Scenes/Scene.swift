@@ -9,8 +9,9 @@ import MetalKit
 
 class Scene: Node {
     
-    var cameraManager = CameraManager()
-    var sceneConstants = SceneConstants()
+    private var _cameraManager = CameraManager()
+    private var _lightManager = LightManager()
+    private var _sceneConstants = SceneConstants()
     
     init() {
         super.init(name: "Scene")
@@ -18,26 +19,32 @@ class Scene: Node {
     }
     
     override func update() {
-        sceneConstants.viewMatrix = cameraManager.currentCamera.viewMatrix
-        sceneConstants.projectionMatrix = cameraManager.currentCamera.projectionMatrix
-        sceneConstants.totalGameTime = GameTime.TotalGameTime
+        _sceneConstants.viewMatrix = _cameraManager.currentCamera.viewMatrix
+        _sceneConstants.projectionMatrix = _cameraManager.currentCamera.projectionMatrix
+        _sceneConstants.totalGameTime = GameTime.TotalGameTime
         super.update()
     }
     
     override func render(renderCommandEncoder: MTLRenderCommandEncoder) {
-        renderCommandEncoder.setVertexBytes(&sceneConstants, length: SceneConstants.stride, index: 1)
+        renderCommandEncoder.setVertexBytes(&_sceneConstants, length: SceneConstants.stride, index: 1)
+        _lightManager.setLightData(renderCommandEncoder)
         super.render(renderCommandEncoder: renderCommandEncoder)
     }
     
     func updateCameras() {
-        cameraManager.update()
+        _cameraManager.update()
     }
     
     func addCamera(_ camera: Camera, _ setCurrent: Bool = true) {
-        cameraManager.registerCamera(camera: camera)
+        _cameraManager.registerCamera(camera: camera)
         if(setCurrent) {
-            cameraManager.setCamera(camera.cameraType)
+            _cameraManager.setCamera(camera.cameraType)
         }
+    }
+    
+    func addLight(_ light: LightObject) {
+        addChild(light)
+        _lightManager.addLight(light)
     }
     
     func buildScene() {}
