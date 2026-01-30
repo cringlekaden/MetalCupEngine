@@ -14,6 +14,7 @@ using namespace metal;
 
 class Lighting {
 public:
+    
     static float3 GetPhongIntensity(constant Material &material, constant LightData *lightDatas, int lightCount, float3 worldPosition, float3 unitNormal, float3 unitToCamera) {
         float3 totalAmbient = float3(0,0,0);
         float3 totalDiffuse = float3(0,0,0);
@@ -46,3 +47,4 @@ public:
 };
 
 #endif
+

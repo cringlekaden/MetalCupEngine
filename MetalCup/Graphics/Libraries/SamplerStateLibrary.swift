@@ -11,6 +11,7 @@ enum SamplerStateType {
     case None
     case Linear
     case Nearest
+    case Cubemap
 }
 
 class SamplerStateLibrary: Library<SamplerStateType, MTLSamplerState> {
@@ -20,6 +21,7 @@ class SamplerStateLibrary: Library<SamplerStateType, MTLSamplerState> {
     override func fillLibrary() {
         _library[.Linear] = LinearSamplerState()
         _library[.Nearest] = NearestSamplerState()
+        _library[.Cubemap] = CubemapSamplerState()
     }
     
     override subscript(_ type: SamplerStateType) -> MTLSamplerState {
@@ -60,6 +62,20 @@ class NearestSamplerState: SamplerState {
         samplerDescriptor.maxAnisotropy = 16
         samplerDescriptor.sAddressMode = .repeat
         samplerDescriptor.tAddressMode = .repeat
+        samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
+    }
+}
+
+class CubemapSamplerState: SamplerState {
+    var name: String = "Cubemap Sampler State"
+    var samplerState: MTLSamplerState!
+    init() {
+        let samplerDescriptor = MTLSamplerDescriptor()
+        samplerDescriptor.minFilter = .linear
+        samplerDescriptor.magFilter = .linear
+        samplerDescriptor.sAddressMode = .clampToEdge
+        samplerDescriptor.tAddressMode = .clampToEdge
+        samplerDescriptor.rAddressMode = .clampToEdge
         samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
     }
 }

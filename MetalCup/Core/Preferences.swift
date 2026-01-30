@@ -16,8 +16,9 @@ public enum ClearColor {
 
 class Preferences {
     public static var clearColor : MTLClearColor = ClearColor.Blue
-    public static var defaultColorPixelFormat: MTLPixelFormat = .bgra8Unorm_srgb
+    public static var defaultColorPixelFormat: MTLPixelFormat = .bgra8Unorm
+    public static var defaultCubemapPixelFormat: MTLPixelFormat = .rgba16Float
     public static var defaultDepthPixelFormat: MTLPixelFormat = .depth32Float
     public static var isWireframeEnabled: Bool = false
-    public static var initialSceneType: SceneType = .Forest
+    public static var initialSceneType: SceneType = .Sandbox
 }

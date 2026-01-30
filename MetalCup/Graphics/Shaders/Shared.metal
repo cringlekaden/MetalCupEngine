@@ -53,6 +53,13 @@ struct Material {
     float shininess;
 };
 
+struct PBRMaterial {
+    float3 baseColor;
+    float metallic;
+    float roughness;
+    float ao;
+};
+
 struct LightData {
     float3 position;
     float3 color;

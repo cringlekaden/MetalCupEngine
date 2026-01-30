@@ -13,9 +13,11 @@ Pc 0.000000
 Pcr 0.030000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/sofa_03_diff_2k.jpg
-map_Pr textures/sofa_03_rough_2k.jpg
-map_Bump -bm 1.000000 textures/sofa_03_nor_gl_2k.exr
+map_Kd sofa_03_diff_2k.png
+map_tangentSpaceNormal sofa_03_nor_gl_2k.png
+map_metallic sofa_03_metal_2k.png
+map_roughness sofa_03_rough_2k.png
+map_ao sofa_03_ao_2k.png
 
 newmtl sofa_03_fringe
 Ks 0.500000 0.500000 0.500000
@@ -28,7 +30,8 @@ Pc 0.000000
 Pcr 0.030000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/sofa_03_diff_2k.jpg
-map_Pr textures/sofa_03_rough_2k.jpg
-map_d textures/sofa_03_opacity_2k.png
-map_Bump -bm 1.000000 textures/sofa_03_nor_gl_2k.exr
+map_Kd sofa_03_diff_2k.png
+map_tangentSpaceNormal sofa_03_nor_gl_2k.png
+map_metallic sofa_03_metal_2k.png
+map_roughness sofa_03_rough_2k.png
+map_ao sofa_03_ao_2k.png

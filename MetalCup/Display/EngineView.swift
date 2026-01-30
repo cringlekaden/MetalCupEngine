@@ -18,7 +18,7 @@ class EngineView: MTKView {
         renderer = Renderer(self)
         self.clearColor = Preferences.clearColor
         self.colorPixelFormat = Preferences.defaultColorPixelFormat
-        self.depthStencilPixelFormat = Preferences.defaultDepthPixelFormat
+        self.framebufferOnly = false
         self.delegate = renderer
     }
 }
@@ -94,9 +94,7 @@ extension EngineView {
     }
     
     override func updateTrackingAreas() {
-         let area = NSTrackingArea(rect: self.bounds, options:
-                                    [NSTrackingArea.Options.activeAlways, NSTrackingArea.Options.mouseMoved, NSTrackingArea.Options.enabledDuringMouseDrag],
-                                   owner: self, userInfo: nil)
+         let area = NSTrackingArea(rect: self.bounds, options: [NSTrackingArea.Options.activeAlways, NSTrackingArea.Options.mouseMoved, NSTrackingArea.Options.enabledDuringMouseDrag], owner: self, userInfo: nil)
          self.addTrackingArea(area)
     }
 }

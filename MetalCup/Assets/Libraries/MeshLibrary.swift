@@ -5,19 +5,11 @@ enum MeshType {
     case Triangle
     case Quad
     case Cube
-    case Cruiser
+    case Cubemap
     case Sphere
-    case Skysphere
-    case Chest
+    case Skybox
     case Well
-    case Terrain
-    case Tree1
-    case Tree2
-    case Tree3
-    case Flower1
-    case Flower2
-    case Flower3
-    case Tent
+    case Sofa
 }
 
 class MeshLibrary: Library<MeshType, Mesh> {
@@ -29,19 +21,11 @@ class MeshLibrary: Library<MeshType, Mesh> {
         _library[.Triangle] = TriangleMesh()
         _library[.Quad] = Mesh(modelName: "quad")
         _library[.Cube] = CubeMesh()
-        _library[.Cruiser] = Mesh(modelName: "cruiser")
+        _library[.Cubemap] = CubemapMesh()
         _library[.Sphere] = Mesh(modelName: "sphere")
-        _library[.Skysphere] = Mesh(modelName: "skysphere")
-        _library[.Chest] = Mesh(modelName: "chest")
+        _library[.Skybox] = CubemapMesh()
         _library[.Well] = Mesh(modelName: "well")
-        _library[.Terrain] = Mesh(modelName: "ground_grass")
-        _library[.Tree1] = Mesh(modelName: "tree_pineTallA_detailed")
-        _library[.Tree2] = Mesh(modelName: "tree_pineDefaultB")
-        _library[.Tree3] = Mesh(modelName: "tree_pineRoundC")
-        _library[.Flower1] = Mesh(modelName: "flower_purpleA")
-        _library[.Flower2] = Mesh(modelName: "flower_redA")
-        _library[.Flower3] = Mesh(modelName: "flower_yellowA")
-        _library[.Tent] = Mesh(modelName: "tent_smallOpen")
+        _library[.Sofa] = Mesh(modelName: "sofa_03_2k")
     }
     
     override subscript(_ type: MeshType)->Mesh {
@@ -52,8 +36,10 @@ class MeshLibrary: Library<MeshType, Mesh> {
 class Mesh {
     
     private var _vertices: [Vertex] = []
+    private var _cubemapVertices: [CubemapVertex] = []
     private var _vertexCount: Int = 0
     private var _vertexBuffer: MTLBuffer! = nil
+    private var _cubemapVertexBuffer: MTLBuffer! = nil
     private var _instanceCount: Int = 1
     private var _submeshes: [Submesh] = []
     
@@ -71,6 +57,9 @@ class Mesh {
     private func createBuffer() {
         if(_vertices.count > 0){
             _vertexBuffer = Engine.Device.makeBuffer(bytes: _vertices, length: Vertex.stride(_vertices.count), options: [])
+        }
+        if(_cubemapVertices.count > 0) {
+            _cubemapVertexBuffer = Engine.Device.makeBuffer(bytes: _cubemapVertices, length: CubemapVertex.stride(_cubemapVertices.count), options: [])
         }
     }
     
@@ -129,18 +118,28 @@ class Mesh {
         _vertices.append(Vertex(position: position, color: color, texCoord: texCoord, normal: normal, tangent: tangent, bitangent: bitangent))
     }
     
-    func drawPrimitives(_ renderCommandEncoder: MTLRenderCommandEncoder, material: Material? = nil, diffuseMapTextureType: TextureType = .None, normalMapTextureType: TextureType = .None) {
+    func addCubemapVertex(position: SIMD3<Float>) {
+        _cubemapVertices.append(CubemapVertex(position: position))
+    }
+    
+    func drawPrimitives(_ renderCommandEncoder: MTLRenderCommandEncoder, material: PBRMaterial? = nil, albedoMapTextureType: TextureType = .None, normalMapTextureType: TextureType = .None, metallicMapTextureType: TextureType = .None, roughnessMapTextureType: TextureType = .None, aoMapTextureType: TextureType = .None) {
         if(_vertexBuffer != nil) {
             renderCommandEncoder.setVertexBuffer(_vertexBuffer, offset: 0, index: 0)
             if(_submeshes.count > 0) {
                 for submesh in _submeshes {
-                    submesh.applyTextures(renderCommandEncoder: renderCommandEncoder, diffuseMapTextureType: diffuseMapTextureType, normalMapTextureType: normalMapTextureType)
+                    submesh.applyTextures(renderCommandEncoder: renderCommandEncoder, albedoMapTextureType: albedoMapTextureType, normalMapTextureType: normalMapTextureType, metallicMapTextureType: metallicMapTextureType, roughnessMapTextureType: roughnessMapTextureType, aoMapTextureType: aoMapTextureType)
                     submesh.applyMaterials(renderCommandEncoder: renderCommandEncoder, customMaterial: material)
                     renderCommandEncoder.drawIndexedPrimitives(type: submesh.primitiveType, indexCount: submesh.indexCount, indexType: submesh.indexType, indexBuffer: submesh.indexBuffer, indexBufferOffset: submesh.indexBufferOffset, instanceCount: _instanceCount)
                 }
             } else {
+                renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.Linear], index: 0)
                 renderCommandEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: _vertices.count, instanceCount: _instanceCount)
             }
+        }
+        if(_cubemapVertexBuffer != nil) {
+            renderCommandEncoder.setVertexBuffer(_cubemapVertexBuffer, offset: 0, index: 0)
+            renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.Linear], index: 0)
+            renderCommandEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: _cubemapVertices.count, instanceCount: _instanceCount)
         }
     }
 }
@@ -163,9 +162,12 @@ class Submesh {
     private var _indexBufferOffset: Int = 0
     public var indexBufferOffset: Int { return _indexBufferOffset }
     
-    private var _material = Material()
-    private var _diffuseMapTexture: MTLTexture!
+    private var _material = PBRMaterial()
+    private var _albedoMapTexture: MTLTexture!
     private var _normalMapTexture: MTLTexture!
+    private var _metallicMapTexture: MTLTexture!
+    private var _roughnessMapTexture: MTLTexture!
+    private var _aoMapTexture: MTLTexture!
     
     init(indices: [UInt32]) {
         self._indices = indices
@@ -183,44 +185,64 @@ class Submesh {
         createMaterial(mdlSubmesh.material!)
     }
     
-    func applyTextures(renderCommandEncoder: MTLRenderCommandEncoder, diffuseMapTextureType: TextureType, normalMapTextureType: TextureType) {
+    func applyTextures(renderCommandEncoder: MTLRenderCommandEncoder, albedoMapTextureType: TextureType, normalMapTextureType: TextureType, metallicMapTextureType: TextureType, roughnessMapTextureType: TextureType, aoMapTextureType: TextureType) {
         renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.Linear], index: 0)
-        let diffuseMapTexture = diffuseMapTextureType == .None ? _diffuseMapTexture : Assets.Textures[diffuseMapTextureType]
-        renderCommandEncoder.setFragmentTexture(diffuseMapTexture, index: 0)
+        let albedoMapTexture = albedoMapTextureType == .None ? _albedoMapTexture : Assets.Textures[albedoMapTextureType]
+        if(albedoMapTexture != nil) {
+            renderCommandEncoder.setFragmentTexture(albedoMapTexture, index: 0)
+        }
         let normalMapTexture = normalMapTextureType == .None ? _normalMapTexture : Assets.Textures[normalMapTextureType]
-        renderCommandEncoder.setFragmentTexture(normalMapTexture, index: 1)
+        if(normalMapTexture != nil) {
+            renderCommandEncoder.setFragmentTexture(normalMapTexture, index: 1)
+        }
+        let metallicMapTexture = metallicMapTextureType == .None ? _metallicMapTexture : Assets.Textures[metallicMapTextureType]
+        if(metallicMapTexture != nil) {
+            renderCommandEncoder.setFragmentTexture(metallicMapTexture, index: 2)
+        }
+        let roughnessMapTexture = roughnessMapTextureType == .None ? _roughnessMapTexture : Assets.Textures[roughnessMapTextureType]
+        if(roughnessMapTexture != nil) {
+            renderCommandEncoder.setFragmentTexture(roughnessMapTexture, index: 3)
+        }
+        let aoMapTexture = aoMapTextureType == .None ? _aoMapTexture : Assets.Textures[aoMapTextureType]
+        if(aoMapTexture != nil) {
+            renderCommandEncoder.setFragmentTexture(aoMapTexture, index: 4)
+        }
+        renderCommandEncoder.setFragmentTexture(Assets.Textures[.IrradianceCubemap], index: 5)
     }
     
-    func applyMaterials(renderCommandEncoder: MTLRenderCommandEncoder, customMaterial: Material?) {
-        var material = customMaterial == nil ? _material : customMaterial
-        renderCommandEncoder.setFragmentBytes(&material, length: Material.stride, index: 1)
+    func applyMaterials(renderCommandEncoder: MTLRenderCommandEncoder, customMaterial: PBRMaterial?) {
+        var material: PBRMaterial = customMaterial ?? _material
+        renderCommandEncoder.setFragmentBytes(&material, length: PBRMaterial.stride, index: 1)
     }
     
     private func createTexture(_ mdlMaterial: MDLMaterial) {
-        _diffuseMapTexture = texture(for: .baseColor, in: mdlMaterial, textureOrigin: .bottomLeft)
-        _normalMapTexture = texture(for: .tangentSpaceNormal, in: mdlMaterial, textureOrigin: .bottomLeft)
+        _albedoMapTexture = texture(for: .baseColor, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: true)
+        _normalMapTexture = texture(for: .tangentSpaceNormal, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
+        _metallicMapTexture = texture(for: .metallic, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
+        _roughnessMapTexture = texture(for: .roughness, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
+        _aoMapTexture = texture(for: .ambientOcclusion, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
     }
     
     private func createMaterial(_ mdlMaterial: MDLMaterial) {
-        if let ambient = mdlMaterial.property(with: .emission)?.float3Value {
-            _material.ambient = ambient
+        if let albedo = mdlMaterial.property(with: .baseColor)?.float3Value {
+            _material.baseColor = albedo
         }
-        if let diffuse = mdlMaterial.property(with: .baseColor)?.float3Value {
-            _material.diffuse = diffuse
+        if let metallic = mdlMaterial.property(with: .metallic)?.floatValue {
+            _material.metallic = metallic
         }
-        if let specular = mdlMaterial.property(with: .specular)?.float3Value {
-            _material.specular = specular
+        if let roughness = mdlMaterial.property(with: .roughness)?.floatValue {
+            _material.roughness = roughness
         }
-        if let shininess = mdlMaterial.property(with: .specularExponent)?.floatValue {
-            _material.shininess = shininess
+        if let ao = mdlMaterial.property(with: .ambientOcclusion)?.floatValue {
+            _material.ao = ao
         }
     }
     
-    private func texture(for semantic: MDLMaterialSemantic, in material: MDLMaterial?, textureOrigin: MTKTextureLoader.Origin) -> MTLTexture? {
+    private func texture(for semantic: MDLMaterialSemantic, in material: MDLMaterial?, textureOrigin: MTKTextureLoader.Origin, sRGB: Bool) -> MTLTexture? {
         let textureLoader = MTKTextureLoader(device: Engine.Device)
         guard let materialProperty = material?.property(with: semantic) else { return nil }
         guard let sourceTexture = materialProperty.textureSamplerValue?.texture else { return nil }
-        let options: [MTKTextureLoader.Option : Any] = [.origin : textureOrigin as Any, .generateMipmaps : true]
+        let options: [MTKTextureLoader.Option : Any] = [.origin : textureOrigin as Any, .generateMipmaps : true, .SRGB : sRGB as Any]
         let tex = try? textureLoader.newTexture(texture: sourceTexture, options: options)
         return tex
     }
@@ -280,5 +302,52 @@ class CubeMesh: Mesh {
         addVertex(position: SIMD3<Float>( 1.0, 1.0, 1.0), color: SIMD4<Float>(1.0, 1.0, 0.5, 1.0), normal: SIMD3<Float>( 0, 0, 1))
         addVertex(position: SIMD3<Float>(-1.0, 1.0, 1.0), color: SIMD4<Float>(0.0, 1.0, 1.0, 1.0), normal: SIMD3<Float>( 0, 0, 1))
         addVertex(position: SIMD3<Float>( 1.0,-1.0, 1.0), color: SIMD4<Float>(1.0, 0.0, 1.0, 1.0), normal: SIMD3<Float>( 0, 0, 1))
+    }
+}
+
+class CubemapMesh: Mesh {
+    override func createMesh() {
+        // +X Face
+        addCubemapVertex(position: SIMD3<Float>(1,-1,-1))
+        addCubemapVertex(position: SIMD3<Float>(1,-1,1))
+        addCubemapVertex(position: SIMD3<Float>(1,1,1))
+        addCubemapVertex(position: SIMD3<Float>(1,1,1))
+        addCubemapVertex(position: SIMD3<Float>(1,1,-1))
+        addCubemapVertex(position: SIMD3<Float>(1,-1,-1))
+        // -X Face
+        addCubemapVertex(position: SIMD3<Float>(-1,-1,1))
+        addCubemapVertex(position: SIMD3<Float>(-1,-1,-1))
+        addCubemapVertex(position: SIMD3<Float>(-1,1,-1))
+        addCubemapVertex(position: SIMD3<Float>(-1,1,-1))
+        addCubemapVertex(position: SIMD3<Float>(-1,1,1))
+        addCubemapVertex(position: SIMD3<Float>(-1,-1,1))
+        // +Y Face
+        addCubemapVertex(position: SIMD3<Float>(-1,1,-1))
+        addCubemapVertex(position: SIMD3<Float>(1,1,-1))
+        addCubemapVertex(position: SIMD3<Float>(1,1,1))
+        addCubemapVertex(position: SIMD3<Float>(1,1,1))
+        addCubemapVertex(position: SIMD3<Float>(-1,1,1))
+        addCubemapVertex(position: SIMD3<Float>(-1,1,-1))
+        // -Y Face
+        addCubemapVertex(position: SIMD3<Float>(-1,-1,1))
+        addCubemapVertex(position: SIMD3<Float>(1,-1,1))
+        addCubemapVertex(position: SIMD3<Float>(1,-1,-1))
+        addCubemapVertex(position: SIMD3<Float>(1,-1,-1))
+        addCubemapVertex(position: SIMD3<Float>(-1,-1,-1))
+        addCubemapVertex(position: SIMD3<Float>(-1,-1,1))
+        // +Z Face
+        addCubemapVertex(position: SIMD3<Float>(-1,-1,1))
+        addCubemapVertex(position: SIMD3<Float>(-1,1,1))
+        addCubemapVertex(position: SIMD3<Float>(1,1,1))
+        addCubemapVertex(position: SIMD3<Float>(1,1,1))
+        addCubemapVertex(position: SIMD3<Float>(1,-1,1))
+        addCubemapVertex(position: SIMD3<Float>(-1,-1,1))
+        // -Z Face
+        addCubemapVertex(position: SIMD3<Float>(1,-1,-1))
+        addCubemapVertex(position: SIMD3<Float>(1,1,-1))
+        addCubemapVertex(position: SIMD3<Float>(-1,1,-1))
+        addCubemapVertex(position: SIMD3<Float>(-1,1,-1))
+        addCubemapVertex(position: SIMD3<Float>(-1,-1,-1))
+        addCubemapVertex(position: SIMD3<Float>(1,-1,-1))
     }
 }

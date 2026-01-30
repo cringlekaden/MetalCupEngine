@@ -29,6 +29,8 @@ class Camera: Node {
         self.cameraType = cameraType
     }
     
+    func setProjectionMatrix() {}
+    
     override func updateModelMatrix() {
         _viewMatrix = matrix_identity_float4x4
         _viewMatrix.rotate(angle: self.getRotationX(), axis: xAxis)

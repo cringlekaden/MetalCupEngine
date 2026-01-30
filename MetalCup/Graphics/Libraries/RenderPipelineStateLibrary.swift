@@ -10,7 +10,10 @@ import MetalKit
 public enum RenderPipelineStateType {
     case Basic
     case Instanced
-    case Skysphere
+    case Skybox
+    case Final
+    case Cubemap
+    case IrradianceMap
 }
 
 class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipelineState> {
@@ -20,7 +23,10 @@ class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipe
     override func fillLibrary() {
         _library[.Basic] = BasicRenderPipelineState()
         _library[.Instanced] = InstancedRenderPipelineState()
-        _library[.Skysphere] = SkysphereRenderPipelineState()
+        _library[.Skybox] = SkyboxRenderPipelineState()
+        _library[.Final] = FinalRenderPipelineState()
+        _library[.Cubemap] = CubemapRenderPipelineState()
+        _library[.IrradianceMap] = IrradianceMapRenderPipelineState()
     }
     
     override subscript(_ type: RenderPipelineStateType)->MTLRenderPipelineState {
@@ -67,14 +73,62 @@ class InstancedRenderPipelineState: RenderPipelineState {
     }
 }
 
-class SkysphereRenderPipelineState: RenderPipelineState {
+class SkyboxRenderPipelineState: RenderPipelineState {
     
     init() {
         let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
         renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.defaultColorPixelFormat
         renderPipelineDescriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
-        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.SkysphereVertex]
-        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.SkysphereFragment]
+        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.SkyboxVertex]
+        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.SkyboxFragment]
+        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Cubemap]
+        renderPipelineDescriptor.rasterSampleCount = 1
+        renderPipelineDescriptor.inputPrimitiveTopology = .triangle
+        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
+    }
+}
+
+class CubemapRenderPipelineState: RenderPipelineState {
+    
+    init() {
+        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
+        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.defaultCubemapPixelFormat
+        renderPipelineDescriptor.colorAttachments[0].isBlendingEnabled = false
+        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.CubemapVertex]
+        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.CubemapFragment]
+        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Cubemap]
+        renderPipelineDescriptor.depthAttachmentPixelFormat = .invalid
+        renderPipelineDescriptor.stencilAttachmentPixelFormat = .invalid
+        renderPipelineDescriptor.rasterSampleCount = 1
+        renderPipelineDescriptor.inputPrimitiveTopology = .triangle
+        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
+    }
+}
+
+class IrradianceMapRenderPipelineState: RenderPipelineState {
+    
+    init() {
+        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
+        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.defaultCubemapPixelFormat
+        renderPipelineDescriptor.colorAttachments[0].isBlendingEnabled = false
+        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.CubemapVertex]
+        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.IrradianceFragment]
+        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Cubemap]
+        renderPipelineDescriptor.depthAttachmentPixelFormat = .invalid
+        renderPipelineDescriptor.stencilAttachmentPixelFormat = .invalid
+        renderPipelineDescriptor.rasterSampleCount = 1
+        renderPipelineDescriptor.inputPrimitiveTopology = .triangle
+        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
+    }
+}
+
+class FinalRenderPipelineState: RenderPipelineState {
+    
+    init() {
+        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
+        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.defaultColorPixelFormat
+        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.FinalVertex]
+        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.FinalFragment]
         renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Basic]
         super.init(renderPipelineDescriptor: renderPipelineDescriptor)
     }

@@ -13,8 +13,13 @@ class Scene: Node {
     private var _lightManager = LightManager()
     private var _sceneConstants = SceneConstants()
     
-    override init(name: String) {
+    public var environmentMap2D: TextureType!
+    
+    init(name: String, environmentMap2D: TextureType) {
         super.init(name: name)
+        self.environmentMap2D = environmentMap2D
+        let skybox = Skybox()
+        addChild(skybox)
         buildScene()
     }
     
@@ -40,6 +45,10 @@ class Scene: Node {
     
     func updateCameras() {
         _cameraManager.update()
+    }
+    
+    func updateAspectRatio() {
+        _cameraManager.currentCamera.setProjectionMatrix()
     }
     
     func addCamera(_ camera: Camera, _ setCurrent: Bool = true) {

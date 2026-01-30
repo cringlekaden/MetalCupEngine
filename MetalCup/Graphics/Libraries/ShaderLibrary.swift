@@ -11,8 +11,13 @@ enum ShaderType {
     case BasicVertex
     case InstancedVertex
     case BasicFragment
-    case SkysphereVertex
-    case SkysphereFragment
+    case SkyboxVertex
+    case SkyboxFragment
+    case FinalVertex
+    case FinalFragment
+    case CubemapVertex
+    case CubemapFragment
+    case IrradianceFragment
 }
 
 class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -23,8 +28,13 @@ class ShaderLibrary: Library<ShaderType, MTLFunction> {
         _library[.BasicVertex] = Shader(name: "Basic Vertex Shader", functionName: "vertex_basic")
         _library[.InstancedVertex] = Shader(name: "Instanced Vertex Shader", functionName: "vertex_instanced")
         _library[.BasicFragment] = Shader(name: "Basic Fragment Shader", functionName: "fragment_basic")
-        _library[.SkysphereVertex] = Shader(name: "Skysphere Vertex Shader", functionName: "vertex_skysphere")
-        _library[.SkysphereFragment] = Shader(name: "Skysphere Fragment Shader", functionName: "fragment_skysphere")
+        _library[.SkyboxVertex] = Shader(name: "Skybox Vertex Shader", functionName: "vertex_skybox")
+        _library[.SkyboxFragment] = Shader(name: "Skybox Fragment Shader", functionName: "fragment_skybox")
+        _library[.FinalVertex] = Shader(name: "Final Vertex Shader", functionName: "vertex_final")
+        _library[.FinalFragment] = Shader(name: "Final Fragment Shader", functionName: "fragment_final")
+        _library[.CubemapVertex] = Shader(name: "Cubemap Vertex Shader", functionName: "vertex_cubemap")
+        _library[.CubemapFragment] = Shader(name: "Cubemap Fragment Shader", functionName: "fragment_cubemap")
+        _library[.IrradianceFragment] = Shader(name: "Cubemap Fragment Shader", functionName: "fragment_irradiance")
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {

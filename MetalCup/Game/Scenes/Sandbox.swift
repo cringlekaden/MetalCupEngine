@@ -8,22 +8,27 @@
 class Sandbox: Scene {
     
     var debugCamera = DebugCamera()
-    var well = Well()
-    var light = PointLight()
+    var sphere = Sphere()
+    var sofa = Sofa()
     
     override func buildScene() {
         debugCamera.setPosition(0,3,10)
         addCamera(debugCamera)
-        light.setPosition(0,50,50)
-        light.setAmbientIntensity(0.1)
+        sphere.setScale(1.5)
+        sphere.setPosition(1, 0, 0)
+        addChild(sphere)
+        sofa.setPosition(0, -5, 0)
+        sofa.setScale(5)
+        addChild(sofa)
+        let light = PointLight()
+        light.setLightColor(0,0,0)
         addLight(light)
-        addChild(well)
     }
     
     override func doUpdate() {
         if(Mouse.IsMouseButtonPressed(button: .left)){
-            well.rotateX(Mouse.GetDY() * GameTime.DeltaTime)
-            well.rotateY(Mouse.GetDX() * GameTime.DeltaTime)
+            sofa.rotateX(Mouse.GetDY() * GameTime.DeltaTime)
+            sofa.rotateY(Mouse.GetDX() * GameTime.DeltaTime)
         }
     }
 }

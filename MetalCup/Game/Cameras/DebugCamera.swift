@@ -19,6 +19,9 @@ class DebugCamera: Camera {
     
     init() {
         super.init(name: "Debug", cameraType: .Debug)
+    }
+    
+    override func setProjectionMatrix() {
         _projectionMatrix = matrix_float4x4.perspective(fovDegrees: 45.0, aspectRatio: Renderer.AspectRatio, near: 0.1, far: 1000)
     }
 
@@ -39,10 +42,10 @@ class DebugCamera: Camera {
         if(Mouse.IsMouseButtonPressed(button: .right)) {
             self.rotate(Mouse.GetDY() * GameTime.DeltaTime * _turnSpeed, Mouse.GetDX() * GameTime.DeltaTime * _turnSpeed, 0)
         }
-        if(Mouse.IsMouseButtonPressed(button: .left)) {
-            self.moveX(-Mouse.GetDX() * GameTime.DeltaTime * _moveSpeed)
-            self.moveY(Mouse.GetDY() * GameTime.DeltaTime * _moveSpeed)
-        }
+//        if(Mouse.IsMouseButtonPressed(button: .left)) {
+//            self.moveX(-Mouse.GetDX() * GameTime.DeltaTime * _moveSpeed)
+//            self.moveY(Mouse.GetDY() * GameTime.DeltaTime * _moveSpeed)
+//        }
         self.moveZ(-Mouse.GetDWheel() * 0.1)
     }
 }

@@ -9,23 +9,34 @@ import MetalKit
 
 enum TextureType {
     case None
-    case PartyPirateParrot
-    case Cruiser
+    case BaseColorRender
+    case BaseDepthRender
+    case EnvironmentCubemap
+    case IrradianceCubemap
+    case PrefilteredCubemap
+    case BRDF_LUT
     case MetalPlateDiffuse
     case MetalPlateNormal
     case CloudsSkysphere
+    case VeniceSunset
+    case Sunset2
 }
 
 class TextureLibrary: Library<TextureType, MTLTexture> {
     
     private var _library: [TextureType : Texture] = [:]
+    private let _environmentSize = 2048
+    private let _irradianceSize = 64
+    private let _prefilteredSize = 256
+    private let _brdfLutSize = 512
     
     override func fillLibrary() {
-        _library[.PartyPirateParrot] = Texture("PartyPirateParrot", origin: .bottomLeft)
-        _library[.Cruiser] = Texture("cruiser", ext: "bmp", origin: .bottomLeft)
         _library[.MetalPlateDiffuse] = Texture("metal_plate_diff")
         _library[.MetalPlateNormal] = Texture("metal_plate_nor")
         _library[.CloudsSkysphere] = Texture("clouds", origin: .bottomLeft)
+        _library[.VeniceSunset] = Texture("venice_sunset", ext: "hdr", srgb: false, generateMipmaps: false)
+        _library[.Sunset2] = Texture("sunset2", ext: "hdr", srgb: false, generateMipmaps: false)
+        createIBLTextures()
     }
     
     override subscript(_ type: TextureType) -> MTLTexture? {
@@ -47,6 +58,30 @@ class TextureLibrary: Library<TextureType, MTLTexture> {
     func setTexture(textureType: TextureType, texture: MTLTexture) {
         _library.updateValue(Texture(texture: texture), forKey: textureType)
     }
+    
+    func createIBLTextures() {
+        let environmentDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.defaultCubemapPixelFormat, size: _environmentSize, mipmapped: false)
+        environmentDescriptor.usage = [.renderTarget, .shaderRead]
+        environmentDescriptor.storageMode = .private
+        _library[.EnvironmentCubemap] = Texture(texture: Engine.Device.makeTexture(descriptor: environmentDescriptor)!)
+        let irradianceDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.defaultCubemapPixelFormat, size: _irradianceSize, mipmapped: false)
+        irradianceDescriptor.usage = [.renderTarget, .shaderRead]
+        irradianceDescriptor.storageMode = .private
+        _library[.IrradianceCubemap] = Texture(texture: Engine.Device.makeTexture(descriptor: irradianceDescriptor)!)
+        let prefilteredDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.defaultCubemapPixelFormat, size: _prefilteredSize, mipmapped: true)
+        prefilteredDescriptor.usage = [.renderTarget, .shaderRead]
+        prefilteredDescriptor.storageMode = .private
+        _library[.PrefilteredCubemap] = Texture(texture: Engine.Device.makeTexture(descriptor: prefilteredDescriptor)!)
+        let brdfLUTDescriptor = MTLTextureDescriptor()
+        brdfLUTDescriptor.textureType = .type2D
+        brdfLUTDescriptor.pixelFormat = .rg16Float
+        brdfLUTDescriptor.width = _brdfLutSize
+        brdfLUTDescriptor.height = _brdfLutSize
+        brdfLUTDescriptor.mipmapLevelCount = 1
+        brdfLUTDescriptor.usage = [.renderTarget, .shaderRead]
+        brdfLUTDescriptor.storageMode = .private
+        _library[.BRDF_LUT] = Texture(texture: Engine.Device.makeTexture(descriptor: brdfLUTDescriptor)!)
+    }
 }
 
 private class Texture {
@@ -54,11 +89,11 @@ private class Texture {
     var texture: MTLTexture!
     
     init(texture: MTLTexture) {
-        self.texture = texture
+        setTexture(texture)
     }
     
-    init(_ textureName: String, ext: String = "png", origin: MTKTextureLoader.Origin = .topLeft) {
-        let textureLoader = TextureLoader(textureName: textureName, textureExtension: ext, origin: origin)
+    init(_ textureName: String, ext: String = "png", origin: MTKTextureLoader.Origin = .topLeft, srgb: Bool = true, generateMipmaps: Bool = true) {
+        let textureLoader = TextureLoader(textureName: textureName, textureExtension: ext, origin: origin, srgb: srgb, generateMipmaps: generateMipmaps)
         let texture = textureLoader.loadTextureFromBundle()
         if let texture {
             setTexture(texture)
@@ -77,18 +112,22 @@ class TextureLoader {
     private var _textureName: String!
     private var _textureExtension: String!
     private var _origin: MTKTextureLoader.Origin!
+    private var _srgb: Bool!
+    private var _generateMipmaps: Bool!
     
-    init(textureName: String, textureExtension: String = "png", origin: MTKTextureLoader.Origin = .topLeft) {
+    init(textureName: String, textureExtension: String = "png", origin: MTKTextureLoader.Origin = .topLeft, srgb: Bool, generateMipmaps: Bool) {
         self._textureName = textureName
         self._textureExtension = textureExtension
         self._origin = origin
+        self._srgb = srgb
+        self._generateMipmaps = generateMipmaps
     }
     
     public func loadTextureFromBundle() -> MTLTexture? {
         var result: MTLTexture?
         if let url = Bundle.main.url(forResource: _textureName, withExtension: _textureExtension) {
             let textureLoader = MTKTextureLoader(device: Engine.Device)
-            let options: [MTKTextureLoader.Option: Any] = [.origin : _origin as Any, .generateMipmaps: true, .SRGB: true]
+            let options: [MTKTextureLoader.Option: Any] = [.origin : _origin as Any, .generateMipmaps: _generateMipmaps as Any, .SRGB: _srgb as Any]
             do {
                 result = try textureLoader.newTexture(URL: url, options: options)
                 result?.label = _textureName

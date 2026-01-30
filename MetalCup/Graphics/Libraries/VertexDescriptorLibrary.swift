@@ -9,6 +9,7 @@ import MetalKit
 
 enum VertexDescriptorType {
     case Basic
+    case Cubemap
 }
 
 class VertexDescriptorLibrary: Library<VertexDescriptorType, MTLVertexDescriptor> {
@@ -17,6 +18,7 @@ class VertexDescriptorLibrary: Library<VertexDescriptorType, MTLVertexDescriptor
     
     override func fillLibrary() {
         _library[.Basic] = BasicVertexDescriptor()
+        _library[.Cubemap] = CubemapVertexDescriptor()
     }
     
     override subscript(_ type: VertexDescriptorType)->MTLVertexDescriptor {
@@ -60,5 +62,19 @@ public struct BasicVertexDescriptor: VertexDescriptor {
         vertexDescriptor.attributes[5].offset = offset
         offset += SIMD3<Float>.size
         vertexDescriptor.layouts[0].stride = Vertex.stride
+    }
+}
+
+public struct CubemapVertexDescriptor: VertexDescriptor {
+    var name: String = "Cubemap Vertex Descriptor"
+    var vertexDescriptor: MTLVertexDescriptor!
+    init() {
+        vertexDescriptor = MTLVertexDescriptor()
+        vertexDescriptor.attributes[0].format = .float3
+        vertexDescriptor.attributes[0].bufferIndex = 0
+        vertexDescriptor.attributes[0].offset = 0
+        vertexDescriptor.layouts[0].stride = CubemapVertex.stride
+        vertexDescriptor.layouts[0].stepRate = 1
+        vertexDescriptor.layouts[0].stepFunction = .perVertex
     }
 }
