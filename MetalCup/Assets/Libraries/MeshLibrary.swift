@@ -10,6 +10,7 @@ enum MeshType {
     case Skybox
     case Well
     case Sofa
+    case FullscreenQuad
 }
 
 class MeshLibrary: Library<MeshType, Mesh> {
@@ -26,6 +27,7 @@ class MeshLibrary: Library<MeshType, Mesh> {
         _library[.Skybox] = CubemapMesh()
         _library[.Well] = Mesh(modelName: "well")
         _library[.Sofa] = Mesh(modelName: "sofa_03_2k")
+        _library[.FullscreenQuad] = FullscreenQuadMesh()
     }
     
     override subscript(_ type: MeshType)->Mesh {
@@ -302,6 +304,17 @@ class CubeMesh: Mesh {
         addVertex(position: SIMD3<Float>( 1.0, 1.0, 1.0), color: SIMD4<Float>(1.0, 1.0, 0.5, 1.0), normal: SIMD3<Float>( 0, 0, 1))
         addVertex(position: SIMD3<Float>(-1.0, 1.0, 1.0), color: SIMD4<Float>(0.0, 1.0, 1.0, 1.0), normal: SIMD3<Float>( 0, 0, 1))
         addVertex(position: SIMD3<Float>( 1.0,-1.0, 1.0), color: SIMD4<Float>(1.0, 0.0, 1.0, 1.0), normal: SIMD3<Float>( 0, 0, 1))
+    }
+}
+
+class FullscreenQuadMesh: Mesh {
+    override func createMesh() {
+        addCubemapVertex(position: SIMD3<Float>(-1, -1, 0))
+        addCubemapVertex(position: SIMD3<Float>( 1, -1, 0))
+        addCubemapVertex(position: SIMD3<Float>(-1,  1, 0))
+        addCubemapVertex(position: SIMD3<Float>(-1,  1, 0))
+        addCubemapVertex(position: SIMD3<Float>( 1, -1, 0))
+        addCubemapVertex(position: SIMD3<Float>( 1,  1, 0))
     }
 }
 

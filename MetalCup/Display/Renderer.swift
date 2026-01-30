@@ -33,6 +33,8 @@ class Renderer: NSObject {
         updateScreenSize(view: mtkView)
         renderSkyToEnvironmentMap()
         renderIrradianceMap()
+        renderPrefilteredSpecularMap()
+        renderBRDFLUT()
     }
     
     private func createBaseRenderPassDescriptor() {
@@ -74,11 +76,20 @@ class Renderer: NSObject {
         return pass
     }
     
-    func createPrefilteredSpecularMapRenderPassDescriptor(face: Int, mip: Int) -> MTLRenderPassDescriptor {
+    private func createPrefilteredSpecularMapRenderPassDescriptor(face: Int, mip: Int) -> MTLRenderPassDescriptor {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = Assets.Textures[.PrefilteredCubemap]
         pass.colorAttachments[0].slice = face
         pass.colorAttachments[0].level = mip
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = ClearColor.Black
+        return pass
+    }
+    
+    private func createBRDFRenderPassDescriptor() -> MTLRenderPassDescriptor {
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = Assets.Textures[.BRDF_LUT]
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = ClearColor.Black
@@ -157,6 +168,20 @@ class Renderer: NSObject {
                 encoder.endEncoding()
             }
         }
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+    }
+    
+    private func renderBRDFLUT() {
+        guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
+        commandBuffer.label = "Render BRDF LUT"
+        let passDescriptor = createBRDFRenderPassDescriptor()
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else { return }
+        encoder.label = "BRDF LUT Encoder"
+        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.BRDF])
+        encoder.setCullMode(.none)
+        Assets.Meshes[.FullscreenQuad].drawPrimitives(encoder)
+        encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
     }

@@ -20,6 +20,8 @@ enum ShaderType {
     case IrradianceFragment
     case PrefilteredVertex
     case PrefilteredFragment
+    case FSQuadVertex
+    case BRDFFragment
 }
 
 class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -38,6 +40,9 @@ class ShaderLibrary: Library<ShaderType, MTLFunction> {
         _library[.CubemapFragment] = Shader(name: "Cubemap Fragment Shader", functionName: "fragment_cubemap")
         _library[.IrradianceFragment] = Shader(name: "Cubemap Fragment Shader", functionName: "fragment_irradiance")
         _library[.PrefilteredFragment] = Shader(name: "Prefiltered Map Fragment Shader", functionName: "fragment_prefiltered")
+        _library[.FSQuadVertex] = Shader(name: "Fullscreen Quad Vertex Shader", functionName: "vertex_quad")
+        _library[.BRDFFragment] = Shader(name: "BRDF LUT Fragment Shader", functionName: "fragment_brdf")
+        
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {

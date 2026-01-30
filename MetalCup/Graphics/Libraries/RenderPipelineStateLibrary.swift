@@ -16,6 +16,7 @@ public enum RenderPipelineStateType {
     case Cubemap
     case IrradianceMap
     case PrefilteredMap
+    case BRDF
 }
 
 class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipelineState> {
@@ -31,6 +32,7 @@ class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipe
         _library[.Cubemap] = CubemapRenderPipelineState()
         _library[.IrradianceMap] = IrradianceMapRenderPipelineState()
         _library[.PrefilteredMap] = PrefilteredMapRenderPipelineState()
+        _library[.BRDF] = BRDFRenderPipelineState()
     }
     
     override subscript(_ type: RenderPipelineStateType)->MTLRenderPipelineState {
@@ -152,6 +154,19 @@ class PrefilteredMapRenderPipelineState: RenderPipelineState {
         renderPipelineDescriptor.stencilAttachmentPixelFormat = .invalid
         renderPipelineDescriptor.rasterSampleCount = 1
         renderPipelineDescriptor.inputPrimitiveTopology = .triangle
+        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
+    }
+}
+
+class BRDFRenderPipelineState: RenderPipelineState {
+    
+    init() {
+        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
+        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Assets.Textures[.BRDF_LUT]?.pixelFormat ?? .rg16Float
+        renderPipelineDescriptor.depthAttachmentPixelFormat = .invalid
+        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.FSQuadVertex]
+        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.BRDFFragment]
+        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Cubemap]
         super.init(renderPipelineDescriptor: renderPipelineDescriptor)
     }
 }
