@@ -28,7 +28,7 @@ vertex RasterizerData vertex_basic(const Vertex vert [[ stage_in ]],
 }
 
 fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
-                              constant PBRMaterial &material [[ buffer(1) ]],
+                              constant MetalCupMaterial &material [[ buffer(1) ]],
                               constant int &lightCount [[ buffer(2) ]],
                               constant LightData *lightDatas [[ buffer(3) ]],
                               sampler sam [[ sampler(0) ]],
@@ -36,57 +36,144 @@ fragment float4 fragment_basic(RasterizerData rd [[ stage_in ]],
                               texture2d<float> normalMap [[ texture(1) ]],
                               texture2d<float> metallicMap [[ texture(2) ]],
                               texture2d<float> roughnessMap [[ texture(3) ]],
-                              texture2d<float> aoMap [[ texture(4) ]],
-                              texturecube<float> irradianceMap [[ texture(5) ]])  {
-    // --- Sample textures ---
-    float3 albedo = albedoMap.sample(sam, rd.texCoord).rgb;
-    float metallic = metallicMap.sample(sam, rd.texCoord).r;
-    float roughness = roughnessMap.sample(sam, rd.texCoord).r;
-    float ao = aoMap.sample(sam, rd.texCoord).r;
-
-    // --- Normal mapping (tangent space) ---
+                              texture2d<float> metalRoughness [[ texture(4) ]],
+                              texture2d<float> aoMap [[ texture(5) ]],
+                              texture2d<float> emissiveMap [[ texture(6) ]],
+                              texturecube<float> irradianceMap [[ texture(7) ]],
+                              texturecube<float> prefilteredMap [[ texture(8) ]],
+                              texture2d<float> brdf_lut [[ texture(9) ]])  {
+    // ------------------------------------------------------------
+    // Fallback scalars (material factors)
+    // ------------------------------------------------------------
+    float3 albedo = material.baseColor;
+    float metallic = material.metallicScalar;
+    float roughness = material.roughnessScalar;
+    float ao = material.aoScalar;
+    
+    // ------------------------------------------------------------
+    // Texture overrides (textures multiply factors)
+    // ------------------------------------------------------------
+    if (hasFlag(material.flags, MetalCupMaterialFlags::HasBaseColorMap)) {
+        albedo = albedoMap.sample(sam, rd.texCoord).rgb;
+    }
+    if (hasFlag(material.flags, MetalCupMaterialFlags::HasMetalRoughnessMap)) {
+        float3 mr = metalRoughness.sample(sam, rd.texCoord).rgb;
+        roughness = mr.g;
+        metallic  = mr.b;
+    } else {
+        if (hasFlag(material.flags, MetalCupMaterialFlags::HasMetallicMap)) {
+            metallic = metallicMap.sample(sam, rd.texCoord).r;
+        }
+        if (hasFlag(material.flags, MetalCupMaterialFlags::HasRoughnessMap)) {
+            roughness = roughnessMap.sample(sam, rd.texCoord).r;
+        }
+    }
+    if (hasFlag(material.flags, MetalCupMaterialFlags::HasAOMap)) {
+        ao = aoMap.sample(sam, rd.texCoord).r;
+    }
+    // Clamp for stability (prevents NaNs / LUT edge artifacts / fireflies)
+    metallic = clamp(metallic, 0.0, 1.0);
+    roughness = clamp(roughness, 0.04, 1.0); // 0.0 can cause sparkle/instability
+    albedo = max(albedo, float3(0.0));
+    
+    // ------------------------------------------------------------
+    // Normal mapping
+    // ------------------------------------------------------------
     float3 N = normalize(rd.surfaceNormal);
-    float3 T = normalize(rd.surfaceTangent);
-    float3 B = normalize(rd.surfaceBitangent);
-    float3x3 TBN = float3x3(T, B, N);
-    float3 tangentNormal = normalMap.sample(sam, rd.texCoord).xyz * 2.0 - 1.0;
-    N = normalize(TBN * tangentNormal);
-
-    // --- View vector ---
-    float3 V = normalize(rd.toCamera);
-
-    // --- Base reflectivity ---
-    float3 F0 = mix(float3(0.04), albedo, metallic);
-    float3 Lo = float3(0.0);
-
-    // --- Direct lighting ---
-    for(int i = 0; i < lightCount; i++) {
-        float3 L = normalize(lightDatas[i].position - rd.worldPosition);
-        float3 H = normalize(V + L);
-
-        float distance = length(lightDatas[i].position - rd.worldPosition);
-        float attenuation = 1.0 / (distance * distance);
-        float3 radiance = lightDatas[i].color * attenuation;
-
-        float NDF = PBR::DistributionGGX(N, H, roughness);
-        float G = PBR::GeometrySmith(N, V, L, roughness);
-        float3 F = PBR::FresnelSchlick(max(dot(H, V), 0.0), F0);
-
-        float3 numerator = NDF * G * F;
-        float denom = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 1e-5;
-        float3 specular = numerator / denom;
-
-        float3 kS = F;
-        float3 kD = (1.0 - kS) * (1.0 - metallic);
-
-        float NdotL = max(dot(N, L), 0.0);
-        Lo += (kD * albedo / PBR::PI + specular) * radiance * NdotL;
+    if (hasFlag(material.flags, MetalCupMaterialFlags::HasNormalMap)) {
+        float3 T = normalize(rd.surfaceTangent);
+        // Orthonormalize T to N (helps robustness)
+        T = normalize(T - N * dot(N, T));
+        float3 B = normalize(cross(N, T));
+        float3x3 TBN = float3x3(T, B, N);
+        float3 tangentNormal = normalMap.sample(sam, rd.texCoord).xyz * 2.0 - 1.0;
+        N = normalize(TBN * tangentNormal);
     }
 
-    // --- Diffuse IBL
+    // ------------------------------------------------------------
+    // View vector
+    // ------------------------------------------------------------
+    float3 V = normalize(rd.toCamera);
+    float NdotV = max(dot(N, V), 0.001);
+
+    // ------------------------------------------------------------
+    // Unlit shortcut
+    // ------------------------------------------------------------
+    if (hasFlag(material.flags, MetalCupMaterialFlags::IsUnlit)) {
+        float3 emissive = material.emissiveColor;
+        if (hasFlag(material.flags, MetalCupMaterialFlags::HasEmissiveMap)) {
+            float3 e = emissiveMap.sample(sam, rd.texCoord).rgb;
+            float luminance = dot(e, float3(0.2126, 0.7152, 0.0722));
+            float mask = step(0.04, luminance);
+            emissive = e * mask;
+        }
+        emissive *= material.emissiveScalar;
+        return float4(albedo + emissive, 1.0);
+    }
+
+    // ------------------------------------------------------------
+    // Base reflectivity
+    // ------------------------------------------------------------
+    float3 F0 = mix(float3(0.04), albedo, metallic);
+
+    // ------------------------------------------------------------
+    // Direct lighting (simplified lambert for now)
+    // ------------------------------------------------------------
+    float3 Lo = float3(0.0);
+    for (int i = 0; i < lightCount; i++) {
+        float3 L = normalize(lightDatas[i].position - rd.worldPosition);
+        float distance = length(lightDatas[i].position - rd.worldPosition);
+        float attenuation = 1.0 / max(distance * distance, 1e-4);
+        float3 radiance = lightDatas[i].color * attenuation;
+        float NdotL = max(dot(N, L), 0.0);
+        // Simple lambert for now (restore full BRDF later)
+        Lo += (albedo / PBR::PI) * radiance * NdotL;
+    }
+
+    // ------------------------------------------------------------
+    // Diffuse IBL
+    // ------------------------------------------------------------
     float3 irradiance = irradianceMap.sample(sam, N).rgb;
-    float3 diffuseIBL = irradiance * albedo / PBR::PI;
-    diffuseIBL *= ao;
-    float3 color = diffuseIBL + Lo;
+    float3 diffuseIBL = irradiance * (albedo / PBR::PI);
+
+    // Energy conservation split
+    float3 F_ibl = PBR::FresnelSchlick(NdotV, F0);
+    float3 kS = F_ibl;
+    float3 kD = (1.0 - kS) * (1.0 - metallic);
+
+    // Apply AO to ambient only
+    float3 ambient = kD * diffuseIBL * ao;
+
+    // ------------------------------------------------------------
+    // Specular IBL (prefilter + BRDF LUT)
+    // ------------------------------------------------------------
+    float3 R = normalize(reflect(-V, N));
+    float maxMip = float(prefilteredMap.get_num_mip_levels()) - 1.0;
+    float mipLevel = roughness * maxMip;
+    float3 prefilteredColor = prefilteredMap.sample(sam, R, level(mipLevel)).rgb;
+    float2 brdfUV = float2(NdotV, roughness);
+    brdfUV = clamp(brdfUV, 0.001, 0.999);
+    float2 brdfSample = brdf_lut.sample(sam, brdfUV).rg;
+    float3 specularIBL = prefilteredColor * (F_ibl * brdfSample.x + brdfSample.y);
+
+    // Optional: Apply AO to specular too (specular occlusion)
+    // specularIBL *= ao;
+
+    // ------------------------------------------------------------
+    // Emissive (additive, unlit)
+    // ------------------------------------------------------------
+    float3 emissive = material.emissiveColor;
+    if (hasFlag(material.flags, MetalCupMaterialFlags::HasEmissiveMap)) {
+        float3 e = emissiveMap.sample(sam, rd.texCoord).rgb;
+        float luminance = dot(e, float3(0.2126, 0.7152, 0.0722));
+        float mask = step(0.04, luminance);
+        emissive = e * mask;
+    }
+    emissive *= material.emissiveScalar;
+
+    // ------------------------------------------------------------
+    // Combine
+    // ------------------------------------------------------------
+    float3 color = Lo + ambient + specularIBL + emissive;
     return float4(color, 1.0);
 }

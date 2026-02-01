@@ -9,10 +9,6 @@
 #include "Shared.metal"
 using namespace metal;
 
-struct CubemapVertex {
-    float3 position [[ attribute(0) ]];
-};
-
 struct SkyboxRasterizerData {
     float4 position [[ position ]];
     float3 direction;

@@ -10,6 +10,8 @@ import MetalKit
 enum TextureType {
     case None
     case BaseColorRender
+    case BloomPing
+    case BloomPong
     case BaseDepthRender
     case EnvironmentCubemap
     case IrradianceCubemap
@@ -28,9 +30,9 @@ enum TextureType {
 class TextureLibrary: Library<TextureType, MTLTexture> {
     
     private var _library: [TextureType : Texture] = [:]
-    private let _environmentSize = 1024
+    private let _environmentSize = 4096
     private let _irradianceSize = 64
-    private let _prefilteredSize = 512
+    private let _prefilteredSize = 1024
     private let _brdfLutSize = 512
     
     override func fillLibrary() {
@@ -66,15 +68,15 @@ class TextureLibrary: Library<TextureType, MTLTexture> {
     }
     
     func createIBLTextures() {
-        let environmentDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.HDRCubemapPixelFormat, size: _environmentSize, mipmapped: true)
+        let environmentDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.HDRPixelFormat, size: _environmentSize, mipmapped: true)
         environmentDescriptor.usage = [.renderTarget, .shaderRead]
         environmentDescriptor.storageMode = .private
         _library[.EnvironmentCubemap] = Texture(texture: Engine.Device.makeTexture(descriptor: environmentDescriptor)!)
-        let irradianceDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.HDRCubemapPixelFormat, size: _irradianceSize, mipmapped: false)
+        let irradianceDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.HDRPixelFormat, size: _irradianceSize, mipmapped: false)
         irradianceDescriptor.usage = [.renderTarget, .shaderRead]
         irradianceDescriptor.storageMode = .private
         _library[.IrradianceCubemap] = Texture(texture: Engine.Device.makeTexture(descriptor: irradianceDescriptor)!)
-        let prefilteredDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.HDRCubemapPixelFormat, size: _prefilteredSize, mipmapped: true)
+        let prefilteredDescriptor = MTLTextureDescriptor.textureCubeDescriptor(pixelFormat: Preferences.HDRPixelFormat, size: _prefilteredSize, mipmapped: true)
         prefilteredDescriptor.usage = [.renderTarget, .shaderRead]
         prefilteredDescriptor.storageMode = .private
         _library[.PrefilteredCubemap] = Texture(texture: Engine.Device.makeTexture(descriptor: prefilteredDescriptor)!)

@@ -11,7 +11,7 @@ enum SamplerStateType {
     case None
     case Linear
     case Nearest
-    case Cubemap
+    case LinearClamp
 }
 
 class SamplerStateLibrary: Library<SamplerStateType, MTLSamplerState> {
@@ -21,7 +21,7 @@ class SamplerStateLibrary: Library<SamplerStateType, MTLSamplerState> {
     override func fillLibrary() {
         _library[.Linear] = LinearSamplerState()
         _library[.Nearest] = NearestSamplerState()
-        _library[.Cubemap] = CubemapSamplerState()
+        _library[.LinearClamp] = LinearClampSamplerState()
     }
     
     override subscript(_ type: SamplerStateType) -> MTLSamplerState {
@@ -66,8 +66,8 @@ class NearestSamplerState: SamplerState {
     }
 }
 
-class CubemapSamplerState: SamplerState {
-    var name: String = "Cubemap Sampler State"
+class LinearClampSamplerState: SamplerState {
+    var name: String = "Linear Clamp Sampler State"
     var samplerState: MTLSamplerState!
     init() {
         let samplerDescriptor = MTLSamplerDescriptor()

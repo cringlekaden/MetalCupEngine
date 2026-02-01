@@ -40,30 +40,14 @@ extension float4x4 {
         let zRange = farZ - nearZ
         let zScale = -(farZ + nearZ) / zRange
         let wzScale = -2 * farZ * nearZ / zRange
-        self.init(columns: (
-            SIMD4<Float>( xScale, 0,      0,  0),
-            SIMD4<Float>( 0,      yScale, 0,  0),
-            SIMD4<Float>( 0,      0,      zScale, -1),
-            SIMD4<Float>( 0,      0,      wzScale,  0)
-        ))
+        self.init(columns: (SIMD4<Float>(xScale, 0, 0, 0), SIMD4<Float>(0, yScale, 0, 0), SIMD4<Float>(0, 0, zScale, -1), SIMD4<Float>(0, 0, wzScale, 0)))
     }
     
-    init(lookAt eye: SIMD3<Float>,
-         center: SIMD3<Float>,
-         up: SIMD3<Float>) {
+    init(lookAt eye: SIMD3<Float>, center: SIMD3<Float>, up: SIMD3<Float>) {
         let f = normalize(center - eye)
         let s = normalize(cross(f, up))
         let u = cross(s, f)
-
-        self.init(columns: (
-            SIMD4<Float>( s.x,  u.x, -f.x, 0),
-            SIMD4<Float>( s.y,  u.y, -f.y, 0),
-            SIMD4<Float>( s.z,  u.z, -f.z, 0),
-            SIMD4<Float>(-dot(s, eye),
-                          -dot(u, eye),
-                           dot(f, eye),
-                           1)
-        ))
+        self.init(columns: (SIMD4<Float>( s.x,  u.x, -f.x, 0), SIMD4<Float>( s.y,  u.y, -f.y, 0), SIMD4<Float>( s.z,  u.z, -f.z, 0), SIMD4<Float>(-dot(s, eye), -dot(u, eye), dot(f, eye), 1)))
     }
 }
 
@@ -99,20 +83,29 @@ struct SceneConstants: sizeable {
     var cameraPosition = SIMD3<Float>(0,0,0)
 }
 
-struct Material: sizeable {
-    var color = SIMD4<Float>(0.3, 0.3, 0.3, 1.0)
-    var isLit: Bool = true
-    var ambient: SIMD3<Float> = SIMD3<Float>(0.1,0.1,0.1)
-    var diffuse: SIMD3<Float> = .one
-    var specular: SIMD3<Float> = .one
-    var shininess: Float = 32.0
+struct MetalCupMaterial: sizeable {
+    var baseColor = SIMD3<Float>(1.0, 1.0, 1.0)
+    var metallicScalar: Float = 1.0
+    var roughnessScalar: Float = 1.0
+    var aoScalar: Float = 1.0
+    var emissiveColor = SIMD3<Float>(1.0, 1.0, 1.0)
+    var emissiveScalar: Float = 10.0
+    var flags: UInt32 = 0
 }
 
-struct PBRMaterial: sizeable {
-    var baseColor = SIMD3<Float>(0.8, 0.8, 0.8)
-    var metallic: Float = 0.5
-    var roughness: Float = 0.2
-    var ao: Float = 0.0
+struct MetalCupMaterialFlags: OptionSet {
+    let rawValue: UInt32
+    static let hasBaseColorMap =      MetalCupMaterialFlags(rawValue: 1 << 0)
+    static let hasNormalMap =         MetalCupMaterialFlags(rawValue: 1 << 1)
+    static let hasMetallicMap =       MetalCupMaterialFlags(rawValue: 1 << 2)
+    static let hasRoughnessMap =      MetalCupMaterialFlags(rawValue: 1 << 3)
+    static let hasMetalRoughnessMap = MetalCupMaterialFlags(rawValue: 1 << 4)
+    static let hasAOMap =             MetalCupMaterialFlags(rawValue: 1 << 5)
+    static let hasEmissiveMap =       MetalCupMaterialFlags(rawValue: 1 << 6)
+    static let isUnlit =              MetalCupMaterialFlags(rawValue: 1 << 7)
+    static let isDoubleSided =        MetalCupMaterialFlags(rawValue: 1 << 8)
+    static let alphaMasked =          MetalCupMaterialFlags(rawValue: 1 << 9)
+    static let alphaBlended =         MetalCupMaterialFlags(rawValue: 1 << 10)
 }
 
 struct LightData: sizeable {
@@ -123,3 +116,11 @@ struct LightData: sizeable {
     var diffuseIntensity: Float = 1.0
     var specularIntensity: Float = 1.0
 }
+
+struct BloomParams {
+    var threshold: Float = 1.2
+    var knee: Float = 0.2
+    var intensity: Float = 0.15
+    var texelSize: SIMD2<Float> = .zero
+    var padding: SIMD2<Float> = .zero
+};

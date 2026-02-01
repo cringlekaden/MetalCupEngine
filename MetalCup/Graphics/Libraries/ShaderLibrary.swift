@@ -22,6 +22,9 @@ enum ShaderType {
     case PrefilteredFragment
     case FSQuadVertex
     case BRDFFragment
+    case BloomExtractFragment
+    case BlurHFragment
+    case BlurVFragment
 }
 
 class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -42,6 +45,9 @@ class ShaderLibrary: Library<ShaderType, MTLFunction> {
         _library[.PrefilteredFragment] = Shader(name: "Prefiltered Map Fragment Shader", functionName: "fragment_prefiltered")
         _library[.FSQuadVertex] = Shader(name: "Fullscreen Quad Vertex Shader", functionName: "vertex_quad")
         _library[.BRDFFragment] = Shader(name: "BRDF LUT Fragment Shader", functionName: "fragment_brdf")
+        _library[.BloomExtractFragment] = Shader(name: "Bloom Extract Fragment Shader", functionName: "fragment_bloom_extract")
+        _library[.BlurHFragment] = Shader(name: "Blur Horizontal Fragment Shader", functionName: "fragment_blur_h")
+        _library[.BlurVFragment] = Shader(name: "Blur Vertical Fragment Shader", functionName: "fragment_blur_v")
         
     }
     

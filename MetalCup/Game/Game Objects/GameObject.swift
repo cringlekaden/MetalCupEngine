@@ -9,7 +9,7 @@ import MetalKit
 
 class GameObject: Node {
     
-    private var _material: PBRMaterial? = nil
+    private var _material: MetalCupMaterial? = nil
     private var _albedoMapTextureType: TextureType = .None
     private var _normalMapTextureType: TextureType = .None
     private var _metallicMapTextureType: TextureType = .None
@@ -47,7 +47,7 @@ extension GameObject: Renderable {
 }
 
 extension GameObject {
-    public func useMaterial(_ material: PBRMaterial) {
+    public func useMaterial(_ material: MetalCupMaterial) {
         _material = material
     }
 

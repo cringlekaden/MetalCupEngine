@@ -7,21 +7,8 @@
 
 #include <metal_stdlib>
 #include "PBR.metal"
+#include "Shared.metal"
 using namespace metal;
-
-struct CubemapVertex {
-    float3 position [[ attribute(0) ]];
-};
-
-struct FSQuadRasterizerData {
-    float4 position [[ position ]];
-    float2 uv;
-};
-
-struct CubemapRasterizerData {
-    float4 position [[ position ]];
-    float3 localPosition;
-};
 
 vertex CubemapRasterizerData vertex_cubemap(const CubemapVertex vert [[ stage_in ]],
                                             constant float4x4 &vp [[ buffer(1) ]]) {
@@ -70,7 +57,7 @@ fragment float4 fragment_irradiance(CubemapRasterizerData rd [[ stage_in ]],
     uint res = envMap.get_width();
     uint mipCount = envMap.get_num_mip_levels();
     float omegaTexel = 4.0 * PBR::PI / (6.0 * float(res) * float(res));
-    const uint SAMPLE_COUNT = 2048u; // Adjust as needed (128–2048)
+    const uint SAMPLE_COUNT = 4096u;
     float3 sum = float3(0.0);
     for (uint i = 0u; i < SAMPLE_COUNT; ++i) {
         float2 Xi = fract(PBR::hammersley(i, SAMPLE_COUNT) + cp);
@@ -95,7 +82,7 @@ fragment float4 fragment_prefiltered(CubemapRasterizerData rd [[ stage_in ]],
     float3 N = normalize(rd.localPosition);
     float3 R = N;
     float3 V = R;
-    constexpr uint SAMPLE_COUNT = 1024u;
+    constexpr uint SAMPLE_COUNT = 4096u;
     float3 prefilteredColor = float3(0.0);
     float totalWeight = 0.0;
     for(uint i = 0; i < SAMPLE_COUNT; i++) {
@@ -104,7 +91,8 @@ fragment float4 fragment_prefiltered(CubemapRasterizerData rd [[ stage_in ]],
         float3 L = normalize(2.0 * dot(V, H) * H - V);
         float NoL = max(dot(N, L), 0.0);
         if(NoL > 0.0) {
-            float3 sampleColor = envMap.sample(samp, L).rgb;
+            float mipLevel = roughness * envMap.get_num_mip_levels();
+            float3 sampleColor = envMap.sample(samp, float3(L.x, -L.y, L.z), level(mipLevel)).rgb;
             prefilteredColor += sampleColor * NoL;
             totalWeight += NoL;
         }
@@ -113,7 +101,11 @@ fragment float4 fragment_prefiltered(CubemapRasterizerData rd [[ stage_in ]],
     return float4(prefilteredColor, 1.0);
 }
 
-fragment float4 fragment_brdf(FSQuadRasterizerData rd [[ stage_in ]]) {
-    
+fragment float2 fragment_brdf(FSQuadRasterizerData rd [[ stage_in ]]) {
+    float2 uv = rd.uv;
+    float NdotV = uv.x;
+    float roughness = uv.y;
+    const uint SAMPLE_COUNT = 2048;
+    return PBR::integrateBRDF(NdotV, roughness, SAMPLE_COUNT);
 }
 

@@ -91,10 +91,33 @@ public:
         H.x = cos(phi) * sinTheta;
         H.y = sin(phi) * sinTheta;
         H.z = cosTheta;
-        float3 up = abs(N.z) < 0.999 ? float3(0.0,0.0,1.0) : float3(1.0,0.0,0.0);
+        float3 up = abs(N.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
         float3 T = normalize(cross(up, N));
         float3 B = cross(N, T);
         return normalize(T * H.x + B * H.y + N * H.z);
+    }
+    
+    static float2 integrateBRDF(float NdotV, float roughness, uint sampleCount) {
+        float3 V = float3(sqrt(1.0 - NdotV * NdotV), 0.0, NdotV);
+        float A = 0.0;
+        float B = 0.0;
+        float3 N = float3(0.0, 0.0, 1.0);
+        for(uint i = 0; i < sampleCount; ++i) {
+            float2 Xi = hammersley(i, sampleCount);
+            float3 H = importanceSampleGGX(Xi, roughness, N);
+            float3 L = normalize(2.0 * dot(V, H) * H - V);
+            float NdotL = max(L.z, 0.0);
+            float NdotH = max(H.z, 0.0);
+            float VdotH = max(dot(V, H), 0.0);
+            if(NdotL > 0.0) {
+                float G = GeometrySmith(N, V, L, roughness);
+                float G_Vis = (G * VdotH) / (NdotH * NdotV);
+                float Fc = pow(1.0 - VdotH, 5.0);
+                A += (1.0 - Fc) * G_Vis;
+                B += Fc * G_Vis;
+            }
+        }
+        return float2(A, B) / float(sampleCount);
     }
 };
 

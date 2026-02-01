@@ -11,7 +11,7 @@ class InstancedGameObject: Node {
     
     private var _modelConstantBuffer: MTLBuffer!
     private var _mesh: Mesh!
-    private var _material = Material()
+    private var _material = MetalCupMaterial()
     
     internal var _nodes: [Node] = []
     
@@ -55,17 +55,17 @@ extension InstancedGameObject: Renderable {
         renderCommandEncoder.setTriangleFillMode(Preferences.isWireframeEnabled ? .lines : .fill)
         renderCommandEncoder.setDepthStencilState(Graphics.DepthStencilStates[.Less])
         renderCommandEncoder.setVertexBuffer(_modelConstantBuffer, offset: 0, index: 2)
-        renderCommandEncoder.setFragmentBytes(&_material, length: Material.stride, index: 1)
+        renderCommandEncoder.setFragmentBytes(&_material, length: MetalCupMaterial.stride, index: 1)
         _mesh.drawPrimitives(renderCommandEncoder)
     }
 }
 
 extension InstancedGameObject {
-    public func setColor(_ color: SIMD4<Float>) {
-        self._material.color = color
+    public func setColor(_ color: SIMD3<Float>) {
+        self._material.baseColor = color
     }
     
-    public func setColor(_ r: Float,_ g: Float,_ b: Float,_ a: Float) {
-        setColor(SIMD4<Float>(r,g,b,a))
+    public func setColor(_ r: Float,_ g: Float,_ b: Float) {
+        setColor(SIMD3<Float>(r,g,b))
     }
 }

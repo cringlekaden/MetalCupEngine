@@ -11,6 +11,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
+struct CubemapVertex {
+    float3 position [[ attribute(0) ]];
+};
+
 struct Vertex {
     float3 position [[ attribute(0) ]];
     float4 color [[ attribute(1) ]];
@@ -18,6 +22,16 @@ struct Vertex {
     float3 normal [[ attribute(3) ]];
     float3 tangent [[ attribute(4) ]];
     float3 bitangent [[ attribute(5) ]];
+};
+
+struct FSQuadRasterizerData {
+    float4 position [[ position ]];
+    float2 uv;
+};
+
+struct CubemapRasterizerData {
+    float4 position [[ position ]];
+    float3 localPosition;
 };
 
 struct RasterizerData {
@@ -44,21 +58,31 @@ struct SceneConstants {
     float3 cameraPosition;
 };
 
-struct Material {
-    float4 color;
-    bool isLit;
-    float3 ambient;
-    float3 diffuse;
-    float3 specular;
-    float shininess;
+struct MetalCupMaterial {
+    float3 baseColor;
+    float metallicScalar;
+    float roughnessScalar;
+    float aoScalar;
+    float3 emissiveColor;
+    float emissiveScalar;
+    uint flags;
 };
 
-struct PBRMaterial {
-    float3 baseColor;
-    float metallic;
-    float roughness;
-    float ao;
+enum MetalCupMaterialFlags : uint {
+    HasBaseColorMap =      1 << 0,
+    HasNormalMap =         1 << 1,
+    HasMetallicMap =       1 << 2,
+    HasRoughnessMap =      1 << 3,
+    HasMetalRoughnessMap = 1 << 4,
+    HasAOMap =             1 << 5,
+    HasEmissiveMap =       1 << 6,
+    IsUnlit =              1 << 7,
+    IsDoubleSided =        1 << 8,
+    AlphaMasked =          1 << 9,
+    AlphaBlended =         1 << 10
 };
+    
+inline bool hasFlag(uint flags, uint bit) { return (flags & bit) != 0u; }
 
 struct LightData {
     float3 position;

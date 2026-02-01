@@ -1,4 +1,13 @@
+//
+//  MeshLibrary.swift
+//  MetalCup
+//
+//  Created by Kaden Cringle on 1/21/26.
+//
+
 import MetalKit
+import Foundation
+import ModelIO
 
 enum MeshType {
     case None
@@ -11,6 +20,8 @@ enum MeshType {
     case Well
     case Sofa
     case FullscreenQuad
+    case PBRTest
+    case DamagedHelmet
 }
 
 class MeshLibrary: Library<MeshType, Mesh> {
@@ -28,6 +39,8 @@ class MeshLibrary: Library<MeshType, Mesh> {
         _library[.Well] = Mesh(modelName: "well")
         _library[.Sofa] = Mesh(modelName: "sofa_03_2k")
         _library[.FullscreenQuad] = FullscreenQuadMesh()
+        _library[.PBRTest] = Mesh(modelName: "PBR_test", ext: "usdz")
+        _library[.DamagedHelmet] = Mesh(modelName: "Helmet", ext: "usdz")
     }
     
     override subscript(_ type: MeshType)->Mesh {
@@ -50,8 +63,8 @@ class Mesh {
         createBuffer()
     }
     
-    init(modelName: String) {
-        createMeshFromModel(modelName)
+    init(modelName: String, ext: String = "obj") {
+        createMeshFromModel(modelName, ext: ext)
     }
     
     func createMesh() {}
@@ -59,13 +72,12 @@ class Mesh {
     private func createBuffer() {
         if(_vertices.count > 0){
             _vertexBuffer = Engine.Device.makeBuffer(bytes: _vertices, length: Vertex.stride(_vertices.count), options: [])
-        }
-        if(_cubemapVertices.count > 0) {
+        } else if(_cubemapVertices.count > 0) {
             _cubemapVertexBuffer = Engine.Device.makeBuffer(bytes: _cubemapVertices, length: CubemapVertex.stride(_cubemapVertices.count), options: [])
         }
     }
     
-    private func createMeshFromModel(_ modelName: String, ext: String = "obj") {
+    private func createMeshFromModel(_ modelName: String, ext: String) {
         guard let assetURL = Bundle.main.url(forResource: modelName, withExtension: ext) else {
             fatalError("Asset \(modelName) does not exist...")
         }
@@ -77,18 +89,24 @@ class Mesh {
         (descriptor.attributes[4] as! MDLVertexAttribute).name = MDLVertexAttributeTangent
         (descriptor.attributes[5] as! MDLVertexAttribute).name = MDLVertexAttributeBitangent
         let bufferAllocator = MTKMeshBufferAllocator(device: Engine.Device)
-        let asset: MDLAsset = MDLAsset(url: assetURL, vertexDescriptor: descriptor, bufferAllocator: bufferAllocator, preserveTopology: true, error: nil)
+        let asset = MDLAsset(url: assetURL, vertexDescriptor: descriptor, bufferAllocator: bufferAllocator)
         asset.loadTextures()
-        var mtkMeshes: [MTKMesh] = []
         var mdlMeshes: [MDLMesh] = []
         do{
             mdlMeshes = try MTKMesh.newMeshes(asset: asset, device: Engine.Device).modelIOMeshes
         } catch {
             print("ERROR::LOADING_MESH::__\(modelName)__::\(error)")
         }
+        var mtkMeshes: [MTKMesh] = []
         for mdlMesh in mdlMeshes {
-            mdlMesh.addTangentBasis(forTextureCoordinateAttributeNamed: MDLVertexAttributeTextureCoordinate, tangentAttributeNamed: MDLVertexAttributeTangent, bitangentAttributeNamed: MDLVertexAttributeBitangent)
+            let baseFolder = assetURL.deletingLastPathComponent()
+            for case let sub as MDLSubmesh in (mdlMesh.submeshes ?? []) {
+                if let mat = sub.material {
+                    forceResolveMaterialTextures(mat, baseFolder: baseFolder)
+                }
+            }
             mdlMesh.vertexDescriptor = descriptor
+            mdlMesh.addTangentBasis(forTextureCoordinateAttributeNamed: MDLVertexAttributeTextureCoordinate, tangentAttributeNamed: MDLVertexAttributeTangent, bitangentAttributeNamed: MDLVertexAttributeBitangent)
             do {
                 let mtkMesh = try MTKMesh(mesh: mdlMesh, device: Engine.Device)
                 mtkMeshes.append(mtkMesh)
@@ -124,12 +142,12 @@ class Mesh {
         _cubemapVertices.append(CubemapVertex(position: position))
     }
     
-    func drawPrimitives(_ renderCommandEncoder: MTLRenderCommandEncoder, material: PBRMaterial? = nil, albedoMapTextureType: TextureType = .None, normalMapTextureType: TextureType = .None, metallicMapTextureType: TextureType = .None, roughnessMapTextureType: TextureType = .None, aoMapTextureType: TextureType = .None) {
+    func drawPrimitives(_ renderCommandEncoder: MTLRenderCommandEncoder, material: MetalCupMaterial? = nil, albedoMapTextureType: TextureType = .None, normalMapTextureType: TextureType = .None, metallicMapTextureType: TextureType = .None, roughnessMapTextureType: TextureType = .None, metalRoughnessTextureType: TextureType = .None, aoMapTextureType: TextureType = .None, emissiveMapTextureType: TextureType = .None) {
         if(_vertexBuffer != nil) {
             renderCommandEncoder.setVertexBuffer(_vertexBuffer, offset: 0, index: 0)
             if(_submeshes.count > 0) {
                 for submesh in _submeshes {
-                    submesh.applyTextures(renderCommandEncoder: renderCommandEncoder, albedoMapTextureType: albedoMapTextureType, normalMapTextureType: normalMapTextureType, metallicMapTextureType: metallicMapTextureType, roughnessMapTextureType: roughnessMapTextureType, aoMapTextureType: aoMapTextureType)
+                    submesh.applyTextures(renderCommandEncoder: renderCommandEncoder, albedoMapTextureType: albedoMapTextureType, normalMapTextureType: normalMapTextureType, metallicMapTextureType: metallicMapTextureType, roughnessMapTextureType: roughnessMapTextureType, metalRoughnessTextureType: metalRoughnessTextureType, aoMapTextureType: aoMapTextureType, emissiveMapTextureType: emissiveMapTextureType)
                     submesh.applyMaterials(renderCommandEncoder: renderCommandEncoder, customMaterial: material)
                     renderCommandEncoder.drawIndexedPrimitives(type: submesh.primitiveType, indexCount: submesh.indexCount, indexType: submesh.indexType, indexBuffer: submesh.indexBuffer, indexBufferOffset: submesh.indexBufferOffset, instanceCount: _instanceCount)
                 }
@@ -137,8 +155,7 @@ class Mesh {
                 renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.Linear], index: 0)
                 renderCommandEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: _vertices.count, instanceCount: _instanceCount)
             }
-        }
-        if(_cubemapVertexBuffer != nil) {
+        } else if(_cubemapVertexBuffer != nil) {
             renderCommandEncoder.setVertexBuffer(_cubemapVertexBuffer, offset: 0, index: 0)
             renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.Linear], index: 0)
             renderCommandEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: _cubemapVertices.count, instanceCount: _instanceCount)
@@ -164,12 +181,15 @@ class Submesh {
     private var _indexBufferOffset: Int = 0
     public var indexBufferOffset: Int { return _indexBufferOffset }
     
-    private var _material = PBRMaterial()
+    private var _material = MetalCupMaterial()
+    private var _materialFlags = MetalCupMaterialFlags()
     private var _albedoMapTexture: MTLTexture!
     private var _normalMapTexture: MTLTexture!
     private var _metallicMapTexture: MTLTexture!
     private var _roughnessMapTexture: MTLTexture!
+    private var _metalRoughnessTexture: MTLTexture!
     private var _aoMapTexture: MTLTexture!
+    private var _emissiveMapTexture: MTLTexture!
     
     init(indices: [UInt32]) {
         self._indices = indices
@@ -187,42 +207,68 @@ class Submesh {
         createMaterial(mdlSubmesh.material!)
     }
     
-    func applyTextures(renderCommandEncoder: MTLRenderCommandEncoder, albedoMapTextureType: TextureType, normalMapTextureType: TextureType, metallicMapTextureType: TextureType, roughnessMapTextureType: TextureType, aoMapTextureType: TextureType) {
+    func applyTextures(renderCommandEncoder: MTLRenderCommandEncoder, albedoMapTextureType: TextureType, normalMapTextureType: TextureType, metallicMapTextureType: TextureType, roughnessMapTextureType: TextureType, metalRoughnessTextureType: TextureType, aoMapTextureType: TextureType, emissiveMapTextureType: TextureType) {
         renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.Linear], index: 0)
         let albedoMapTexture = albedoMapTextureType == .None ? _albedoMapTexture : Assets.Textures[albedoMapTextureType]
-        if(albedoMapTexture != nil) {
-            renderCommandEncoder.setFragmentTexture(albedoMapTexture, index: 0)
-        }
+        renderCommandEncoder.setFragmentTexture(albedoMapTexture, index: 0)
         let normalMapTexture = normalMapTextureType == .None ? _normalMapTexture : Assets.Textures[normalMapTextureType]
-        if(normalMapTexture != nil) {
-            renderCommandEncoder.setFragmentTexture(normalMapTexture, index: 1)
-        }
+        renderCommandEncoder.setFragmentTexture(normalMapTexture, index: 1)
         let metallicMapTexture = metallicMapTextureType == .None ? _metallicMapTexture : Assets.Textures[metallicMapTextureType]
-        if(metallicMapTexture != nil) {
-            renderCommandEncoder.setFragmentTexture(metallicMapTexture, index: 2)
-        }
+        renderCommandEncoder.setFragmentTexture(metallicMapTexture, index: 2)
         let roughnessMapTexture = roughnessMapTextureType == .None ? _roughnessMapTexture : Assets.Textures[roughnessMapTextureType]
-        if(roughnessMapTexture != nil) {
-            renderCommandEncoder.setFragmentTexture(roughnessMapTexture, index: 3)
-        }
+        renderCommandEncoder.setFragmentTexture(roughnessMapTexture, index: 3)
+        let metalRoughnessTexture = metalRoughnessTextureType == .None ? _metalRoughnessTexture : Assets.Textures[metalRoughnessTextureType]
+        renderCommandEncoder.setFragmentTexture(metalRoughnessTexture, index: 4)
         let aoMapTexture = aoMapTextureType == .None ? _aoMapTexture : Assets.Textures[aoMapTextureType]
-        if(aoMapTexture != nil) {
-            renderCommandEncoder.setFragmentTexture(aoMapTexture, index: 4)
-        }
-        renderCommandEncoder.setFragmentTexture(Assets.Textures[.IrradianceCubemap], index: 5)
+        renderCommandEncoder.setFragmentTexture(aoMapTexture, index: 5)
+        let emissiveMapTexture = emissiveMapTextureType == .None ? _emissiveMapTexture : Assets.Textures[emissiveMapTextureType]
+        renderCommandEncoder.setFragmentTexture(emissiveMapTexture, index: 6)
+        renderCommandEncoder.setFragmentTexture(Assets.Textures[.IrradianceCubemap], index: 7)
+        renderCommandEncoder.setFragmentTexture(Assets.Textures[.PrefilteredCubemap], index: 8)
+        renderCommandEncoder.setFragmentTexture(Assets.Textures[.BRDF_LUT], index: 9)
     }
     
-    func applyMaterials(renderCommandEncoder: MTLRenderCommandEncoder, customMaterial: PBRMaterial?) {
-        var material: PBRMaterial = customMaterial ?? _material
-        renderCommandEncoder.setFragmentBytes(&material, length: PBRMaterial.stride, index: 1)
+    func applyMaterials(renderCommandEncoder: MTLRenderCommandEncoder, customMaterial: MetalCupMaterial?) {
+        var material: MetalCupMaterial = customMaterial ?? _material
+        material.flags = _materialFlags.rawValue
+        renderCommandEncoder.setFragmentBytes(&material, length: MetalCupMaterial.stride, index: 1)
     }
     
     private func createTexture(_ mdlMaterial: MDLMaterial) {
-        _albedoMapTexture = texture(for: .baseColor, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: true)
-        _normalMapTexture = texture(for: .tangentSpaceNormal, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-        _metallicMapTexture = texture(for: .metallic, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-        _roughnessMapTexture = texture(for: .roughness, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-        _aoMapTexture = texture(for: .ambientOcclusion, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
+        if(mdlMaterial.property(with: .baseColor)?.type == .texture) {
+            _albedoMapTexture = texture(for: .baseColor, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: true)
+            _materialFlags.insert(.hasBaseColorMap)
+        }
+        if(mdlMaterial.property(with: .tangentSpaceNormal)?.type == .texture) {
+            _normalMapTexture = texture(for: .tangentSpaceNormal, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
+            _materialFlags.insert(.hasNormalMap)
+        }
+        let metallicProperty = mdlMaterial.property(with: .metallic)
+        let roughnessProperty = mdlMaterial.property(with: .roughness)
+        let metallicTexture = metallicProperty?.type == .texture ? metallicProperty?.textureSamplerValue?.texture : nil
+        let roughnessTexture = roughnessProperty?.type == .texture ? roughnessProperty?.textureSamplerValue?.texture : nil
+        let usesCombinedMetalRoughness = metallicTexture != nil && roughnessTexture != nil && metallicTexture === roughnessTexture
+        if(usesCombinedMetalRoughness) {
+            _metalRoughnessTexture = texture(for: .metallic, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
+            _materialFlags.insert(.hasMetalRoughnessMap)
+        } else {
+            if(metallicTexture != nil) {
+                _metallicMapTexture = texture(for: .metallic, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
+                _materialFlags.insert(.hasMetallicMap)
+            }
+            if(roughnessTexture != nil) {
+                _roughnessMapTexture = texture(for: .roughness, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
+                _materialFlags.insert(.hasRoughnessMap)
+            }
+        }
+        if(mdlMaterial.property(with: .ambientOcclusion)?.type == .texture) {
+            _aoMapTexture = texture(for: .ambientOcclusion, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
+            _materialFlags.insert(.hasAOMap)
+        }
+        if(mdlMaterial.property(with: .emission)?.type == .texture) {
+            _emissiveMapTexture = texture(for: .emission, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: true)
+            _materialFlags.insert(.hasEmissiveMap)
+        }
     }
     
     private func createMaterial(_ mdlMaterial: MDLMaterial) {
@@ -230,23 +276,52 @@ class Submesh {
             _material.baseColor = albedo
         }
         if let metallic = mdlMaterial.property(with: .metallic)?.floatValue {
-            _material.metallic = metallic
+            _material.metallicScalar = metallic
         }
         if let roughness = mdlMaterial.property(with: .roughness)?.floatValue {
-            _material.roughness = roughness
+            _material.roughnessScalar = roughness
         }
         if let ao = mdlMaterial.property(with: .ambientOcclusion)?.floatValue {
-            _material.ao = ao
+            _material.aoScalar = ao
+        }
+        guard let emissiveProperty = mdlMaterial.property(with: .emission) else { return }
+        if emissiveProperty.type == .float4 {
+            _material.emissiveColor = SIMD3<Float>(emissiveProperty.float4Value.x, emissiveProperty.float4Value.y, emissiveProperty.float4Value.z)
+        } else if emissiveProperty.type == .float3 {
+            _material.emissiveColor = emissiveProperty.float3Value
+        } else if emissiveProperty.type == .float {
+            _material.emissiveScalar = emissiveProperty.floatValue
         }
     }
     
-    private func texture(for semantic: MDLMaterialSemantic, in material: MDLMaterial?, textureOrigin: MTKTextureLoader.Origin, sRGB: Bool) -> MTLTexture? {
+    private func texture(for semantic: MDLMaterialSemantic,
+                         in material: MDLMaterial?,
+                         generateMipmaps: Bool = false,
+                         textureOrigin: MTKTextureLoader.Origin,
+                         sRGB: Bool) -> MTLTexture? {
+
         let textureLoader = MTKTextureLoader(device: Engine.Device)
         guard let materialProperty = material?.property(with: semantic) else { return nil }
-        guard let sourceTexture = materialProperty.textureSamplerValue?.texture else { return nil }
-        let options: [MTKTextureLoader.Option : Any] = [.origin : textureOrigin as Any, .generateMipmaps : true, .SRGB : sRGB as Any]
-        let tex = try? textureLoader.newTexture(texture: sourceTexture, options: options)
-        return tex
+        guard let sampler = materialProperty.textureSamplerValue else { return nil }
+        guard let sourceTexture = sampler.texture else { return nil }
+
+        let options: [MTKTextureLoader.Option : Any] = [
+            .origin: textureOrigin as Any,
+            .generateMipmaps: generateMipmaps,
+            .SRGB: sRGB
+        ]
+
+        // ✅ Preferred: URL-backed textures (after we forceResolveMaterialTextures)
+        if let urlTex = sourceTexture as? MDLURLTexture, urlTex.url.isFileURL {
+            return try? textureLoader.newTexture(URL: urlTex.url, options: options)
+        }
+
+        // Fallbacks
+        if let cg = sourceTexture.imageFromTexture()?.takeUnretainedValue() {
+            return try? textureLoader.newTexture(cgImage: cg, options: options)
+        }
+
+        return try? textureLoader.newTexture(texture: sourceTexture, options: options)
     }
     
     private func createIndexBuffer() {
@@ -362,5 +437,63 @@ class CubemapMesh: Mesh {
         addCubemapVertex(position: SIMD3<Float>(-1,1,-1))
         addCubemapVertex(position: SIMD3<Float>(-1,-1,-1))
         addCubemapVertex(position: SIMD3<Float>(1,-1,-1))
+    }
+}
+
+private func forceResolveMaterialTextures(_ material: MDLMaterial, baseFolder: URL) {
+    let semantics: [MDLMaterialSemantic] = [
+        .baseColor,
+        .tangentSpaceNormal,
+        .metallic,
+        .roughness,
+        .ambientOcclusion,
+        .emission
+    ]
+
+    for sem in semantics {
+        guard let prop = material.property(with: sem) else { continue }
+        guard prop.type == .texture, let sampler = prop.textureSamplerValue else { continue }
+        guard let mdlTex = sampler.texture else { continue }
+
+        // Try to extract a relative path from MDLTexture
+        var candidateURL: URL? = nil
+
+        if let urlTex = mdlTex as? MDLURLTexture {
+            let url = urlTex.url
+            candidateURL = url.isFileURL ? url : nil
+            if candidateURL == nil {
+                // Sometimes it's a weird non-file scheme; ignore
+            }
+        } else if !mdlTex.name.isEmpty {
+            // name might be "textures/albedo.png" or just "albedo.png"
+            candidateURL = baseFolder.appendingPathComponent(mdlTex.name)
+        }
+
+        // If not found, try material property name (sometimes holds file-ish info)
+        if candidateURL == nil, let str = prop.stringValue, !str.isEmpty {
+            candidateURL = baseFolder.appendingPathComponent(str)
+        }
+        if candidateURL == nil, let url = prop.urlValue {
+            candidateURL = url.isFileURL ? url : nil
+        }
+
+        guard let url = candidateURL else { continue }
+
+        // Normalize: if it’s relative, root it at baseFolder
+        let finalURL: URL
+        if url.isFileURL {
+            finalURL = url
+        } else {
+            finalURL = baseFolder.appendingPathComponent(url.path)
+        }
+
+        if FileManager.default.fileExists(atPath: finalURL.path) {
+            // Replace the sampler's texture with a URL texture by creating and configuring it explicitly
+            let texName = finalURL.lastPathComponent
+            let fixed = MDLURLTexture(url: finalURL, name: texName)
+            let fixedSampler = MDLTextureSampler()
+            fixedSampler.texture = fixed
+            prop.textureSamplerValue = fixedSampler
+        }
     }
 }
