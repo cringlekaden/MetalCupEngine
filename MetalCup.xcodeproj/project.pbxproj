@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		37A993692F2FC47300646CF0 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = 37A993682F2FC46C00646CF0 /* .gitignore */; };
 		37E0A5F62F245FF400F22AE3 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 37E0A5F52F245FDD00F22AE3 /* README.md */; };
 /* End PBXBuildFile section */
 
@@ -28,6 +29,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		37A993682F2FC46C00646CF0 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 		37E0A5F52F245FDD00F22AE3 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		37E7D4B62F1C0AD0007738DC /* MetalCup.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MetalCup.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		37E7D4C92F1C0AD1007738DC /* MetalCupTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MetalCupTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -80,6 +82,7 @@
 		37E7D4AD2F1C0ACF007738DC = {
 			isa = PBXGroup;
 			children = (
+				37A993682F2FC46C00646CF0 /* .gitignore */,
 				37E0A5F52F245FDD00F22AE3 /* README.md */,
 				37E7D4B82F1C0AD0007738DC /* MetalCup */,
 				37E7D4CC2F1C0AD1007738DC /* MetalCupTests */,
@@ -218,6 +221,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				37A993692F2FC47300646CF0 /* .gitignore in Resources */,
 				37E0A5F62F245FF400F22AE3 /* README.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
