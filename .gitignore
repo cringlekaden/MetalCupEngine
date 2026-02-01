@@ -1,0 +1,62 @@
+# =========================
+# macOS
+# =========================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# =========================
+# Xcode
+# =========================
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+*.xccheckout
+*.xcscmblueprint
+
+# User-specific Xcode settings
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# =========================
+# Build products
+# =========================
+build/
+Build/
+*.app
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.dSYM.tar.gz
+
+# =========================
+# Swift Package Manager
+# =========================
+.build/
+Packages/
+Package.resolved
+
+# =========================
+# Metal / Shader intermediates
+# =========================
+*.air
+*.metallib
+
+# =========================
+# Logs & temp files
+# =========================
+*.log
+*.tmp
+*.swp
+
+# =========================
+# Editor / IDE noise
+# =========================
+.idea/
+.vscode/
+
+# =========================
+# Asset processing artifacts (safe)
+# =========================
+*.orig
+*.bak
