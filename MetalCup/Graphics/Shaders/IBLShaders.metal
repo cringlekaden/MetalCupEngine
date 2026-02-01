@@ -57,7 +57,7 @@ fragment float4 fragment_irradiance(CubemapRasterizerData rd [[ stage_in ]],
     uint res = envMap.get_width();
     uint mipCount = envMap.get_num_mip_levels();
     float omegaTexel = 4.0 * PBR::PI / (6.0 * float(res) * float(res));
-    const uint SAMPLE_COUNT = 4096u;
+    const uint SAMPLE_COUNT = 2048u;
     float3 sum = float3(0.0);
     for (uint i = 0u; i < SAMPLE_COUNT; ++i) {
         float2 Xi = fract(PBR::hammersley(i, SAMPLE_COUNT) + cp);
@@ -82,7 +82,7 @@ fragment float4 fragment_prefiltered(CubemapRasterizerData rd [[ stage_in ]],
     float3 N = normalize(rd.localPosition);
     float3 R = N;
     float3 V = R;
-    constexpr uint SAMPLE_COUNT = 4096u;
+    constexpr uint SAMPLE_COUNT = 2048u;
     float3 prefilteredColor = float3(0.0);
     float totalWeight = 0.0;
     for(uint i = 0; i < SAMPLE_COUNT; i++) {

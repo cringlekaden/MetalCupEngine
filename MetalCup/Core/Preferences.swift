@@ -15,9 +15,9 @@ public enum ClearColor {
 }
 
 class Preferences {
-    public static var clearColor : MTLClearColor = ClearColor.Blue
+    public static var clearColor : MTLClearColor = ClearColor.Grey
     public static var HDRPixelFormat: MTLPixelFormat = .rgba16Float
-    public static var sRGBColorPixelFormat: MTLPixelFormat = .bgra8Unorm_srgb
+    public static var sRGBPixelFormat: MTLPixelFormat = .bgra8Unorm_srgb
     public static var defaultColorPixelFormat: MTLPixelFormat = .rgba8Unorm
     public static var defaultDepthPixelFormat: MTLPixelFormat = .depth32Float
     public static var isWireframeEnabled: Bool = false

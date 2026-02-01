@@ -48,7 +48,6 @@ class ShaderLibrary: Library<ShaderType, MTLFunction> {
         _library[.BloomExtractFragment] = Shader(name: "Bloom Extract Fragment Shader", functionName: "fragment_bloom_extract")
         _library[.BlurHFragment] = Shader(name: "Blur Horizontal Fragment Shader", functionName: "fragment_blur_h")
         _library[.BlurVFragment] = Shader(name: "Blur Vertical Fragment Shader", functionName: "fragment_blur_v")
-        
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {

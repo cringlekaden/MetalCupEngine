@@ -73,7 +73,7 @@ public struct CubemapVertexDescriptor: VertexDescriptor {
         vertexDescriptor.attributes[0].format = .float3
         vertexDescriptor.attributes[0].bufferIndex = 0
         vertexDescriptor.attributes[0].offset = 0
-        vertexDescriptor.layouts[0].stride = CubemapVertex.stride
+        vertexDescriptor.layouts[0].stride = SimpleVertex.stride
         vertexDescriptor.layouts[0].stepRate = 1
         vertexDescriptor.layouts[0].stepFunction = .perVertex
     }

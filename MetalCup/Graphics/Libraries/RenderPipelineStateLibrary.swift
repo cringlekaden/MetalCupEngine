@@ -8,7 +8,6 @@
 import MetalKit
 
 public enum RenderPipelineStateType {
-    case Basic
     case HDRBasic
     case HDRInstanced
     case Skybox
@@ -27,7 +26,6 @@ class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipe
     private var _library: [RenderPipelineStateType: RenderPipelineState] = [:]
     
     override func fillLibrary() {
-        _library[.Basic] = BasicRenderPipelineState()
         _library[.HDRBasic] = HDRBasicRenderPipelineState()
         _library[.HDRInstanced] = HDRInstancedRenderPipelineState()
         _library[.Skybox] = SkyboxRenderPipelineState()
@@ -56,19 +54,6 @@ class RenderPipelineState {
         } catch let error as NSError {
             print("ERROR::CREATE::RENDER_PIPELINE_STATE::__::\(error)")
         }
-    }
-}
-
-class BasicRenderPipelineState: RenderPipelineState {
-    
-    init() {
-        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
-        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.sRGBColorPixelFormat
-        renderPipelineDescriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
-        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.BasicVertex]
-        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.BasicFragment]
-        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Basic]
-        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
     }
 }
 

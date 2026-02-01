@@ -17,9 +17,6 @@ enum TextureType {
     case IrradianceCubemap
     case PrefilteredCubemap
     case BRDF_LUT
-    case MetalPlateDiffuse
-    case MetalPlateNormal
-    case CloudsSkysphere
     case VeniceSunset
     case Studio
     case Cruise
@@ -31,15 +28,12 @@ enum TextureType {
 class TextureLibrary: Library<TextureType, MTLTexture> {
     
     private var _library: [TextureType : Texture] = [:]
-    private let _environmentSize = 4096
+    private let _environmentSize = 2048
     private let _irradianceSize = 64
     private let _prefilteredSize = 1024
     private let _brdfLutSize = 512
     
     override func fillLibrary() {
-        _library[.MetalPlateDiffuse] = Texture("metal_plate_diff")
-        _library[.MetalPlateNormal] = Texture("metal_plate_nor")
-        _library[.CloudsSkysphere] = Texture("clouds", origin: .bottomLeft)
         _library[.VeniceSunset] = Texture("venice_sunset", ext: "hdr", srgb: false, generateMipmaps: false)
         _library[.Studio] = Texture("studio", ext: "exr", srgb: false, generateMipmaps: false)
         _library[.Cruise] = Texture("cruise", ext: "exr", srgb: false, generateMipmaps: false)

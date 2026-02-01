@@ -44,7 +44,6 @@ class DebugCamera: Camera {
         // Derive camera basis from view matrix so movement follows look direction
         let view = self.viewMatrix
         let right = simd_normalize(SIMD3<Float>(view.columns.0.x, view.columns.1.x, view.columns.2.x))
-        let up = simd_normalize(SIMD3<Float>(view.columns.0.y, view.columns.1.y, view.columns.2.y))
         let forward = simd_normalize(-SIMD3<Float>(view.columns.0.z, view.columns.1.z, view.columns.2.z))
         // WASD input (UFO style)
         var moveDir = SIMD3<Float>(0,0,0)

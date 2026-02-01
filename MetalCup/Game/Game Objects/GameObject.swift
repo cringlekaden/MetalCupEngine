@@ -14,7 +14,9 @@ class GameObject: Node {
     private var _normalMapTextureType: TextureType = .None
     private var _metallicMapTextureType: TextureType = .None
     private var _roughnessMapTextureType: TextureType = .None
+    private var _mrMapTextureType: TextureType = .None
     private var _aoMapTextureType: TextureType = .None
+    private var _emissiveMapTextureType: TextureType = .None
     private var _modelConstants = ModelConstants()
     private var _mesh: Mesh!
     private var _cullMode: MTLCullMode = .back
@@ -42,7 +44,7 @@ extension GameObject: Renderable {
         renderCommandEncoder.setCullMode(_cullMode)
         renderCommandEncoder.setFrontFacing(_frontFacing)
         renderCommandEncoder.setVertexBytes(&_modelConstants, length: ModelConstants.stride, index: 2)
-        _mesh.drawPrimitives(renderCommandEncoder, material: _material, albedoMapTextureType: _albedoMapTextureType, normalMapTextureType: _normalMapTextureType, metallicMapTextureType: _metallicMapTextureType, roughnessMapTextureType: _roughnessMapTextureType, aoMapTextureType: _aoMapTextureType)
+        _mesh.drawPrimitives(renderCommandEncoder, material: _material, albedoMapTextureType: _albedoMapTextureType, normalMapTextureType: _normalMapTextureType, metallicMapTextureType: _metallicMapTextureType, roughnessMapTextureType: _roughnessMapTextureType, mrMapTextureType: _mrMapTextureType, aoMapTextureType: _aoMapTextureType, emissiveMapTextureType: _emissiveMapTextureType)
     }
 }
 
@@ -67,8 +69,16 @@ extension GameObject {
         _roughnessMapTextureType = textureType
     }
     
+    public func useMRMapTexture(_ textureType: TextureType) {
+        _mrMapTextureType = textureType
+    }
+    
     public func useAOMapTexture(_ textureType: TextureType) {
         _aoMapTextureType = textureType
+    }
+    
+    public func useEmissiveMapTexture(_ textureType: TextureType) {
+        _emissiveMapTextureType = textureType
     }
     
     public func setCullMode(_ mode: MTLCullMode) { _cullMode = mode }
