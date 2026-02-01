@@ -1,125 +1,103 @@
-# MetalCup ☕️
+# MetalCup
 
-MetalCup is a **personal 3D rendering engine written in Swift using Apple’s Metal API**, built from scratch on macOS.
+MetalCup is a **modern real-time 3D rendering engine written in Swift using Apple’s Metal API**, targeting macOS on Apple Silicon.
 
-The project focuses on **modern physically based rendering techniques**, clean architecture, and deep understanding of the Metal graphics pipeline on Apple Silicon.
+The project focuses on physically based rendering, image-based lighting, and a clean, hackable architecture designed to evolve into a full engine + editor workflow.
 
-This is a long-term learning and experimentation project with the eventual goal of evolving into a small but capable game / rendering engine with tooling support.
+MetalCup is developed as a standalone engine library, with the long-term goal of supporting an editor, scene serialization, and advanced rendering features.
 
----
-
-## 🎥 Demo / Showcase
-
-👉 **YouTube Demo:**  
-https://www.youtube.com/watch?v=Hbr0vGU27Jw
-
-The demo showcases:
-- Physically Based Rendering (PBR)
-- Image-Based Lighting (IBL)
-- HDR environment maps
-- Prefiltered specular reflections
-- Bloom post-processing
-- Emissive materials
-
-> All rendering shown is performed in real time using Metal on macOS.
+> **Status:** Active development. APIs and architecture are still evolving.
 
 ---
 
-## ✨ Current Features
+## Demo
+
+A short showcase of the current renderer is available here:
+
+**YouTube:** https://youtu.be/Hbr0vGU27Jw
+
+The demo highlights:
+- Physically based materials
+- Image-based lighting
+- Specular reflections
+- Emissive materials with bloom
+- HDR rendering and tone mapping
+
+---
+
+## Current Features
 
 ### Rendering
-- ✅ **Physically Based Rendering (metal/roughness workflow)**
-- ✅ **Image-Based Lighting (IBL)**
-  - HDR equirectangular → cubemap conversion
-  - Irradiance map generation
-  - Prefiltered specular cubemap (roughness mip chain)
-  - BRDF integration LUT
-- ✅ **HDR rendering pipeline**
-- ✅ **Bloom post-processing**
-  - Bright-pass extraction
-  - Separable Gaussian blur (ping-pong)
-- ✅ **Emissive materials**
-- ✅ **Normal mapping**
-- ✅ **Ambient occlusion support**
-- ✅ **Tone mapping + gamma correction**
+- Metal-based renderer (no third-party libraries)
+- HDR rendering pipeline
+- Physically Based Rendering (metal/roughness workflow)
+- Image-Based Lighting (IBL)
+  - Environment cubemap generation
+  - Irradiance map
+  - Prefiltered specular cubemap
+  - BRDF LUT
+- Normal mapping
+- Emissive materials
+- Bloom post-processing
+- ACES-style tone mapping + gamma correction
 
-### Assets & Materials
-- ✅ **USDZ asset loading via ModelIO**
-- ✅ **PBR texture support**
-  - Base color (albedo)
+### Assets
+- USDZ asset loading via ModelIO
+- PBR texture support:
+  - Base color
   - Normal
   - Metallic / Roughness (combined or separate)
-  - Ambient Occlusion
+  - Ambient occlusion
   - Emissive
-- ✅ **Material flag system** (feature-driven shading paths)
+- Fallback scalar material values
+- Per-material feature flags
 
-### Engine / Architecture
-- ✅ **Swift + Metal (no third-party libraries)**
-- ✅ **Render-to-texture pipeline**
-- ✅ **Scene system**
-- ✅ **Game object / node hierarchy**
-- ✅ **Centralized asset libraries**
-  - Meshes
-  - Textures
-  - Shaders
-  - Pipeline states
-
-### Platform
-- ✅ Designed for **macOS on Apple Silicon**
-- ✅ Developed and tested on an **M4 Mac mini**
-- ✅ Runs at **60 FPS** in current demos
+### Engine Structure
+- Scene management system
+- Game object / node hierarchy
+- Render-to-texture pipeline
+- Cubemap rendering passes
+- Clean separation between rendering stages
 
 ---
 
-## 🛠 Planned / Future Work
+## Planned Work
 
 ### Rendering
-- 🔜 **Editor integration (ImGui)**
-- 🔜 **Better bloom tuning & exposure controls**
-- 🔜 **Additional post-processing effects**
-  - Color grading
-  - FXAA / TAA
-- 🔜 **Shadow mapping**
-- 🔜 **Ray-traced shadows (Metal RT)**
-- 🔜 Potential **full real-time ray tracing**
+- Ray-traced shadows
+- Improved specular occlusion
+- Reflection probes
+- Better post-processing pipeline
+- Additional tone-mapping operators
 
 ### Engine Architecture
-- 🔜 **Application / Layer stack architecture**
-- 🔜 **Event system**
-- 🔜 **Entity Component System (ECS)**
-- 🔜 **Scene serialization**
-- 🔜 Custom file formats for:
-  - Scenes
-  - Materials
-  - Entities
-  - Prefabs
+- Engine / Application / Layer stack
+- Event system
+- Editor application
+- ImGui-based tooling
+- Entity Component System (ECS)
 
-### Tooling
-- 🔜 **Editor application**
-- 🔜 Scene viewport & inspector
-- 🔜 Material editor
-- 🔜 Asset browser
-
-### World Systems
-- 🔜 **Terrain system**
-- 🔜 Physics integration
-- 🔜 Streaming / large-world support (long term)
+### World & Content
+- Terrain system
+- Scene serialization format
+- Asset pipeline improvements
+- Material editor
+- Lighting tools
 
 ---
 
-## ⚙️ Requirements
+## Requirements
 
-- macOS **26** (only version tested so far)
+- macOS 26 (only version tested so far)
 - Apple Silicon Mac
 - Xcode (recent version recommended)
-- Swift & Metal
-- No external dependencies
+- Swift + Metal
 
-> The engine may work on earlier macOS versions, but this has not been tested.
+Earlier macOS versions may work but are not currently supported or tested.
 
 ---
 
-## 🚀 Getting Started
+## Building
 
 1. Clone the repository:
    ```bash
