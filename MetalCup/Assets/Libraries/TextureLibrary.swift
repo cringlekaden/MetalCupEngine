@@ -25,6 +25,7 @@ enum TextureType {
     case Cruise
     case Night
     case Rocks
+    case NeonCity
 }
 
 class TextureLibrary: Library<TextureType, MTLTexture> {
@@ -44,6 +45,7 @@ class TextureLibrary: Library<TextureType, MTLTexture> {
         _library[.Cruise] = Texture("cruise", ext: "exr", srgb: false, generateMipmaps: false)
         _library[.Night] = Texture("night", ext: "exr", srgb: false, generateMipmaps: false)
         _library[.Rocks] = Texture("rocks", ext: "exr", srgb: false, generateMipmaps: false)
+        _library[.NeonCity] = Texture("neonCity", ext: "exr", srgb: false, generateMipmaps: false)
         createIBLTextures()
     }
     

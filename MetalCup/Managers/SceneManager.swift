@@ -21,7 +21,7 @@ class SceneManager {
     public static func SetScene(_ sceneType: SceneType) {
         switch sceneType {
         case .Sandbox:
-            _currentScene = Sandbox(name: "Sandbox Scene", environmentMap2D: .Cruise)
+            _currentScene = Sandbox(name: "Sandbox Scene", environmentMap2D: .NeonCity)
         }
     }
     
