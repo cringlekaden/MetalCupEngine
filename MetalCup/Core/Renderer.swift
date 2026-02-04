@@ -8,7 +8,8 @@
 import MetalKit
 import simd
 
-final class Renderer: NSObject {
+public final class Renderer: NSObject {
+    weak var delegate: RendererDelegate?
 
     private var _bloomParams = BloomParams()
     private var _bloomBlurPasses: Int = 6
@@ -309,27 +310,44 @@ extension Renderer: MTKViewDelegate {
         updateScreenSize(view: view)
     }
 
-    private func renderColorAndDepthToTexture(colorTarget: TextureType, depthTarget: TextureType, commandBuffer: MTLCommandBuffer) {
+    private func renderColorAndDepthToTexture(renderPipelineState: RenderPipelineStateType, colorTarget: TextureType, depthTarget: TextureType, commandBuffer: MTLCommandBuffer) {
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createColorAndDepthRenderPassDescriptor(colorTarget: colorTarget, depthTarget: depthTarget)) else { return }
+        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[renderPipelineState])
         encoder.label = "Render To Texture"
         encoder.pushDebugGroup("Scene -> colorTarget & depthTarget")
-        SceneManager.Render(renderCommandEncoder: encoder)
+        delegate?.renderScene(into: encoder)
         encoder.popDebugGroup()
         encoder.endEncoding()
     }
-
-    private func renderToScreen(view: MTKView, commandBuffer: MTLCommandBuffer) {
-        guard let rpd = view.currentRenderPassDescriptor else { return }
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else { return }
-        encoder.label = "Render To Screen"
-        encoder.pushDebugGroup("Final Composite -> Drawable")
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.Final])
+    
+    private func renderColorToTexture(renderPipelineState: RenderPipelineStateType, colorTarget: TextureType, commandBuffer: MTLCommandBuffer) {
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: colorTarget)) else { return }
+        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[renderPipelineState])
+        encoder.label = "Render To Texture"
+        encoder.pushDebugGroup("Scene -> colorTarget")
         encoder.setCullMode(.none)
         encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: 0)
         encoder.setFragmentTexture(Assets.Textures[.BaseColorRender], index: 0)
         encoder.setFragmentTexture(Assets.Textures[.BloomPing], index: 1)
         encoder.setFragmentBytes(&_bloomParams, length: BloomParams.stride, index: 0)
-        Assets.Meshes[.FullscreenQuad].drawPrimitives(encoder)
+        delegate?.renderScene(into: encoder)
+        encoder.popDebugGroup()
+        encoder.endEncoding()
+    }
+
+    private func renderToWindow(renderPipelineState: RenderPipelineStateType, view: MTKView, commandBuffer: MTLCommandBuffer) {
+        guard let rpd = view.currentRenderPassDescriptor else { return }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else { return }
+        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[renderPipelineState])
+        encoder.label = "Render To Screen"
+//        encoder.pushDebugGroup("Final Composite -> Drawable")
+//        encoder.setCullMode(.none)
+//        encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: 0)
+//        encoder.setFragmentTexture(Assets.Textures[.BaseColorRender], index: 0)
+//        encoder.setFragmentTexture(Assets.Textures[.BloomPing], index: 1)
+//        encoder.setFragmentBytes(&_bloomParams, length: BloomParams.stride, index: 0)
+//        Assets.Meshes[.FullscreenQuad].drawPrimitives(encoder)
+        delegate?.renderOverlays(into: encoder)
         encoder.popDebugGroup()
         encoder.endEncoding()
     }
@@ -343,15 +361,17 @@ extension Renderer: MTKViewDelegate {
             Renderer.DrawableSize = currentSize
             updateScreenSize(view: view)
         }
-        SceneManager.Update(deltaTime: 1.0 / Float(view.preferredFramesPerSecond))
+        delegate?.update(deltaTime: 1.0 / Float(view.preferredFramesPerSecond))
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "MetalCup Frame Command Buffer"
 
-        renderColorAndDepthToTexture(colorTarget: .BaseColorRender, depthTarget: .BaseDepthRender, commandBuffer: commandBuffer)
+        renderColorAndDepthToTexture(renderPipelineState: .HDRBasic, colorTarget: .BaseColorRender, depthTarget: .BaseDepthRender, commandBuffer: commandBuffer)
         renderBloom(commandBuffer: commandBuffer)
-        renderToScreen(view: view, commandBuffer: commandBuffer)
-
+        renderColorToTexture(renderPipelineState: .Final, colorTarget: .BaseColorRender, commandBuffer: commandBuffer)
+        renderToWindow(renderPipelineState: .ImGui, view: view, commandBuffer: commandBuffer)
+        
         commandBuffer.present(drawable)
         commandBuffer.commit()
     }
 }
+

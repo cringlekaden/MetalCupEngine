@@ -11,7 +11,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-struct CubemapVertex {
+struct SimpleVertex {
     float3 position [[ attribute(0) ]];
 };
 
@@ -22,11 +22,6 @@ struct Vertex {
     float3 normal [[ attribute(3) ]];
     float3 tangent [[ attribute(4) ]];
     float3 bitangent [[ attribute(5) ]];
-};
-
-struct FSQuadRasterizerData {
-    float4 position [[ position ]];
-    float2 uv;
 };
 
 struct CubemapRasterizerData {
@@ -44,6 +39,11 @@ struct RasterizerData {
     float3 surfaceTangent;
     float3 surfaceBitangent;
     float3 toCamera;
+};
+
+struct SimpleRasterizerData {
+    float4 position [[ position ]];
+    float2 texCoord;
 };
 
 struct ModelConstants {

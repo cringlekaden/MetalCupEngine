@@ -25,6 +25,8 @@ enum ShaderType {
     case BloomExtractFragment
     case BlurHFragment
     case BlurVFragment
+    case ImGuiVertex
+    case ImGuiFragment
 }
 
 class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -48,6 +50,8 @@ class ShaderLibrary: Library<ShaderType, MTLFunction> {
         _library[.BloomExtractFragment] = Shader(name: "Bloom Extract Fragment Shader", functionName: "fragment_bloom_extract")
         _library[.BlurHFragment] = Shader(name: "Blur Horizontal Fragment Shader", functionName: "fragment_blur_h")
         _library[.BlurVFragment] = Shader(name: "Blur Vertical Fragment Shader", functionName: "fragment_blur_v")
+        _library[.ImGuiVertex] = Shader(name: "ImGui Vertex Shader", functionName: "vertex_imgui")
+        _library[.ImGuiFragment] = Shader(name: "ImGui Fragment Shader", functionName: "fragment_imgui")
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {

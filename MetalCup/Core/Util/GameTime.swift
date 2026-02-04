@@ -7,7 +7,7 @@
 
 import MetalKit
 
-class GameTime {
+public class GameTime {
     
     private static var _totalGameTime: Float = 0.0
     private static var _deltaTime: Float = 0.0

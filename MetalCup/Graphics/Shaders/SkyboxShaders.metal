@@ -14,7 +14,7 @@ struct SkyboxRasterizerData {
     float3 direction;
 };
 
-vertex SkyboxRasterizerData vertex_skybox(const CubemapVertex vert [[ stage_in ]], constant SceneConstants &sceneConstants [[ buffer(1) ]], constant ModelConstants &modelConstants [[ buffer(2) ]]) {
+vertex SkyboxRasterizerData vertex_skybox(const SimpleVertex vert [[ stage_in ]], constant SceneConstants &sceneConstants [[ buffer(1) ]], constant ModelConstants &modelConstants [[ buffer(2) ]]) {
     SkyboxRasterizerData rd;
     float3 pos = vert.position;
     rd.direction = pos;

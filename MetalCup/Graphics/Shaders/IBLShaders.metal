@@ -10,7 +10,7 @@
 #include "Shared.metal"
 using namespace metal;
 
-vertex CubemapRasterizerData vertex_cubemap(const CubemapVertex vert [[ stage_in ]],
+vertex CubemapRasterizerData vertex_cubemap(const SimpleVertex vert [[ stage_in ]],
                                             constant float4x4 &vp [[ buffer(1) ]]) {
     CubemapRasterizerData rd;
     float3 pos = vert.position;
@@ -19,10 +19,10 @@ vertex CubemapRasterizerData vertex_cubemap(const CubemapVertex vert [[ stage_in
     return rd;
 }
 
-vertex FSQuadRasterizerData vertex_quad(const CubemapVertex vert [[ stage_in ]]) {
-    FSQuadRasterizerData rd;
+vertex SimpleRasterizerData vertex_quad(const SimpleVertex vert [[ stage_in ]]) {
+    SimpleRasterizerData rd;
     rd.position = float4(vert.position, 1.0);
-    rd.uv = vert.position.xy * 0.5 + 0.5;
+    rd.texCoord = vert.position.xy * 0.5 + 0.5;
     return rd;
 }
 
@@ -101,10 +101,10 @@ fragment float4 fragment_prefiltered(CubemapRasterizerData rd [[ stage_in ]],
     return float4(prefilteredColor, 1.0);
 }
 
-fragment float2 fragment_brdf(FSQuadRasterizerData rd [[ stage_in ]]) {
-    float2 uv = rd.uv;
-    float NdotV = uv.x;
-    float roughness = uv.y;
+fragment float2 fragment_brdf(SimpleRasterizerData rd [[ stage_in ]]) {
+    float2 texCoord = rd.texCoord;
+    float NdotV = texCoord.x;
+    float roughness = texCoord.y;
     const uint SAMPLE_COUNT = 2048;
     return PBR::integrateBRDF(NdotV, roughness, SAMPLE_COUNT);
 }

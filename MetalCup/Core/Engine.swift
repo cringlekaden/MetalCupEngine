@@ -7,7 +7,7 @@
 
 import MetalKit
 
-class Engine {
+public class Engine {
     
     public static var Device: MTLDevice!
     public static var CommandQueue: MTLCommandQueue!

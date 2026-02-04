@@ -79,7 +79,7 @@ class Mesh {
         guard let assetURL = Bundle.main.url(forResource: modelName, withExtension: ext) else {
             fatalError("Asset \(modelName) does not exist...")
         }
-        let descriptor = MTKModelIOVertexDescriptorFromMetal(Graphics.VertexDescriptors[.Basic])
+        let descriptor = MTKModelIOVertexDescriptorFromMetal(Graphics.VertexDescriptors[.Default])
         (descriptor.attributes[0] as! MDLVertexAttribute).name = MDLVertexAttributePosition
         (descriptor.attributes[1] as! MDLVertexAttribute).name = MDLVertexAttributeColor
         (descriptor.attributes[2] as! MDLVertexAttribute).name = MDLVertexAttributeTextureCoordinate

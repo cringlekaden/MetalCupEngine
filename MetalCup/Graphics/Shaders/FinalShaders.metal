@@ -9,11 +9,6 @@
 #include "Shared.metal"
 using namespace metal;
 
-struct FinalRasterizerData {
-    float4 position [[ position ]];
-    float2 texCoord;
-};
-
 struct BloomParams {
     float threshold;
     float knee;
@@ -66,14 +61,14 @@ static inline float3 gaussianBlur9(texture2d<float> tex, sampler s, float2 uv, f
     return c;
 }
 
-vertex FinalRasterizerData vertex_final(const CubemapVertex vert [[ stage_in ]]) {
-    FinalRasterizerData rd;
+vertex SimpleRasterizerData vertex_final(const SimpleVertex vert [[ stage_in ]]) {
+    SimpleRasterizerData rd;
     rd.position = float4(vert.position, 1.0);
     rd.texCoord = vert.position.xy * 0.5 + 0.5;
     return rd;
 }
 
-fragment float4 fragment_bloom_extract(const FinalRasterizerData rd [[ stage_in ]],
+fragment float4 fragment_bloom_extract(const SimpleRasterizerData rd [[ stage_in ]],
                                        constant BloomParams &params [[ buffer(0) ]],
                                        texture2d<float> renderTexture [[ texture(0) ]],
                                        sampler s [[ sampler(0) ]]) {
@@ -86,7 +81,7 @@ fragment float4 fragment_bloom_extract(const FinalRasterizerData rd [[ stage_in 
     return float4(bloom, 1.0);
 }
 
-fragment float4 fragment_blur_h(const FinalRasterizerData rd [[ stage_in ]],
+fragment float4 fragment_blur_h(const SimpleRasterizerData rd [[ stage_in ]],
                                 constant BloomParams &params [[ buffer(0) ]],
                                 texture2d<float> renderTexture [[ texture(0) ]],
                                 sampler s [[ sampler(0) ]]) {
@@ -96,7 +91,7 @@ fragment float4 fragment_blur_h(const FinalRasterizerData rd [[ stage_in ]],
     return float4(blurred, 1.0);
 }
 
-fragment float4 fragment_blur_v(const FinalRasterizerData rd [[ stage_in ]],
+fragment float4 fragment_blur_v(const SimpleRasterizerData rd [[ stage_in ]],
                                 constant BloomParams &params [[ buffer(0) ]],
                                 texture2d<float> renderTexture [[ texture(0) ]],
                                 sampler s [[ sampler(0) ]]) {
@@ -106,7 +101,7 @@ fragment float4 fragment_blur_v(const FinalRasterizerData rd [[ stage_in ]],
     return float4(blurred, 1.0);
 }
 
-fragment float4 fragment_final(const FinalRasterizerData rd [[ stage_in ]],
+fragment float4 fragment_final(const SimpleRasterizerData rd [[ stage_in ]],
                                constant BloomParams &params [[ buffer(0) ]],
                                texture2d<float> sceneTexture [[ texture(0) ]],
                                texture2d<float> bloomTexture [[ texture(1) ]],

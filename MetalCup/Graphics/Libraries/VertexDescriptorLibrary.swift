@@ -8,8 +8,8 @@
 import MetalKit
 
 enum VertexDescriptorType {
-    case Basic
-    case Cubemap
+    case Default
+    case Simple
 }
 
 class VertexDescriptorLibrary: Library<VertexDescriptorType, MTLVertexDescriptor> {
@@ -17,8 +17,8 @@ class VertexDescriptorLibrary: Library<VertexDescriptorType, MTLVertexDescriptor
     private var _library: [VertexDescriptorType: VertexDescriptor] = [:]
     
     override func fillLibrary() {
-        _library[.Basic] = BasicVertexDescriptor()
-        _library[.Cubemap] = CubemapVertexDescriptor()
+        _library[.Default] = DefaultVertexDescriptor()
+        _library[.Simple] = SimpleVertexDescriptor()
     }
     
     override subscript(_ type: VertexDescriptorType)->MTLVertexDescriptor {
@@ -31,7 +31,7 @@ protocol VertexDescriptor {
     var vertexDescriptor: MTLVertexDescriptor! { get }
 }
 
-public struct BasicVertexDescriptor: VertexDescriptor {
+struct DefaultVertexDescriptor: VertexDescriptor {
     var name: String = "Basic Vertex Descriptor"
     var vertexDescriptor: MTLVertexDescriptor!
     init() {
@@ -65,7 +65,7 @@ public struct BasicVertexDescriptor: VertexDescriptor {
     }
 }
 
-public struct CubemapVertexDescriptor: VertexDescriptor {
+struct SimpleVertexDescriptor: VertexDescriptor {
     var name: String = "Cubemap Vertex Descriptor"
     var vertexDescriptor: MTLVertexDescriptor!
     init() {
