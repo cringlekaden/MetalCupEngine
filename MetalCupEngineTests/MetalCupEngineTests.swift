@@ -1,14 +1,14 @@
 //
-//  MetalCupTests.swift
-//  MetalCupTests
+//  MetalCupEngineTests.swift
+//  MetalCupEngineTests
 //
-//  Created by Kaden Cringle on 1/17/26.
+//  Created by Kaden Cringle on 2/3/26.
 //
 
 import XCTest
-@testable import MetalCup
+@testable import MetalCupEngine
 
-final class MetalCupTests: XCTestCase {
+final class MetalCupEngineTests: XCTestCase {
 
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.
