@@ -8,6 +8,6 @@
 class Cube: GameObject {
     
     init() {
-        super.init(name: "Cube", meshType: .Cube)
+        super.init(name: "Cube", meshHandle: BuiltinAssets.cubeMesh)
     }
 }

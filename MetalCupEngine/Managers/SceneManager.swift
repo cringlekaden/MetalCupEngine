@@ -6,32 +6,37 @@
 //
 
 import MetalKit
+import simd
 
-enum SceneType {
+public enum SceneType {
     case Sandbox
 }
 
-class SceneManager {
+public class SceneManager {
     
-    private static var _currentScene: Scene!
-    public static var currentScene: Scene {
+    private static var _currentScene: EngineScene!
+    public static var currentScene: EngineScene {
         return _currentScene
     }
     
     public static func SetScene(_ sceneType: SceneType) {
         switch sceneType {
         case .Sandbox:
-            _currentScene = Sandbox(name: "Sandbox Scene", environmentMap2D: .NeonCity)
+            let envHandle = AssetManager.handle(forSourcePath: "Resources/neonCity.exr")
+            _currentScene = Sandbox(name: "Sandbox Scene", environmentMapHandle: envHandle)
         }
     }
     
-    public static func Update(deltaTime: Float) {
-        GameTime.UpdateTime(deltaTime)
-        _currentScene.updateCameras()
+    public static func Update() {
         _currentScene.update()
     }
     
     public static func Render(renderCommandEncoder: MTLRenderCommandEncoder) {
         _currentScene.render(renderCommandEncoder: renderCommandEncoder)
+    }
+
+    public static func UpdateViewportSize(_ size: SIMD2<Float>) {
+        Renderer.ViewportSize = size
+        _currentScene.updateAspectRatio()
     }
 }

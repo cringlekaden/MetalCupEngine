@@ -7,12 +7,12 @@
 
 import MetalKit
 
-enum VertexDescriptorType {
+public enum VertexDescriptorType {
     case Default
     case Simple
 }
 
-class VertexDescriptorLibrary: Library<VertexDescriptorType, MTLVertexDescriptor> {
+public class VertexDescriptorLibrary: Library<VertexDescriptorType, MTLVertexDescriptor> {
     
     private var _library: [VertexDescriptorType: VertexDescriptor] = [:]
     

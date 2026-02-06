@@ -5,7 +5,7 @@
 //  Created by Kaden Cringle on 1/21/26.
 //
 
-class Library<T, K> {
+public class Library<T, K> {
     
     init() {
         fillLibrary()

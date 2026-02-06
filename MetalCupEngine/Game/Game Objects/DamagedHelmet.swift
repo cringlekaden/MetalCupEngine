@@ -10,7 +10,8 @@ import MetalKit
 class DamagedHelmet: GameObject {
     
     init() {
-        super.init(name: "Damaged Helmet", meshType: .DamagedHelmet)
+        let handle = AssetManager.handle(forSourcePath: "Resources/Helmet.usdz")
+        super.init(name: "Damaged Helmet", meshHandle: handle)
         setCullMode(.none)
     }
 }

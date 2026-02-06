@@ -10,16 +10,16 @@ import MetalKit
 class InstancedGameObject: Node {
     
     private var _modelConstantBuffer: MTLBuffer!
-    private var _mesh: Mesh!
+    private var _mesh: MCMesh?
     private var _material = MetalCupMaterial()
     
     internal var _nodes: [Node] = []
     
     
-    init(meshType: MeshType, instanceCount: Int) {
+    init(meshHandle: AssetHandle?, instanceCount: Int) {
         super.init(name: "Instanced GameObject")
-        _mesh = Assets.Meshes[meshType]
-        _mesh.setInstanceCount(instanceCount)
+        _mesh = meshHandle.flatMap { AssetManager.mesh(handle: $0) }
+        _mesh?.setInstanceCount(instanceCount)
         generateInstances(instanceCount)
         createBuffer(instanceCount)
     }
@@ -51,12 +51,13 @@ class InstancedGameObject: Node {
 
 extension InstancedGameObject: Renderable {
     func doRender(_ renderCommandEncoder: any MTLRenderCommandEncoder) {
+        guard let mesh = _mesh else { return }
         renderCommandEncoder.setRenderPipelineState(Graphics.RenderPipelineStates[.HDRInstanced])
         renderCommandEncoder.setTriangleFillMode(Preferences.isWireframeEnabled ? .lines : .fill)
         renderCommandEncoder.setDepthStencilState(Graphics.DepthStencilStates[.Less])
         renderCommandEncoder.setVertexBuffer(_modelConstantBuffer, offset: 0, index: 2)
         renderCommandEncoder.setFragmentBytes(&_material, length: MetalCupMaterial.stride, index: 1)
-        _mesh.drawPrimitives(renderCommandEncoder)
+        mesh.drawPrimitives(renderCommandEncoder)
     }
 }
 

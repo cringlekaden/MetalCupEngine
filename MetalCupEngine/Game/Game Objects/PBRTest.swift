@@ -10,6 +10,7 @@ import MetalKit
 class PBRTest: GameObject {
     
     init() {
-        super.init(name: "PBRTest", meshType: .PBRTest)
+        let handle = AssetManager.handle(forSourcePath: "Resources/PBR_test.usdz")
+        super.init(name: "PBRTest", meshHandle: handle)
     }
 }

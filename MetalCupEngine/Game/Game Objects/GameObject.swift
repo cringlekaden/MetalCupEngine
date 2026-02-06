@@ -10,24 +10,30 @@ import MetalKit
 class GameObject: Node {
     
     private var _material: MetalCupMaterial? = nil
-    private var _albedoMapTextureType: TextureType = .None
-    private var _normalMapTextureType: TextureType = .None
-    private var _metallicMapTextureType: TextureType = .None
-    private var _roughnessMapTextureType: TextureType = .None
-    private var _mrMapTextureType: TextureType = .None
-    private var _aoMapTextureType: TextureType = .None
-    private var _emissiveMapTextureType: TextureType = .None
+    private var _albedoMapHandle: AssetHandle? = nil
+    private var _normalMapHandle: AssetHandle? = nil
+    private var _metallicMapHandle: AssetHandle? = nil
+    private var _roughnessMapHandle: AssetHandle? = nil
+    private var _mrMapHandle: AssetHandle? = nil
+    private var _aoMapHandle: AssetHandle? = nil
+    private var _emissiveMapHandle: AssetHandle? = nil
     private var _modelConstants = ModelConstants()
-    private var _mesh: Mesh!
+    private var _mesh: MCMesh?
+    private var _meshHandle: AssetHandle?
     private var _cullMode: MTLCullMode = .back
     private var _frontFacing: MTLWinding = .counterClockwise
     private var _depthState: DepthStencilStateType = .Less
     
     var renderPipelineState: RenderPipelineStateType { return .HDRBasic }
     
-    init(name: String, meshType: MeshType) {
+    init(name: String, mesh: MCMesh) {
         super.init(name: name)
-        _mesh = Assets.Meshes[meshType]
+        _mesh = mesh
+    }
+
+    init(name: String, meshHandle: AssetHandle?) {
+        super.init(name: name)
+        setMesh(handle: meshHandle)
     }
     
     override func update() {
@@ -38,13 +44,24 @@ class GameObject: Node {
 
 extension GameObject: Renderable {
     func doRender(_ renderCommandEncoder: MTLRenderCommandEncoder) {
+        guard let mesh = _mesh else { return }
         renderCommandEncoder.setTriangleFillMode(Preferences.isWireframeEnabled ? .lines : .fill)
         renderCommandEncoder.setRenderPipelineState(Graphics.RenderPipelineStates[renderPipelineState])
         renderCommandEncoder.setDepthStencilState(Graphics.DepthStencilStates[_depthState])
         renderCommandEncoder.setCullMode(_cullMode)
         renderCommandEncoder.setFrontFacing(_frontFacing)
         renderCommandEncoder.setVertexBytes(&_modelConstants, length: ModelConstants.stride, index: 2)
-        _mesh.drawPrimitives(renderCommandEncoder, material: _material, albedoMapTextureType: _albedoMapTextureType, normalMapTextureType: _normalMapTextureType, metallicMapTextureType: _metallicMapTextureType, roughnessMapTextureType: _roughnessMapTextureType, mrMapTextureType: _mrMapTextureType, aoMapTextureType: _aoMapTextureType, emissiveMapTextureType: _emissiveMapTextureType)
+        mesh.drawPrimitives(
+            renderCommandEncoder,
+            material: _material,
+            albedoMapHandle: _albedoMapHandle,
+            normalMapHandle: _normalMapHandle,
+            metallicMapHandle: _metallicMapHandle,
+            roughnessMapHandle: _roughnessMapHandle,
+            mrMapHandle: _mrMapHandle,
+            aoMapHandle: _aoMapHandle,
+            emissiveMapHandle: _emissiveMapHandle
+        )
     }
 }
 
@@ -53,32 +70,41 @@ extension GameObject {
         _material = material
     }
 
-    public func useAlbedoMapTexture(_ textureType: TextureType) {
-        _albedoMapTextureType = textureType
+    public func useAlbedoMapTexture(_ handle: AssetHandle?) {
+        _albedoMapHandle = handle
     }
     
-    public func useNormalMapTexture(_ textureType: TextureType) {
-        _normalMapTextureType = textureType
+    public func useNormalMapTexture(_ handle: AssetHandle?) {
+        _normalMapHandle = handle
     }
     
-    public func useMetallicMapTexture(_ textureType: TextureType) {
-        _metallicMapTextureType = textureType
+    public func useMetallicMapTexture(_ handle: AssetHandle?) {
+        _metallicMapHandle = handle
     }
     
-    public func useRoughnessMapTexture(_ textureType: TextureType) {
-        _roughnessMapTextureType = textureType
+    public func useRoughnessMapTexture(_ handle: AssetHandle?) {
+        _roughnessMapHandle = handle
     }
     
-    public func useMRMapTexture(_ textureType: TextureType) {
-        _mrMapTextureType = textureType
+    public func useMRMapTexture(_ handle: AssetHandle?) {
+        _mrMapHandle = handle
     }
     
-    public func useAOMapTexture(_ textureType: TextureType) {
-        _aoMapTextureType = textureType
+    public func useAOMapTexture(_ handle: AssetHandle?) {
+        _aoMapHandle = handle
     }
     
-    public func useEmissiveMapTexture(_ textureType: TextureType) {
-        _emissiveMapTextureType = textureType
+    public func useEmissiveMapTexture(_ handle: AssetHandle?) {
+        _emissiveMapHandle = handle
+    }
+
+    public func setMesh(handle: AssetHandle?) {
+        _meshHandle = handle
+        guard let handle else {
+            _mesh = nil
+            return
+        }
+        _mesh = AssetManager.mesh(handle: handle)
     }
     
     public func setCullMode(_ mode: MTLCullMode) { _cullMode = mode }

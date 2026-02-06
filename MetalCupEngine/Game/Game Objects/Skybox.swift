@@ -12,14 +12,14 @@ class Skybox: GameObject {
     override var renderPipelineState: RenderPipelineStateType { return .Skybox }
 
     init() {
-        super.init(name: "Skybox", meshType: .Skybox)
+        super.init(name: "Skybox", meshHandle: BuiltinAssets.skyboxMesh)
         setCullMode(.front)
         setFrontFacing(.clockwise)
         setDepthState(.LessEqualNoWrite)
     }
 
     override func render(renderCommandEncoder: MTLRenderCommandEncoder) {
-        renderCommandEncoder.setFragmentTexture(Assets.Textures[.EnvironmentCubemap], index: 10)
+        renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.environmentCubemap), index: 10)
         super.render(renderCommandEncoder: renderCommandEncoder)
     }
 }

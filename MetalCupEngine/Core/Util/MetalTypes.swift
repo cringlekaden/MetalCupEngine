@@ -57,7 +57,7 @@ public struct SceneConstants: sizeable {
     public var viewMatrix = matrix_identity_float4x4
     public var skyViewMatrix = matrix_identity_float4x4
     public var projectionMatrix = matrix_identity_float4x4
-    public var cameraPosition = SIMD3<Float>(0,0,0)
+    public var cameraPositionAndIBL = SIMD4<Float>(0, 0, 0, 1)
 }
 
 public struct MetalCupMaterial: sizeable {
@@ -95,10 +95,3 @@ public struct LightData: sizeable {
     public var specularIntensity: Float = 1.0
 }
 
-public struct BloomParams: sizeable {
-    public var threshold: Float = 1.2
-    public var knee: Float = 0.2
-    public var intensity: Float = 0.15
-    public var texelSize: SIMD2<Float> = .zero
-    public var padding: SIMD2<Float> = .zero
-};

@@ -7,14 +7,15 @@
 
 import MetalKit
 
-enum SamplerStateType {
+public enum SamplerStateType {
     case None
     case Linear
     case Nearest
     case LinearClamp
+    case LinearClampToZero
 }
 
-class SamplerStateLibrary: Library<SamplerStateType, MTLSamplerState> {
+public class SamplerStateLibrary: Library<SamplerStateType, MTLSamplerState> {
     
     private var _library: [SamplerStateType : SamplerState] = [:]
     
@@ -22,6 +23,7 @@ class SamplerStateLibrary: Library<SamplerStateType, MTLSamplerState> {
         _library[.Linear] = LinearSamplerState()
         _library[.Nearest] = NearestSamplerState()
         _library[.LinearClamp] = LinearClampSamplerState()
+        _library[.LinearClampToZero] = LinearClampToZeroSamplerState()
     }
     
     override subscript(_ type: SamplerStateType) -> MTLSamplerState {
@@ -76,6 +78,20 @@ class LinearClampSamplerState: SamplerState {
         samplerDescriptor.sAddressMode = .clampToEdge
         samplerDescriptor.tAddressMode = .clampToEdge
         samplerDescriptor.rAddressMode = .clampToEdge
+        samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
+    }
+}
+
+class LinearClampToZeroSamplerState: SamplerState {
+    var name: String = "Linear Clamp To Zero Sampler State"
+    var samplerState: MTLSamplerState!
+    init() {
+        let samplerDescriptor = MTLSamplerDescriptor()
+        samplerDescriptor.minFilter = .linear
+        samplerDescriptor.magFilter = .linear
+        samplerDescriptor.sAddressMode = .clampToZero
+        samplerDescriptor.tAddressMode = .clampToZero
+        samplerDescriptor.rAddressMode = .clampToZero
         samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
     }
 }

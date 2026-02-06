@@ -7,7 +7,7 @@
 
 import MetalKit
 
-enum ShaderType {
+public enum ShaderType {
     case BasicVertex
     case InstancedVertex
     case BasicFragment
@@ -25,46 +25,53 @@ enum ShaderType {
     case BloomExtractFragment
     case BlurHFragment
     case BlurVFragment
-    case ImGuiVertex
-    case ImGuiFragment
 }
 
-class ShaderLibrary: Library<ShaderType, MTLFunction> {
+public class ShaderLibrary: Library<ShaderType, MTLFunction> {
     
     private var _library: [ShaderType: Shader] = [:]
     
-    override func fillLibrary() {
-        _library[.BasicVertex] = Shader(name: "Basic Vertex Shader", functionName: "vertex_basic")
-        _library[.InstancedVertex] = Shader(name: "Instanced Vertex Shader", functionName: "vertex_instanced")
-        _library[.BasicFragment] = Shader(name: "Basic Fragment Shader", functionName: "fragment_basic")
-        _library[.SkyboxVertex] = Shader(name: "Skybox Vertex Shader", functionName: "vertex_skybox")
-        _library[.SkyboxFragment] = Shader(name: "Skybox Fragment Shader", functionName: "fragment_skybox")
-        _library[.FinalVertex] = Shader(name: "Final Vertex Shader", functionName: "vertex_final")
-        _library[.FinalFragment] = Shader(name: "Final Fragment Shader", functionName: "fragment_final")
-        _library[.CubemapVertex] = Shader(name: "Cubemap Vertex Shader", functionName: "vertex_cubemap")
-        _library[.CubemapFragment] = Shader(name: "Cubemap Fragment Shader", functionName: "fragment_cubemap")
-        _library[.IrradianceFragment] = Shader(name: "Cubemap Fragment Shader", functionName: "fragment_irradiance")
-        _library[.PrefilteredFragment] = Shader(name: "Prefiltered Map Fragment Shader", functionName: "fragment_prefiltered")
-        _library[.FSQuadVertex] = Shader(name: "Fullscreen Quad Vertex Shader", functionName: "vertex_quad")
-        _library[.BRDFFragment] = Shader(name: "BRDF LUT Fragment Shader", functionName: "fragment_brdf")
-        _library[.BloomExtractFragment] = Shader(name: "Bloom Extract Fragment Shader", functionName: "fragment_bloom_extract")
-        _library[.BlurHFragment] = Shader(name: "Blur Horizontal Fragment Shader", functionName: "fragment_blur_h")
-        _library[.BlurVFragment] = Shader(name: "Blur Vertical Fragment Shader", functionName: "fragment_blur_v")
-        _library[.ImGuiVertex] = Shader(name: "ImGui Vertex Shader", functionName: "vertex_imgui")
-        _library[.ImGuiFragment] = Shader(name: "ImGui Fragment Shader", functionName: "fragment_imgui")
+    public func register(_ type: ShaderType, name: String, functionName: String) {
+        _library[type] = Shader(name: name, functionName: functionName)
+    }
+
+    public func registerDefaults() {
+        register(.BasicVertex, name: "Basic Vertex", functionName: "vertex_basic")
+        register(.InstancedVertex, name: "Instanced Vertex", functionName: "vertex_instanced")
+        register(.BasicFragment, name: "Basic Fragment", functionName: "fragment_basic")
+        register(.SkyboxVertex, name: "Skybox Vertex", functionName: "vertex_skybox")
+        register(.SkyboxFragment, name: "Skybox Fragment", functionName: "fragment_skybox")
+        register(.FinalVertex, name: "Final Vertex", functionName: "vertex_final")
+        register(.FinalFragment, name: "Final Fragment", functionName: "fragment_final")
+        register(.CubemapVertex, name: "Cubemap Vertex", functionName: "vertex_cubemap")
+        register(.CubemapFragment, name: "Cubemap Fragment", functionName: "fragment_cubemap")
+        register(.IrradianceFragment, name: "Irradiance Fragment", functionName: "fragment_irradiance")
+        register(.PrefilteredFragment, name: "Prefiltered Fragment", functionName: "fragment_prefiltered")
+        register(.FSQuadVertex, name: "Fullscreen Quad Vertex", functionName: "vertex_quad")
+        register(.BRDFFragment, name: "BRDF Fragment", functionName: "fragment_brdf")
+        register(.BloomExtractFragment, name: "Bloom Extract Fragment", functionName: "fragment_bloom_extract")
+        register(.BlurHFragment, name: "Blur Horizontal Fragment", functionName: "fragment_blur_h")
+        register(.BlurVFragment, name: "Blur Vertical Fragment", functionName: "fragment_blur_v")
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {
-        return (_library[type]?.function)!
+        guard let fn = _library[type]?.function else {
+            fatalError("ShaderLibrary: shader for \(type) not registered. Register shaders before building pipeline states.")
+        }
+        return fn
     }
 }
 
-class Shader {
+public class Shader {
     
     var function: MTLFunction!
     
     init(name: String, functionName: String) {
-        self.function = Engine.DefaultLibrary.makeFunction(name: functionName)
+        let lib = ResourceRegistry.defaultLibrary ?? Engine.DefaultLibrary
+        guard let fn = lib?.makeFunction(name: functionName) else {
+            fatalError("Shader '\(functionName)' not found. Ensure the .metal file is compiled into the app target or engine framework before pipeline build.")
+        }
+        self.function = fn
         self.function.label = name
     }
 }

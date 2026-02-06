@@ -8,7 +8,7 @@
 import MetalKit
 import simd
 
-class Node {
+public class Node {
     
     private var _name: String = "Node"
     private var _id: String!
@@ -59,6 +59,13 @@ class Node {
             child.render(renderCommandEncoder: renderCommandEncoder)
         }
         renderCommandEncoder.popDebugGroup()
+    }
+    
+    func onEvent(_ event: Event) {
+        // Override in subclasses to handle events; default propagates to children
+        for child in children {
+            child.onEvent(event)
+        }
     }
     
     func addChild(_ child: Node) {
@@ -127,3 +134,4 @@ extension Node {
     func getScaleY()->Float { return self._scale.y }
     func getScaleZ()->Float { return self._scale.z }
 }
+

@@ -5,7 +5,7 @@
 //  Created by Kaden Cringle on 1/18/26.
 //
 
-class CameraManager {
+public class CameraManager {
     
     private var _cameras: [CameraType : Camera] = [:]
     
@@ -23,5 +23,9 @@ class CameraManager {
         for camera in _cameras.values {
             camera.update()
         }
+    }
+    
+    func onEvent(_ event: Event) {
+        currentCamera.onEvent(event)
     }
 }

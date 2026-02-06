@@ -19,14 +19,14 @@ public enum RenderPipelineStateType {
     case BloomExtract
     case BloomBlurH
     case BloomBlurV
-    case ImGui
 }
 
-class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipelineState> {
+public class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipelineState> {
     
     private var _library: [RenderPipelineStateType: RenderPipelineState] = [:]
     
-    override func fillLibrary() {
+    public func build() {
+        if !_library.isEmpty { return }
         _library[.HDRBasic] = HDRBasicRenderPipelineState()
         _library[.HDRInstanced] = HDRInstancedRenderPipelineState()
         _library[.Skybox] = SkyboxRenderPipelineState()
@@ -38,7 +38,6 @@ class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipe
         _library[.BloomExtract] = BloomExtractRenderPipelineState()
         _library[.BloomBlurH] = BloomBlurHRenderPipelineState()
         _library[.BloomBlurV] = BloomBlurVRenderPipelineState()
-        _library[.ImGui] = ImGuiRenderPipelineState()
     }
     
     override subscript(_ type: RenderPipelineStateType)->MTLRenderPipelineState {
@@ -222,18 +221,6 @@ class FinalRenderPipelineState: RenderPipelineState {
         renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.defaultColorPixelFormat
         renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.FinalVertex]
         renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.FinalFragment]
-        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Simple]
-        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
-    }
-}
-
-class ImGuiRenderPipelineState: RenderPipelineState {
-    
-    init() {
-        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
-        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.defaultColorPixelFormat
-        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.ImGuiVertex]
-        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.ImGuiFragment]
         renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Simple]
         super.init(renderPipelineDescriptor: renderPipelineDescriptor)
     }

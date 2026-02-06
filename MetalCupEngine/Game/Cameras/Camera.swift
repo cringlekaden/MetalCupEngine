@@ -7,11 +7,11 @@
 
 import simd
 
-enum CameraType {
+public enum CameraType {
     case Debug
 }
 
-class Camera: Node {
+public class Camera: Node {
     
     var cameraType: CameraType!
     

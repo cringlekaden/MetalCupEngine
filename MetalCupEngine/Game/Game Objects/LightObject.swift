@@ -5,18 +5,16 @@
 //  Created by Kaden Cringle on 1/21/26.
 //
 
-import MetalKit
-
 class LightObject: GameObject {
     
     var lightData = LightData()
     
     init(name: String) {
-        super.init(name: name, meshType: .None)
+        super.init(name: name, meshHandle: nil)
     }
     
-    override init(name: String, meshType: MeshType) {
-        super.init(name: name, meshType: meshType)
+    override init(name: String, meshHandle: AssetHandle?) {
+        super.init(name: name, meshHandle: meshHandle)
     }
     
     override func update() {

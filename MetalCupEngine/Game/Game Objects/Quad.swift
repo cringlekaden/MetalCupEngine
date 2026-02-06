@@ -5,12 +5,11 @@
 //  Created by Kaden Cringle on 1/21/26.
 //
 
-import simd
-
 class Quad: GameObject {
     
     init() {
-        super.init(name: "Quad", meshType: .Quad)
-        useAlbedoMapTexture(.BaseColorRender)
+        let handle = AssetManager.handle(forSourcePath: "Resources/quad/quad.obj")
+        super.init(name: "Quad", meshHandle: handle)
+        useAlbedoMapTexture(BuiltinAssets.baseColorRender)
     }
 }

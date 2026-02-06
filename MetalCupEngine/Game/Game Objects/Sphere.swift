@@ -8,6 +8,7 @@
 class Sphere: GameObject {
     
     init() {
-        super.init(name: "Sphere", meshType: .Sphere)
+        let handle = AssetManager.handle(forSourcePath: "Resources/sphere/sphere.obj")
+        super.init(name: "Sphere", meshHandle: handle)
     }
 }

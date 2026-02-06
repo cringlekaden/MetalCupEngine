@@ -7,12 +7,12 @@
 
 import MetalKit
 
-enum DepthStencilStateType {
+public enum DepthStencilStateType {
     case Less
     case LessEqualNoWrite
 }
 
-class DepthStencilStateLibrary: Library<DepthStencilStateType, MTLDepthStencilState> {
+public class DepthStencilStateLibrary: Library<DepthStencilStateType, MTLDepthStencilState> {
     
     private var _library: [DepthStencilStateType: DepthStencilState] = [:]
     

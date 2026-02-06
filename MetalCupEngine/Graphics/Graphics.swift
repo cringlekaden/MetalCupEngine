@@ -20,9 +20,14 @@ public final class Graphics {
     
     public static func initialize() {
         self._shaderLibrary = ShaderLibrary()
+        self._shaderLibrary.registerDefaults()
         self._vertexDescriptorLibrary = VertexDescriptorLibrary()
         self._renderPipelineStateLibrary = RenderPipelineStateLibrary()
         self._depthStencilStateLibrary = DepthStencilStateLibrary()
         self._samplerStateLibrary = SamplerStateLibrary()
+    }
+    
+    public static func build() {
+        _renderPipelineStateLibrary.build()
     }
 }
