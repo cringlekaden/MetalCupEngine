@@ -23,8 +23,10 @@ public enum ShaderType {
     case FSQuadVertex
     case BRDFFragment
     case BloomExtractFragment
+    case BloomDownsampleFragment
     case BlurHFragment
     case BlurVFragment
+    case ProceduralSkyFragment
 }
 
 public class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -50,8 +52,10 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.FSQuadVertex, name: "Fullscreen Quad Vertex", functionName: "vertex_quad")
         register(.BRDFFragment, name: "BRDF Fragment", functionName: "fragment_brdf")
         register(.BloomExtractFragment, name: "Bloom Extract Fragment", functionName: "fragment_bloom_extract")
+        register(.BloomDownsampleFragment, name: "Bloom Downsample Fragment", functionName: "fragment_bloom_downsample")
         register(.BlurHFragment, name: "Blur Horizontal Fragment", functionName: "fragment_blur_h")
         register(.BlurVFragment, name: "Blur Vertical Fragment", functionName: "fragment_blur_v")
+        register(.ProceduralSkyFragment, name: "Procedural Sky Fragment", functionName: "fragment_procedural_sky")
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {

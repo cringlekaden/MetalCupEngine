@@ -35,32 +35,25 @@ struct DefaultVertexDescriptor: VertexDescriptor {
     var name: String = "Basic Vertex Descriptor"
     var vertexDescriptor: MTLVertexDescriptor!
     init() {
-        var offset: Int = 0
         vertexDescriptor = MTLVertexDescriptor()
         vertexDescriptor.attributes[0].format = .float3
         vertexDescriptor.attributes[0].bufferIndex = 0
-        vertexDescriptor.attributes[0].offset = offset
-        offset += SIMD3<Float>.size
+        vertexDescriptor.attributes[0].offset = MemoryLayout<Vertex>.offset(of: \Vertex.position) ?? 0
         vertexDescriptor.attributes[1].format = .float4
         vertexDescriptor.attributes[1].bufferIndex = 0
-        vertexDescriptor.attributes[1].offset = offset
-        offset += SIMD4<Float>.size
+        vertexDescriptor.attributes[1].offset = MemoryLayout<Vertex>.offset(of: \Vertex.color) ?? 0
         vertexDescriptor.attributes[2].format = .float2
         vertexDescriptor.attributes[2].bufferIndex = 0
-        vertexDescriptor.attributes[2].offset = offset
-        offset += SIMD3<Float>.size
+        vertexDescriptor.attributes[2].offset = MemoryLayout<Vertex>.offset(of: \Vertex.texCoord) ?? 0
         vertexDescriptor.attributes[3].format = .float3
         vertexDescriptor.attributes[3].bufferIndex = 0
-        vertexDescriptor.attributes[3].offset = offset
-        offset += SIMD3<Float>.size
+        vertexDescriptor.attributes[3].offset = MemoryLayout<Vertex>.offset(of: \Vertex.normal) ?? 0
         vertexDescriptor.attributes[4].format = .float3
         vertexDescriptor.attributes[4].bufferIndex = 0
-        vertexDescriptor.attributes[4].offset = offset
-        offset += SIMD3<Float>.size
+        vertexDescriptor.attributes[4].offset = MemoryLayout<Vertex>.offset(of: \Vertex.tangent) ?? 0
         vertexDescriptor.attributes[5].format = .float3
         vertexDescriptor.attributes[5].bufferIndex = 0
-        vertexDescriptor.attributes[5].offset = offset
-        offset += SIMD3<Float>.size
+        vertexDescriptor.attributes[5].offset = MemoryLayout<Vertex>.offset(of: \Vertex.bitangent) ?? 0
         vertexDescriptor.layouts[0].stride = Vertex.stride
     }
 }

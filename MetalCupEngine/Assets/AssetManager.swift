@@ -55,7 +55,8 @@ public final class AssetManager {
             options[.SRGB] = false
             options[.generateMipmaps] = false
         case .texture:
-            options[.SRGB] = true
+            let sourcePath = metadata?.sourcePath ?? url.lastPathComponent
+            options[.SRGB] = AssetManager.isColorTexture(path: sourcePath)
             options[.generateMipmaps] = true
         default:
             break
@@ -106,5 +107,30 @@ public final class AssetManager {
     public static func clearCache() {
         textureCache = textureCache.filter { runtimeTextureHandles.contains($0.key) }
         meshCache = meshCache.filter { runtimeMeshHandles.contains($0.key) }
+    }
+
+    public static func isColorTexture(path: String) -> Bool {
+        let name = path.lowercased()
+        if name.contains("normal")
+            || name.contains("rough")
+            || name.contains("metal")
+            || name.contains("ao")
+            || name.contains("occlusion")
+            || name.contains("height")
+            || name.contains("mask") {
+            return false
+        }
+        if name.contains("albedo")
+            || name.contains("diff")
+            || name.contains("basecolor")
+            || name.contains("emissive") {
+            return true
+        }
+        return true
+    }
+
+    public static func shouldFlipNormalY(path: String) -> Bool {
+        let name = path.lowercased()
+        return name.contains("normal-ogl") || name.contains("_ogl") || name.contains("opengl") || name.contains("nor_gl")
     }
 }

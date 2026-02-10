@@ -15,6 +15,7 @@ public enum BuiltinAssets {
     public static let cubemapMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000003")
     public static let skyboxMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000004")
     public static let fullscreenQuadMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000005")
+    public static let planeMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000006")
 
     // Renderer targets
     public static let baseColorRender = AssetHandle(string: "00000000-0000-0000-0000-000000000101")
@@ -35,6 +36,7 @@ public enum BuiltinAssets {
         AssetManager.registerRuntimeMesh(handle: cubemapMesh, mesh: CubemapMesh())
         AssetManager.registerRuntimeMesh(handle: skyboxMesh, mesh: CubemapMesh())
         AssetManager.registerRuntimeMesh(handle: fullscreenQuadMesh, mesh: FullscreenQuadMesh())
+        AssetManager.registerRuntimeMesh(handle: planeMesh, mesh: PlaneMesh())
     }
 
     public static func registerIBLTextures(environmentSize: Int, irradianceSize: Int, prefilteredSize: Int, brdfLutSize: Int) {

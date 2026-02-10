@@ -11,19 +11,23 @@ public enum TonemapType: UInt32 {
     case none = 0
     case reinhard = 1
     case aces = 2
+    case hazel = 3
 }
 
 public struct RendererSettings: sizeable {
     public var bloomThreshold: Float = 1.2
     public var bloomKnee: Float = 0.2
     public var bloomIntensity: Float = 0.15
+    public var bloomUpsampleScale: Float = 1.0
+    public var bloomDirtIntensity: Float = 0.0
     public var bloomEnabled: UInt32 = 1
 
     public var bloomTexelSize: SIMD2<Float> = .zero
-    public var bloomPadding: SIMD2<Float> = .zero
+    public var bloomMipLevel: Float = 0
+    public var bloomMaxMips: UInt32 = 5
 
     public var blurPasses: UInt32 = 6
-    public var tonemap: UInt32 = TonemapType.reinhard.rawValue
+    public var tonemap: UInt32 = TonemapType.hazel.rawValue
     public var exposure: Float = 1.0
     public var gamma: Float = 2.2
 
@@ -31,22 +35,11 @@ public struct RendererSettings: sizeable {
     public var iblIntensity: Float = 1.0
     public var iblResolutionOverride: UInt32 = 0
 
-    public var debugFlags: UInt32 = 0
+
     public var perfFlags: UInt32 = 0
+    public var normalFlipYGlobal: UInt32 = 1
 
     public var padding: SIMD2<Float> = .zero
-}
-
-public struct RendererDebugFlags: OptionSet {
-    public let rawValue: UInt32
-    public init(rawValue: UInt32) { self.rawValue = rawValue }
-
-    public static let showAlbedo = RendererDebugFlags(rawValue: 1 << 0)
-    public static let showNormals = RendererDebugFlags(rawValue: 1 << 1)
-    public static let showRoughness = RendererDebugFlags(rawValue: 1 << 2)
-    public static let showMetallic = RendererDebugFlags(rawValue: 1 << 3)
-    public static let showEmissive = RendererDebugFlags(rawValue: 1 << 4)
-    public static let showBloom = RendererDebugFlags(rawValue: 1 << 5)
 }
 
 public struct RendererPerfFlags: OptionSet {
@@ -55,23 +48,15 @@ public struct RendererPerfFlags: OptionSet {
 
     public static let halfResBloom = RendererPerfFlags(rawValue: 1 << 0)
     public static let useAsyncIBLGen = RendererPerfFlags(rawValue: 1 << 1)
+    public static let disableSpecularAA = RendererPerfFlags(rawValue: 1 << 2)
+    public static let disableClearcoat = RendererPerfFlags(rawValue: 1 << 3)
+    public static let disableSheen = RendererPerfFlags(rawValue: 1 << 4)
+    public static let skipSpecIBLHighRoughness = RendererPerfFlags(rawValue: 1 << 5)
 }
 
 public extension RendererSettings {
     var isBloomEnabled: Bool { bloomEnabled != 0 }
     var isIBLEnabled: Bool { iblEnabled != 0 }
-
-    mutating func setDebugFlag(_ flag: RendererDebugFlags, enabled: Bool) {
-        if enabled {
-            debugFlags |= flag.rawValue
-        } else {
-            debugFlags &= ~flag.rawValue
-        }
-    }
-
-    func hasDebugFlag(_ flag: RendererDebugFlags) -> Bool {
-        (debugFlags & flag.rawValue) != 0
-    }
 
     mutating func setPerfFlag(_ flag: RendererPerfFlags, enabled: Bool) {
         if enabled {
@@ -109,9 +94,24 @@ public extension RendererSettings {
         set { Renderer.settings.bloomIntensity = newValue }
     }
 
+    public var bloomUpsampleScale: Float {
+        get { Renderer.settings.bloomUpsampleScale }
+        set { Renderer.settings.bloomUpsampleScale = newValue }
+    }
+
+    public var bloomDirtIntensity: Float {
+        get { Renderer.settings.bloomDirtIntensity }
+        set { Renderer.settings.bloomDirtIntensity = newValue }
+    }
+
     public var blurPasses: Int {
         get { Int(Renderer.settings.blurPasses) }
         set { Renderer.settings.blurPasses = UInt32(max(0, newValue)) }
+    }
+
+    public var bloomMaxMips: Int {
+        get { Int(Renderer.settings.bloomMaxMips) }
+        set { Renderer.settings.bloomMaxMips = UInt32(max(1, newValue)) }
     }
 
     public var tonemap: Int {
@@ -148,67 +148,56 @@ public extension RendererSettings {
         }
     }
 
-    public var showAlbedo: Bool {
-        get { (Renderer.settings.debugFlags & RendererDebugFlags.showAlbedo.rawValue) != 0 }
+    public var disableSpecularAA: Bool {
+        get { (Renderer.settings.perfFlags & RendererPerfFlags.disableSpecularAA.rawValue) != 0 }
         set {
             var settings = Renderer.settings
-            settings.setDebugFlag(.showAlbedo, enabled: newValue)
+            settings.setPerfFlag(.disableSpecularAA, enabled: newValue)
             Renderer.settings = settings
         }
     }
 
-    public var showNormals: Bool {
-        get { (Renderer.settings.debugFlags & RendererDebugFlags.showNormals.rawValue) != 0 }
+    public var disableClearcoat: Bool {
+        get { (Renderer.settings.perfFlags & RendererPerfFlags.disableClearcoat.rawValue) != 0 }
         set {
             var settings = Renderer.settings
-            settings.setDebugFlag(.showNormals, enabled: newValue)
+            settings.setPerfFlag(.disableClearcoat, enabled: newValue)
             Renderer.settings = settings
         }
     }
 
-    public var showRoughness: Bool {
-        get { (Renderer.settings.debugFlags & RendererDebugFlags.showRoughness.rawValue) != 0 }
+    public var disableSheen: Bool {
+        get { (Renderer.settings.perfFlags & RendererPerfFlags.disableSheen.rawValue) != 0 }
         set {
             var settings = Renderer.settings
-            settings.setDebugFlag(.showRoughness, enabled: newValue)
+            settings.setPerfFlag(.disableSheen, enabled: newValue)
             Renderer.settings = settings
         }
     }
 
-    public var showMetallic: Bool {
-        get { (Renderer.settings.debugFlags & RendererDebugFlags.showMetallic.rawValue) != 0 }
+    public var skipSpecIBLHighRoughness: Bool {
+        get { (Renderer.settings.perfFlags & RendererPerfFlags.skipSpecIBLHighRoughness.rawValue) != 0 }
         set {
             var settings = Renderer.settings
-            settings.setDebugFlag(.showMetallic, enabled: newValue)
+            settings.setPerfFlag(.skipSpecIBLHighRoughness, enabled: newValue)
             Renderer.settings = settings
         }
     }
 
-    public var showEmissive: Bool {
-        get { (Renderer.settings.debugFlags & RendererDebugFlags.showEmissive.rawValue) != 0 }
-        set {
-            var settings = Renderer.settings
-            settings.setDebugFlag(.showEmissive, enabled: newValue)
-            Renderer.settings = settings
-        }
-    }
-
-    public var showBloom: Bool {
-        get { (Renderer.settings.debugFlags & RendererDebugFlags.showBloom.rawValue) != 0 }
-        set {
-            var settings = Renderer.settings
-            settings.setDebugFlag(.showBloom, enabled: newValue)
-            Renderer.settings = settings
-        }
-    }
 }
 
 public final class RendererProfiler {
     public enum Scope: String, CaseIterable {
         case frame
         case update
+        case scene
         case render
         case bloom
+        case bloomExtract
+        case bloomDownsample
+        case bloomBlur
+        case composite
+        case overlays
         case present
         case gpu
     }
@@ -264,8 +253,14 @@ public final class RendererProfiler {
 
     public var frameMs: Float { Renderer.profiler.averageMs(.frame) }
     public var updateMs: Float { Renderer.profiler.averageMs(.update) }
+    public var sceneMs: Float { Renderer.profiler.averageMs(.scene) }
     public var renderMs: Float { Renderer.profiler.averageMs(.render) }
     public var bloomMs: Float { Renderer.profiler.averageMs(.bloom) }
+    public var bloomExtractMs: Float { Renderer.profiler.averageMs(.bloomExtract) }
+    public var bloomDownsampleMs: Float { Renderer.profiler.averageMs(.bloomDownsample) }
+    public var bloomBlurMs: Float { Renderer.profiler.averageMs(.bloomBlur) }
+    public var compositeMs: Float { Renderer.profiler.averageMs(.composite) }
+    public var overlaysMs: Float { Renderer.profiler.averageMs(.overlays) }
     public var presentMs: Float { Renderer.profiler.averageMs(.present) }
     public var gpuMs: Float { Renderer.profiler.averageMs(.gpu) }
 }

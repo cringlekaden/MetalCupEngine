@@ -17,8 +17,10 @@ public enum RenderPipelineStateType {
     case PrefilteredMap
     case BRDF
     case BloomExtract
+    case BloomDownsample
     case BloomBlurH
     case BloomBlurV
+    case ProceduralSkyCubemap
 }
 
 public class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipelineState> {
@@ -36,8 +38,10 @@ public class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRen
         _library[.PrefilteredMap] = PrefilteredMapRenderPipelineState()
         _library[.BRDF] = BRDFRenderPipelineState()
         _library[.BloomExtract] = BloomExtractRenderPipelineState()
+        _library[.BloomDownsample] = BloomDownsampleRenderPipelineState()
         _library[.BloomBlurH] = BloomBlurHRenderPipelineState()
         _library[.BloomBlurV] = BloomBlurVRenderPipelineState()
+        _library[.ProceduralSkyCubemap] = ProceduralSkyCubemapRenderPipelineState()
     }
     
     override subscript(_ type: RenderPipelineStateType)->MTLRenderPipelineState {
@@ -116,6 +120,23 @@ class CubemapRenderPipelineState: RenderPipelineState {
     }
 }
 
+class ProceduralSkyCubemapRenderPipelineState: RenderPipelineState {
+
+    init() {
+        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
+        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.HDRPixelFormat
+        renderPipelineDescriptor.colorAttachments[0].isBlendingEnabled = false
+        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.CubemapVertex]
+        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.ProceduralSkyFragment]
+        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Simple]
+        renderPipelineDescriptor.depthAttachmentPixelFormat = .invalid
+        renderPipelineDescriptor.stencilAttachmentPixelFormat = .invalid
+        renderPipelineDescriptor.rasterSampleCount = 1
+        renderPipelineDescriptor.inputPrimitiveTopology = .triangle
+        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
+    }
+}
+
 class IrradianceMapRenderPipelineState: RenderPipelineState {
     
     init() {
@@ -173,6 +194,23 @@ class BloomExtractRenderPipelineState: RenderPipelineState {
         renderPipelineDescriptor.stencilAttachmentPixelFormat = .invalid
         renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.FinalVertex]
         renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.BloomExtractFragment]
+        renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Simple]
+        renderPipelineDescriptor.rasterSampleCount = 1
+        renderPipelineDescriptor.inputPrimitiveTopology = .triangle
+        super.init(renderPipelineDescriptor: renderPipelineDescriptor)
+    }
+}
+
+class BloomDownsampleRenderPipelineState: RenderPipelineState {
+    
+    init() {
+        let renderPipelineDescriptor = MTLRenderPipelineDescriptor()
+        renderPipelineDescriptor.colorAttachments[0].pixelFormat = Preferences.HDRPixelFormat
+        renderPipelineDescriptor.colorAttachments[0].isBlendingEnabled = false
+        renderPipelineDescriptor.depthAttachmentPixelFormat = .invalid
+        renderPipelineDescriptor.stencilAttachmentPixelFormat = .invalid
+        renderPipelineDescriptor.vertexFunction = Graphics.Shaders[.FinalVertex]
+        renderPipelineDescriptor.fragmentFunction = Graphics.Shaders[.BloomDownsampleFragment]
         renderPipelineDescriptor.vertexDescriptor = Graphics.VertexDescriptors[.Simple]
         renderPipelineDescriptor.rasterSampleCount = 1
         renderPipelineDescriptor.inputPrimitiveTopology = .triangle

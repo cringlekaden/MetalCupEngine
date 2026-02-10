@@ -65,9 +65,15 @@ public struct MetalCupMaterial: sizeable {
     public var metallicScalar: Float = 1.0
     public var roughnessScalar: Float = 1.0
     public var aoScalar: Float = 1.0
-    public var emissiveColor = SIMD3<Float>(1.0, 1.0, 1.0)
-    public var emissiveScalar: Float = 10.0
+    public var emissiveColor = SIMD3<Float>(0.0, 0.0, 0.0)
+    public var emissiveScalar: Float = 1.0
     public var flags: UInt32 = 0
+    public var clearcoatFactor: Float = 0.0
+    public var clearcoatRoughness: Float = 0.1
+    public var sheenRoughness: Float = 0.3
+    public var padding: Float = 0.0
+    public var sheenColor = SIMD3<Float>(0.0, 0.0, 0.0)
+    public var padding2: Float = 0.0
 }
 
 public struct MetalCupMaterialFlags: OptionSet {
@@ -84,14 +90,40 @@ public struct MetalCupMaterialFlags: OptionSet {
     public static let isDoubleSided =        MetalCupMaterialFlags(rawValue: 1 << 8)
     public static let alphaMasked =          MetalCupMaterialFlags(rawValue: 1 << 9)
     public static let alphaBlended =         MetalCupMaterialFlags(rawValue: 1 << 10)
+    public static let hasClearcoat =         MetalCupMaterialFlags(rawValue: 1 << 11)
+    public static let hasSheen =             MetalCupMaterialFlags(rawValue: 1 << 12)
+    public static let normalFlipY =          MetalCupMaterialFlags(rawValue: 1 << 13)
+    public static let hasClearcoatMap =      MetalCupMaterialFlags(rawValue: 1 << 14)
+    public static let hasClearcoatRoughnessMap = MetalCupMaterialFlags(rawValue: 1 << 15)
+    public static let hasSheenColorMap =     MetalCupMaterialFlags(rawValue: 1 << 16)
+    public static let hasSheenIntensityMap = MetalCupMaterialFlags(rawValue: 1 << 17)
+    public static let hasClearcoatGlossMap = MetalCupMaterialFlags(rawValue: 1 << 18)
 }
 
 public struct LightData: sizeable {
     public var position: SIMD3<Float> = .zero
+    public var type: UInt32 = 0
+    public var direction: SIMD3<Float> = SIMD3<Float>(0, -1, 0)
+    public var range: Float = 0.0
     public var color: SIMD3<Float> = .one
     public var brightness: Float = 1.0
     public var ambientIntensity: Float = 1.0
     public var diffuseIntensity: Float = 1.0
     public var specularIntensity: Float = 1.0
+    public var innerConeCos: Float = 0.95
+    public var outerConeCos: Float = 0.9
+    public var padding: SIMD2<Float> = .zero
+
+    public init() {}
 }
 
+public struct SkyParams: sizeable {
+    public var sunDirection = SIMD3<Float>(0, 1, 0)
+    public var sunAngularRadius: Float = 0.00935
+    public var sunColor = SIMD3<Float>(1, 1, 1)
+    public var sunIntensity: Float = 5.0
+    public var turbidity: Float = 2.0
+    public var intensity: Float = 1.0
+    public var skyTint: SIMD3<Float> = SIMD3<Float>(1, 1, 1)
+    public var padding: Float = 0.0
+}

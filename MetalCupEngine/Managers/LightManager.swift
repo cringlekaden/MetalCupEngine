@@ -9,18 +9,14 @@ import MetalKit
 
 public class LightManager {
     
-    private var _lights: [LightObject] = []
+    private var _lightData: [LightData] = []
     
-    func addLight(_ light: LightObject) {
-        _lights.append(light)
-    }
-    
-    func getLightData()->[LightData] {
-        _lights.map(\.lightData)
+    func setLights(_ lightData: [LightData]) {
+        _lightData = lightData
     }
     
     func setLightData(_ renderCommandEncoder: MTLRenderCommandEncoder) {
-        var lightDatas = getLightData()
+        var lightDatas = _lightData
         var lightCount = lightDatas.count
         renderCommandEncoder.setFragmentBytes(&lightCount, length: Int32.size, index: 3)
         renderCommandEncoder.setFragmentBytes(&lightDatas, length: LightData.stride(lightCount), index: 4)

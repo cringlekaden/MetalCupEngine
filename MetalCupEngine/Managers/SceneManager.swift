@@ -28,11 +28,11 @@ public class SceneManager {
     }
     
     public static func Update() {
-        _currentScene.update()
+        _currentScene.onUpdate()
     }
     
     public static func Render(renderCommandEncoder: MTLRenderCommandEncoder) {
-        _currentScene.render(renderCommandEncoder: renderCommandEncoder)
+        _currentScene.onRender(encoder: renderCommandEncoder)
     }
 
     public static func UpdateViewportSize(_ size: SIMD2<Float>) {
