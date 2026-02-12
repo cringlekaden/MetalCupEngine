@@ -48,6 +48,7 @@ public enum BuiltinAssets {
         environmentDescriptor.usage = [.renderTarget, .shaderRead]
         environmentDescriptor.storageMode = .private
         if let texture = Engine.Device.makeTexture(descriptor: environmentDescriptor) {
+            texture.label = "IBL.EnvironmentCubemap"
             AssetManager.registerRuntimeTexture(handle: environmentCubemap, texture: texture)
         }
 
@@ -59,6 +60,7 @@ public enum BuiltinAssets {
         irradianceDescriptor.usage = [.renderTarget, .shaderRead]
         irradianceDescriptor.storageMode = .private
         if let texture = Engine.Device.makeTexture(descriptor: irradianceDescriptor) {
+            texture.label = "IBL.IrradianceCubemap"
             AssetManager.registerRuntimeTexture(handle: irradianceCubemap, texture: texture)
         }
 
@@ -70,6 +72,7 @@ public enum BuiltinAssets {
         prefilteredDescriptor.usage = [.renderTarget, .shaderRead]
         prefilteredDescriptor.storageMode = .private
         if let texture = Engine.Device.makeTexture(descriptor: prefilteredDescriptor) {
+            texture.label = "IBL.PrefilteredCubemap"
             AssetManager.registerRuntimeTexture(handle: prefilteredCubemap, texture: texture)
         }
 
@@ -82,6 +85,7 @@ public enum BuiltinAssets {
         brdfLUTDescriptor.usage = [.renderTarget, .shaderRead]
         brdfLUTDescriptor.storageMode = .private
         if let texture = Engine.Device.makeTexture(descriptor: brdfLUTDescriptor) {
+            texture.label = "IBL.BRDFLUT"
             AssetManager.registerRuntimeTexture(handle: brdfLut, texture: texture)
         }
     }

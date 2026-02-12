@@ -41,13 +41,16 @@ open class Application: NSObject, EventHandler {
             // Fallback to Engine.DefaultLibrary if available
             ResourceRegistry.defaultLibrary = Engine.DefaultLibrary
         }
-        guard ResourceRegistry.defaultLibrary != nil else {
-            fatalError("No default MTLLibrary available. Ensure .metal files are included in the app or engine target.")
-        }
 
         BuiltinAssets.registerMeshes()
 
         willCreateWindow()
+        if ResourceRegistry.defaultLibrary == nil {
+            ResourceRegistry.buildDefaultLibraryIfNeeded(device: Engine.Device)
+        }
+        guard ResourceRegistry.defaultLibrary != nil else {
+            fatalError("No default MTLLibrary available. Ensure .metal files are included in the app or engine target.")
+        }
         window = EngineWindow()
         window.eventHandler = self
         window.create(with: specification, device: Engine.Device)

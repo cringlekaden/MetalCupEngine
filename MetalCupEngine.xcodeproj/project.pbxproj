@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		378651F92F32EA3C00321B24 /* MetalCupEngine.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 378651ED2F32EA3C00321B24 /* MetalCupEngine.framework */; };
+		37F505052F3C300E001C21A5 /* MetalCupEditor in Resources */ = {isa = PBXBuildFile; fileRef = 37F505042F3C300E001C21A5 /* MetalCupEditor */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -24,6 +25,7 @@
 		378651ED2F32EA3C00321B24 /* MetalCupEngine.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = MetalCupEngine.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		378651F82F32EA3C00321B24 /* MetalCupEngineTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MetalCupEngineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		378652EE2F32F05F00321B24 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		37F505042F3C300E001C21A5 /* MetalCupEditor */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MetalCupEditor; path = "../../../Library/Application Support/MetalCupEditor"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -61,6 +63,7 @@
 		378651E32F32EA3C00321B24 = {
 			isa = PBXGroup;
 			children = (
+				37F505042F3C300E001C21A5 /* MetalCupEditor */,
 				378651EF2F32EA3C00321B24 /* MetalCupEngine */,
 				378651FC2F32EA3C00321B24 /* MetalCupEngineTests */,
 				378651EE2F32EA3C00321B24 /* Products */,
@@ -179,6 +182,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				37F505052F3C300E001C21A5 /* MetalCupEditor in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

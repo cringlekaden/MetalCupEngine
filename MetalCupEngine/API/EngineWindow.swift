@@ -22,33 +22,51 @@ private final class EngineMTKView: MTKView {
     override var acceptsFirstResponder: Bool { true }
 
     override func mouseDown(with event: NSEvent) {
-        Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: true)
-        eventHandler?.dispatch(MouseButtonPressedEvent(button: Int(event.buttonNumber)))
+        let mouseEvent = MouseButtonPressedEvent(button: Int(event.buttonNumber))
+        eventHandler?.dispatch(mouseEvent)
+        if mouseEvent.handled {
+            Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: false)
+        } else {
+            Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: true)
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
+        let mouseEvent = MouseButtonReleasedEvent(button: Int(event.buttonNumber))
+        eventHandler?.dispatch(mouseEvent)
         Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: false)
-        eventHandler?.dispatch(MouseButtonReleasedEvent(button: Int(event.buttonNumber)))
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: true)
-        eventHandler?.dispatch(MouseButtonPressedEvent(button: Int(event.buttonNumber)))
+        let mouseEvent = MouseButtonPressedEvent(button: Int(event.buttonNumber))
+        eventHandler?.dispatch(mouseEvent)
+        if mouseEvent.handled {
+            Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: false)
+        } else {
+            Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: true)
+        }
     }
 
     override func rightMouseUp(with event: NSEvent) {
+        let mouseEvent = MouseButtonReleasedEvent(button: Int(event.buttonNumber))
+        eventHandler?.dispatch(mouseEvent)
         Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: false)
-        eventHandler?.dispatch(MouseButtonReleasedEvent(button: Int(event.buttonNumber)))
     }
 
     override func otherMouseDown(with event: NSEvent) {
-        Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: true)
-        eventHandler?.dispatch(MouseButtonPressedEvent(button: Int(event.buttonNumber)))
+        let mouseEvent = MouseButtonPressedEvent(button: Int(event.buttonNumber))
+        eventHandler?.dispatch(mouseEvent)
+        if mouseEvent.handled {
+            Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: false)
+        } else {
+            Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: true)
+        }
     }
 
     override func otherMouseUp(with event: NSEvent) {
+        let mouseEvent = MouseButtonReleasedEvent(button: Int(event.buttonNumber))
+        eventHandler?.dispatch(mouseEvent)
         Mouse.SetMouseButtonPressed(button: event.buttonNumber, isOn: false)
-        eventHandler?.dispatch(MouseButtonReleasedEvent(button: Int(event.buttonNumber)))
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -56,8 +74,11 @@ private final class EngineMTKView: MTKView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        Mouse.ScrollMouse(deltaY: Float(event.deltaY))
-        eventHandler?.dispatch(MouseScrolledEvent(deltaY: Float(event.deltaY)))
+        let scrollEvent = MouseScrolledEvent(deltaY: Float(event.deltaY))
+        eventHandler?.dispatch(scrollEvent)
+        if !scrollEvent.handled {
+            Mouse.ScrollMouse(deltaY: Float(event.deltaY))
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -75,8 +96,11 @@ private final class EngineMTKView: MTKView {
     private func setMousePositionChanged(event: NSEvent){
         let overallLocation = SIMD2<Float>(Float(event.locationInWindow.x), Float(event.locationInWindow.y))
         let deltaChange = SIMD2<Float>(Float(event.deltaX), Float(event.deltaY))
-        Mouse.SetMousePositionChange(overallPosition: overallLocation, deltaPosition: deltaChange)
-        eventHandler?.dispatch(MouseMovedEvent(position: overallLocation, delta: deltaChange))
+        let moveEvent = MouseMovedEvent(position: overallLocation, delta: deltaChange)
+        eventHandler?.dispatch(moveEvent)
+        if !moveEvent.handled {
+            Mouse.SetMousePositionChange(overallPosition: overallLocation, deltaPosition: deltaChange)
+        }
     }
 
     override func updateTrackingAreas() {
@@ -160,11 +184,17 @@ public final class EngineWindow: NSObject {
     private func handleKeyEvent(_ event: NSEvent) {
         switch event.type {
         case .keyDown:
-            Keyboard.SetKeyPressed(event.keyCode, isOn: true)
-            eventHandler?.dispatch(KeyPressedEvent(keyCode: event.keyCode, isRepeat: event.isARepeat))
+            let keyEvent = KeyPressedEvent(keyCode: event.keyCode, isRepeat: event.isARepeat)
+            eventHandler?.dispatch(keyEvent)
+            if keyEvent.handled {
+                Keyboard.SetKeyPressed(event.keyCode, isOn: false)
+            } else {
+                Keyboard.SetKeyPressed(event.keyCode, isOn: true)
+            }
         case .keyUp:
+            let keyEvent = KeyReleasedEvent(keyCode: event.keyCode)
+            eventHandler?.dispatch(keyEvent)
             Keyboard.SetKeyPressed(event.keyCode, isOn: false)
-            eventHandler?.dispatch(KeyReleasedEvent(keyCode: event.keyCode))
         case .flagsChanged:
             updateModifier(keyCode: event.keyCode, modifierFlags: event.modifierFlags)
         default:
@@ -176,10 +206,37 @@ public final class EngineWindow: NSObject {
         switch keyCode {
         case KeyCodes.shift.rawValue:
             let isOn = modifierFlags.contains(.shift)
-            Keyboard.SetKeyPressed(keyCode, isOn: isOn)
+            let keyEvent: Event = isOn
+                ? KeyPressedEvent(keyCode: keyCode, isRepeat: false)
+                : KeyReleasedEvent(keyCode: keyCode)
+            eventHandler?.dispatch(keyEvent)
+            if keyEvent.handled {
+                Keyboard.SetKeyPressed(keyCode, isOn: false)
+            } else {
+                Keyboard.SetKeyPressed(keyCode, isOn: isOn)
+            }
         case KeyCodes.command.rawValue:
             let isOn = modifierFlags.contains(.command)
-            Keyboard.SetKeyPressed(keyCode, isOn: isOn)
+            let keyEvent: Event = isOn
+                ? KeyPressedEvent(keyCode: keyCode, isRepeat: false)
+                : KeyReleasedEvent(keyCode: keyCode)
+            eventHandler?.dispatch(keyEvent)
+            if keyEvent.handled {
+                Keyboard.SetKeyPressed(keyCode, isOn: false)
+            } else {
+                Keyboard.SetKeyPressed(keyCode, isOn: isOn)
+            }
+        case KeyCodes.option.rawValue, KeyCodes.rightOption.rawValue:
+            let isOn = modifierFlags.contains(.option)
+            let keyEvent: Event = isOn
+                ? KeyPressedEvent(keyCode: keyCode, isRepeat: false)
+                : KeyReleasedEvent(keyCode: keyCode)
+            eventHandler?.dispatch(keyEvent)
+            if keyEvent.handled {
+                Keyboard.SetKeyPressed(keyCode, isOn: false)
+            } else {
+                Keyboard.SetKeyPressed(keyCode, isOn: isOn)
+            }
         default:
             break
         }

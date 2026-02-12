@@ -14,7 +14,6 @@ class Sandbox: EngineScene {
     private var leftMouseDown = false
     private var mouseDelta = SIMD2<Float>(0, 0)
     
-    var debugCamera = DebugCamera()
     var pbrTest: Entity?
     var groundPlane: Entity?
     var pointLightEntity: Entity?
@@ -22,16 +21,20 @@ class Sandbox: EngineScene {
     var spotLightEntity: Entity?
     var spotLightEntityB: Entity?
     var directionalLightEntity: Entity?
-    private var lightMarkers: [Entity] = []
+    var pointLightMarker: Entity?
+    var pointLightMarkerB: Entity?
+    var spotLightMarker: Entity?
+    var spotLightMarkerB: Entity?
     
     override func buildScene() {
-        debugCamera.setPosition(0,3,10)
-        addCamera(debugCamera)
+        let cameraEntity = ecs.createEntity(name: "Editor Camera")
+        ecs.add(TransformComponent(position: SIMD3<Float>(0, 3, 10)), to: cameraEntity)
+        ecs.add(CameraComponent(isPrimary: true, isEditor: true), to: cameraEntity)
 
         let skyEntity = ecs.createEntity(name: "Sky")
         var sky = SkyLightComponent()
-        sky.mode = .hdri
-        sky.hdriHandle = environmentMapHandle
+        sky.mode = .procedural
+        sky.hdriHandle = nil
         sky.needsRegenerate = true
         ecs.add(sky, to: skyEntity)
         ecs.add(SkyLightTag(), to: skyEntity)
@@ -55,10 +58,20 @@ class Sandbox: EngineScene {
             ecs.add(MeshRendererComponent(meshHandle: handle, material: material), to: entity)
             pbrTest = entity
         }
+        if let handle = AssetManager.handle(forSourcePath: "Resources/PBR_test.usdz"),
+           AssetManager.mesh(handle: handle) != nil {
+            let entity = ecs.createEntity(name: "PBR Test")
+            var transform = TransformComponent()
+            transform.scale = SIMD3<Float>(repeating: 3)
+            transform.position = SIMD3<Float>(-8, 7, 0)
+            ecs.add(transform, to: entity)
+            ecs.add(MeshRendererComponent(meshHandle: handle), to: entity)
+        }
+
+        applyLightOrbits(centerEntity: pbrTest)
     }
     
     override func doUpdate() {
-        updateLights()
         leftMouseDown = Mouse.IsMouseButtonPressed(button: .left)
         let isLeftDown = leftMouseDown
         let polledDelta = SIMD2<Float>(Mouse.GetDX(), Mouse.GetDY())
@@ -133,7 +146,7 @@ class Sandbox: EngineScene {
         let startPosition = SIMD3<Float>(6, 4, 4)
         ecs.add(TransformComponent(position: startPosition), to: entity)
         ecs.add(light, to: entity)
-        addLightMarker(color: light.data.color, position: startPosition)
+        pointLightMarker = addLightMarker(color: light.data.color, position: startPosition)
         return entity
     }
 
@@ -146,7 +159,7 @@ class Sandbox: EngineScene {
         let startPosition = SIMD3<Float>(-6, 3, -4)
         ecs.add(TransformComponent(position: startPosition), to: entity)
         ecs.add(light, to: entity)
-        addLightMarker(color: light.data.color, position: startPosition)
+        pointLightMarkerB = addLightMarker(color: light.data.color, position: startPosition)
         return entity
     }
 
@@ -161,7 +174,7 @@ class Sandbox: EngineScene {
         let startPosition = SIMD3<Float>(0, 9, 0)
         ecs.add(TransformComponent(position: startPosition), to: entity)
         ecs.add(light, to: entity)
-        addLightMarker(color: light.data.color, position: startPosition)
+        spotLightMarker = addLightMarker(color: light.data.color, position: startPosition)
         return entity
     }
 
@@ -176,7 +189,7 @@ class Sandbox: EngineScene {
         let startPosition = SIMD3<Float>(4, 6, -8)
         ecs.add(TransformComponent(position: startPosition), to: entity)
         ecs.add(light, to: entity)
-        addLightMarker(color: light.data.color, position: startPosition)
+        spotLightMarkerB = addLightMarker(color: light.data.color, position: startPosition)
         return entity
     }
 
@@ -191,57 +204,9 @@ class Sandbox: EngineScene {
         return entity
     }
 
-    private func updateLights() {
-        let t = GameTime.TotalGameTime
-
-        if let pointLightEntity, var transform = ecs.get(TransformComponent.self, for: pointLightEntity) {
-            let radius: Float = 7
-            transform.position = SIMD3<Float>(cos(t * 0.8) * radius, 4.5, sin(t * 0.8) * radius)
-            ecs.add(transform, to: pointLightEntity)
-            updateMarker(index: 0, position: transform.position)
-        }
-
-        if let pointLightEntityB, var transform = ecs.get(TransformComponent.self, for: pointLightEntityB) {
-            let radius: Float = 5
-            transform.position = SIMD3<Float>(cos(t * 1.1 + 1.5) * radius, 3.5, sin(t * 1.1 + 1.5) * radius)
-            ecs.add(transform, to: pointLightEntityB)
-            updateMarker(index: 1, position: transform.position)
-        }
-
-        if let spotLightEntity,
-           var transform = ecs.get(TransformComponent.self, for: spotLightEntity),
-           var light = ecs.get(LightComponent.self, for: spotLightEntity) {
-            let radius: Float = 9
-            transform.position = SIMD3<Float>(cos(t * 0.6) * radius, 8.5, sin(t * 0.6) * radius)
-            light.direction = normalize(SIMD3<Float>(-transform.position.x, -2.0, -transform.position.z))
-            ecs.add(transform, to: spotLightEntity)
-            ecs.add(light, to: spotLightEntity)
-            updateMarker(index: 2, position: transform.position)
-        }
-
-        if let spotLightEntityB,
-           var transform = ecs.get(TransformComponent.self, for: spotLightEntityB),
-           var light = ecs.get(LightComponent.self, for: spotLightEntityB) {
-            let radius: Float = 6
-            transform.position = SIMD3<Float>(cos(t * 0.9 + 2.2) * radius, 6.5, sin(t * 0.9 + 2.2) * radius)
-            light.direction = normalize(SIMD3<Float>(-transform.position.x, -1.6, -transform.position.z))
-            ecs.add(transform, to: spotLightEntityB)
-            ecs.add(light, to: spotLightEntityB)
-            updateMarker(index: 3, position: transform.position)
-        }
-
-        if let directionalLightEntity,
-           ecs.get(SkySunTag.self, for: directionalLightEntity) == nil,
-           var light = ecs.get(LightComponent.self, for: directionalLightEntity) {
-            let angle = t * 0.15
-            light.direction = normalize(SIMD3<Float>(cos(angle) * 0.7, -1, sin(angle) * 0.7))
-            ecs.add(light, to: directionalLightEntity)
-        }
-    }
-
-    private func addLightMarker(color: SIMD3<Float>, position: SIMD3<Float>) {
+    private func addLightMarker(color: SIMD3<Float>, position: SIMD3<Float>) -> Entity? {
         guard let meshHandle = AssetManager.handle(forSourcePath: "sphere/sphere.obj"),
-              AssetManager.mesh(handle: meshHandle) != nil else { return }
+              AssetManager.mesh(handle: meshHandle) != nil else { return nil }
         let entity = ecs.createEntity(name: "Light Marker")
         var transform = TransformComponent(position: position, scale: SIMD3<Float>(repeating: 0.2))
         ecs.add(transform, to: entity)
@@ -251,15 +216,106 @@ class Sandbox: EngineScene {
         material.emissiveScalar = 2.0
         material.flags = (MetalCupMaterialFlags.isUnlit.rawValue | MetalCupMaterialFlags.hasBaseColorMap.rawValue)
         ecs.add(MeshRendererComponent(meshHandle: meshHandle, material: material), to: entity)
-        lightMarkers.append(entity)
+        return entity
     }
 
-    private func updateMarker(index: Int, position: SIMD3<Float>) {
-        guard index >= 0, index < lightMarkers.count else { return }
-        let entity = lightMarkers[index]
-        if var transform = ecs.get(TransformComponent.self, for: entity) {
-            transform.position = position
-            ecs.add(transform, to: entity)
-        }
+    private func applyLightOrbits(centerEntity: Entity?) {
+        applyLightOrbit(
+            to: pointLightEntity,
+            center: centerEntity,
+            radius: 7,
+            speed: 0.8,
+            height: 4.5,
+            phase: 0.0
+        )
+        applyLightOrbit(
+            to: pointLightMarker,
+            center: centerEntity,
+            radius: 7,
+            speed: 0.8,
+            height: 4.5,
+            phase: 0.0,
+            affectsDirection: false
+        )
+        applyLightOrbit(
+            to: pointLightEntityB,
+            center: centerEntity,
+            radius: 5,
+            speed: 1.1,
+            height: 3.5,
+            phase: 1.5
+        )
+        applyLightOrbit(
+            to: pointLightMarkerB,
+            center: centerEntity,
+            radius: 5,
+            speed: 1.1,
+            height: 3.5,
+            phase: 1.5,
+            affectsDirection: false
+        )
+        applyLightOrbit(
+            to: spotLightEntity,
+            center: centerEntity,
+            radius: 9,
+            speed: 0.6,
+            height: 8.5,
+            phase: 0.0
+        )
+        applyLightOrbit(
+            to: spotLightMarker,
+            center: centerEntity,
+            radius: 9,
+            speed: 0.6,
+            height: 8.5,
+            phase: 0.0,
+            affectsDirection: false
+        )
+        applyLightOrbit(
+            to: spotLightEntityB,
+            center: centerEntity,
+            radius: 6,
+            speed: 0.9,
+            height: 6.5,
+            phase: 2.2
+        )
+        applyLightOrbit(
+            to: spotLightMarkerB,
+            center: centerEntity,
+            radius: 6,
+            speed: 0.9,
+            height: 6.5,
+            phase: 2.2,
+            affectsDirection: false
+        )
+        applyLightOrbit(
+            to: directionalLightEntity,
+            center: centerEntity,
+            radius: 0.7,
+            speed: 0.15,
+            height: -1.0,
+            phase: 0.0
+        )
+    }
+
+    private func applyLightOrbit(
+        to entity: Entity?,
+        center: Entity?,
+        radius: Float,
+        speed: Float,
+        height: Float,
+        phase: Float,
+        affectsDirection: Bool = true
+    ) {
+        guard let entity else { return }
+        let orbit = LightOrbitComponent(
+            centerEntityId: center?.id,
+            radius: radius,
+            speed: speed,
+            height: height,
+            phase: phase,
+            affectsDirection: affectsDirection
+        )
+        ecs.add(orbit, to: entity)
     }
 }

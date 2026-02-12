@@ -75,9 +75,11 @@ class LinearClampSamplerState: SamplerState {
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
         samplerDescriptor.magFilter = .linear
+        samplerDescriptor.mipFilter = .linear
         samplerDescriptor.sAddressMode = .clampToEdge
         samplerDescriptor.tAddressMode = .clampToEdge
         samplerDescriptor.rAddressMode = .clampToEdge
+        samplerDescriptor.maxAnisotropy = 16
         samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
     }
 }
@@ -89,9 +91,11 @@ class LinearClampToZeroSamplerState: SamplerState {
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
         samplerDescriptor.magFilter = .linear
+        samplerDescriptor.mipFilter = .linear
         samplerDescriptor.sAddressMode = .clampToZero
         samplerDescriptor.tAddressMode = .clampToZero
         samplerDescriptor.rAddressMode = .clampToZero
+        samplerDescriptor.maxAnisotropy = 16
         samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
     }
 }

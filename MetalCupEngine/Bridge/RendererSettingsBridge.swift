@@ -7,8 +7,12 @@
 
 import Foundation
 
+private func editorScene() -> EngineScene {
+    return SceneManager.getEditorScene() ?? SceneManager.currentScene
+}
+
 private func ensureSkyLight() -> (Entity, SkyLightComponent) {
-    let ecs = SceneManager.currentScene.ecs
+    let ecs = editorScene().ecs
     if let active = ecs.activeSkyLight() {
         return active
     }
@@ -21,7 +25,14 @@ private func ensureSkyLight() -> (Entity, SkyLightComponent) {
 }
 
 private func getSkyLight() -> (Entity, SkyLightComponent)? {
-    return SceneManager.currentScene.ecs.activeSkyLight()
+    return editorScene().ecs.activeSkyLight()
+}
+
+private func requestIBLRegenerate() {
+    guard let (entity, sky) = getSkyLight() else { return }
+    var updated = sky
+    updated.needsRegenerate = true
+    editorScene().ecs.add(updated, to: entity)
 }
 
 @_cdecl("MCERendererGetBloomEnabled")
@@ -224,6 +235,119 @@ public func MCERendererSetNormalFlipYGlobal(_ value: UInt32) {
     Renderer.settings.normalFlipYGlobal = value != 0 ? 1 : 0
 }
 
+@_cdecl("MCERendererGetShadingDebugMode")
+public func MCERendererGetShadingDebugMode() -> UInt32 {
+    Renderer.settings.shadingDebugMode
+}
+
+@_cdecl("MCERendererSetShadingDebugMode")
+public func MCERendererSetShadingDebugMode(_ value: UInt32) {
+    Renderer.settings.shadingDebugMode = value
+}
+
+@_cdecl("MCERendererGetIBLSpecularLodExponent")
+public func MCERendererGetIBLSpecularLodExponent() -> Float {
+    Renderer.settings.iblSpecularLodExponent
+}
+
+@_cdecl("MCERendererSetIBLSpecularLodExponent")
+public func MCERendererSetIBLSpecularLodExponent(_ value: Float) {
+    Renderer.settings.iblSpecularLodExponent = max(0.01, value)
+}
+
+@_cdecl("MCERendererGetIBLSpecularLodBias")
+public func MCERendererGetIBLSpecularLodBias() -> Float {
+    Renderer.settings.iblSpecularLodBias
+}
+
+@_cdecl("MCERendererSetIBLSpecularLodBias")
+public func MCERendererSetIBLSpecularLodBias(_ value: Float) {
+    Renderer.settings.iblSpecularLodBias = value
+}
+
+@_cdecl("MCERendererGetIBLSpecularGrazingLodBias")
+public func MCERendererGetIBLSpecularGrazingLodBias() -> Float {
+    Renderer.settings.iblSpecularGrazingLodBias
+}
+
+@_cdecl("MCERendererSetIBLSpecularGrazingLodBias")
+public func MCERendererSetIBLSpecularGrazingLodBias(_ value: Float) {
+    Renderer.settings.iblSpecularGrazingLodBias = value
+}
+
+@_cdecl("MCERendererGetIBLSpecularMinRoughness")
+public func MCERendererGetIBLSpecularMinRoughness() -> Float {
+    Renderer.settings.iblSpecularMinRoughness
+}
+
+@_cdecl("MCERendererSetIBLSpecularMinRoughness")
+public func MCERendererSetIBLSpecularMinRoughness(_ value: Float) {
+    Renderer.settings.iblSpecularMinRoughness = max(0.0, value)
+}
+
+@_cdecl("MCERendererGetSpecularAAStrength")
+public func MCERendererGetSpecularAAStrength() -> Float {
+    Renderer.settings.specularAAStrength
+}
+
+@_cdecl("MCERendererSetSpecularAAStrength")
+public func MCERendererSetSpecularAAStrength(_ value: Float) {
+    Renderer.settings.specularAAStrength = max(0.0, value)
+}
+
+@_cdecl("MCERendererGetNormalMapMipBias")
+public func MCERendererGetNormalMapMipBias() -> Float {
+    Renderer.settings.normalMapMipBias
+}
+
+@_cdecl("MCERendererSetNormalMapMipBias")
+public func MCERendererSetNormalMapMipBias(_ value: Float) {
+    Renderer.settings.normalMapMipBias = value
+}
+
+@_cdecl("MCERendererGetNormalMapMipBiasGrazing")
+public func MCERendererGetNormalMapMipBiasGrazing() -> Float {
+    Renderer.settings.normalMapMipBiasGrazing
+}
+
+@_cdecl("MCERendererSetNormalMapMipBiasGrazing")
+public func MCERendererSetNormalMapMipBiasGrazing(_ value: Float) {
+    Renderer.settings.normalMapMipBiasGrazing = max(0.0, value)
+}
+
+@_cdecl("MCERendererGetIBLFireflyClampEnabled")
+public func MCERendererGetIBLFireflyClampEnabled() -> UInt32 {
+    Renderer.settings.iblFireflyClampEnabled
+}
+
+@_cdecl("MCERendererSetIBLFireflyClampEnabled")
+public func MCERendererSetIBLFireflyClampEnabled(_ value: UInt32) {
+    Renderer.settings.iblFireflyClampEnabled = value != 0 ? 1 : 0
+    requestIBLRegenerate()
+}
+
+@_cdecl("MCERendererGetIBLFireflyClamp")
+public func MCERendererGetIBLFireflyClamp() -> Float {
+    Renderer.settings.iblFireflyClamp
+}
+
+@_cdecl("MCERendererSetIBLFireflyClamp")
+public func MCERendererSetIBLFireflyClamp(_ value: Float) {
+    Renderer.settings.iblFireflyClamp = max(0.0, value)
+    requestIBLRegenerate()
+}
+
+@_cdecl("MCERendererGetIBLSampleMultiplier")
+public func MCERendererGetIBLSampleMultiplier() -> Float {
+    Renderer.settings.iblSampleMultiplier
+}
+
+@_cdecl("MCERendererSetIBLSampleMultiplier")
+public func MCERendererSetIBLSampleMultiplier(_ value: Float) {
+    Renderer.settings.iblSampleMultiplier = max(0.1, value)
+    requestIBLRegenerate()
+}
+
 
 @_cdecl("MCERendererGetFrameMs")
 public func MCERendererGetFrameMs() -> Float {
@@ -301,7 +425,7 @@ public func MCESkySetEnabled(_ value: UInt32) {
     var updated = sky
     updated.enabled = value != 0
     updated.needsRegenerate = sky.realtimeUpdate
-    SceneManager.currentScene.ecs.add(updated, to: entity)
+    editorScene().ecs.add(updated, to: entity)
 }
 
 @_cdecl("MCESkyGetMode")
@@ -315,7 +439,7 @@ public func MCESkySetMode(_ value: UInt32) {
     var updated = sky
     updated.mode = SkyMode(rawValue: value) ?? .hdri
     updated.needsRegenerate = sky.realtimeUpdate
-    SceneManager.currentScene.ecs.add(updated, to: entity)
+    editorScene().ecs.add(updated, to: entity)
 }
 
 @_cdecl("MCESkyGetIntensity")
@@ -329,7 +453,7 @@ public func MCESkySetIntensity(_ value: Float) {
     var updated = sky
     updated.intensity = max(value, 0.0)
     updated.needsRegenerate = sky.realtimeUpdate
-    SceneManager.currentScene.ecs.add(updated, to: entity)
+    editorScene().ecs.add(updated, to: entity)
 }
 
 @_cdecl("MCESkyGetTint")
@@ -348,7 +472,7 @@ public func MCESkySetTint(_ r: Float, _ g: Float, _ b: Float) {
     var updated = sky
     updated.skyTint = SIMD3<Float>(max(r, 0.0), max(g, 0.0), max(b, 0.0))
     updated.needsRegenerate = sky.realtimeUpdate
-    SceneManager.currentScene.ecs.add(updated, to: entity)
+    editorScene().ecs.add(updated, to: entity)
 }
 
 @_cdecl("MCESkyGetTurbidity")
@@ -362,7 +486,7 @@ public func MCESkySetTurbidity(_ value: Float) {
     var updated = sky
     updated.turbidity = max(1.0, value)
     updated.needsRegenerate = sky.realtimeUpdate
-    SceneManager.currentScene.ecs.add(updated, to: entity)
+    editorScene().ecs.add(updated, to: entity)
 }
 
 @_cdecl("MCESkyGetAzimuthDegrees")
@@ -376,7 +500,7 @@ public func MCESkySetAzimuthDegrees(_ value: Float) {
     var updated = sky
     updated.azimuthDegrees = value
     updated.needsRegenerate = sky.realtimeUpdate
-    SceneManager.currentScene.ecs.add(updated, to: entity)
+    editorScene().ecs.add(updated, to: entity)
 }
 
 @_cdecl("MCESkyGetElevationDegrees")
@@ -390,7 +514,7 @@ public func MCESkySetElevationDegrees(_ value: Float) {
     var updated = sky
     updated.elevationDegrees = value
     updated.needsRegenerate = sky.realtimeUpdate
-    SceneManager.currentScene.ecs.add(updated, to: entity)
+    editorScene().ecs.add(updated, to: entity)
 }
 
 @_cdecl("MCESkyGetRealtimeUpdate")
@@ -406,7 +530,7 @@ public func MCESkySetRealtimeUpdate(_ value: UInt32) {
     if updated.realtimeUpdate {
         updated.needsRegenerate = true
     }
-    SceneManager.currentScene.ecs.add(updated, to: entity)
+    editorScene().ecs.add(updated, to: entity)
 }
 
 @_cdecl("MCESkyRegenerate")
@@ -414,5 +538,5 @@ public func MCESkyRegenerate() {
     let (entity, sky) = ensureSkyLight()
     var updated = sky
     updated.needsRegenerate = true
-    SceneManager.currentScene.ecs.add(updated, to: entity)
+    editorScene().ecs.add(updated, to: entity)
 }

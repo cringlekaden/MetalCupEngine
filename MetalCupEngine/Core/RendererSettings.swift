@@ -11,8 +11,19 @@ public enum TonemapType: UInt32 {
     case none = 0
     case reinhard = 1
     case aces = 2
-    case hazel = 3
+    case metalCupCustom = 3
 }
+
+public enum IBLQualityPreset: UInt32 {
+    case low = 0
+    case medium = 1
+    case high = 2
+    case ultra = 3
+    case custom = 4
+}
+
+public typealias BloomUniforms = RendererSettings
+public typealias RendererUniforms = RendererSettings
 
 public struct RendererSettings: sizeable {
     public var bloomThreshold: Float = 1.2
@@ -27,7 +38,7 @@ public struct RendererSettings: sizeable {
     public var bloomMaxMips: UInt32 = 5
 
     public var blurPasses: UInt32 = 6
-    public var tonemap: UInt32 = TonemapType.hazel.rawValue
+    public var tonemap: UInt32 = TonemapType.metalCupCustom.rawValue
     public var exposure: Float = 1.0
     public var gamma: Float = 2.2
 
@@ -38,6 +49,19 @@ public struct RendererSettings: sizeable {
 
     public var perfFlags: UInt32 = 0
     public var normalFlipYGlobal: UInt32 = 1
+
+    public var iblFireflyClamp: Float = 100.0
+    public var iblFireflyClampEnabled: UInt32 = 1
+    public var iblSampleMultiplier: Float = 1.0
+    public var iblSpecularLodExponent: Float = 1.5
+    public var iblSpecularLodBias: Float = 0.0
+    public var iblSpecularGrazingLodBias: Float = 0.35
+    public var iblSpecularMinRoughness: Float = 0.06
+    public var specularAAStrength: Float = 1.0
+    public var normalMapMipBias: Float = 0.0
+    public var normalMapMipBiasGrazing: Float = 0.6
+    public var shadingDebugMode: UInt32 = 0
+    public var iblQualityPreset: UInt32 = IBLQualityPreset.high.rawValue
 
     public var padding: SIMD2<Float> = .zero
 }
@@ -137,6 +161,11 @@ public extension RendererSettings {
     public var iblIntensity: Float {
         get { Renderer.settings.iblIntensity }
         set { Renderer.settings.iblIntensity = newValue }
+    }
+
+    public var iblQualityPreset: Int {
+        get { Int(Renderer.settings.iblQualityPreset) }
+        set { Renderer.settings.iblQualityPreset = UInt32(newValue) }
     }
 
     public var halfResBloom: Bool {

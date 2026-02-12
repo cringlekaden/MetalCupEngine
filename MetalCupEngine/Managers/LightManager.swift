@@ -16,9 +16,16 @@ public class LightManager {
     }
     
     func setLightData(_ renderCommandEncoder: MTLRenderCommandEncoder) {
-        var lightDatas = _lightData
-        var lightCount = lightDatas.count
-        renderCommandEncoder.setFragmentBytes(&lightCount, length: Int32.size, index: 3)
-        renderCommandEncoder.setFragmentBytes(&lightDatas, length: LightData.stride(lightCount), index: 4)
+        var lightCount = Int32(_lightData.count)
+        renderCommandEncoder.setFragmentBytes(&lightCount, length: Int32.size, index: FragmentBufferIndex.lightCount)
+        if _lightData.isEmpty {
+            var fallback = LightData()
+            renderCommandEncoder.setFragmentBytes(&fallback, length: LightData.stride, index: FragmentBufferIndex.lightData)
+            return
+        }
+        _lightData.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            renderCommandEncoder.setFragmentBytes(baseAddress, length: bytes.count, index: FragmentBufferIndex.lightData)
+        }
     }
 }

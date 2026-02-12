@@ -27,6 +27,7 @@ public enum ShaderType {
     case BlurHFragment
     case BlurVFragment
     case ProceduralSkyFragment
+    case HDRILuminanceFragment
 }
 
 public class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -56,6 +57,7 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.BlurHFragment, name: "Blur Horizontal Fragment", functionName: "fragment_blur_h")
         register(.BlurVFragment, name: "Blur Vertical Fragment", functionName: "fragment_blur_v")
         register(.ProceduralSkyFragment, name: "Procedural Sky Fragment", functionName: "fragment_procedural_sky")
+        register(.HDRILuminanceFragment, name: "HDRI Luminance Fragment", functionName: "fragment_hdri_luminance")
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {
@@ -71,11 +73,11 @@ public class Shader {
     var function: MTLFunction!
     
     init(name: String, functionName: String) {
-        let lib = ResourceRegistry.defaultLibrary ?? Engine.DefaultLibrary
-        guard let fn = lib?.makeFunction(name: functionName) else {
-            fatalError("Shader '\(functionName)' not found. Ensure the .metal file is compiled into the app target or engine framework before pipeline build.")
+        let fn = ResourceRegistry.resolveFunction(functionName, device: Engine.Device)
+        guard let resolved = fn else {
+            fatalError("Shader '\(functionName)' not found. Ensure the .metal file is compiled into the app target or runtime shader library.")
         }
-        self.function = fn
+        self.function = resolved
         self.function.label = name
     }
 }

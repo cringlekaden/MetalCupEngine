@@ -62,6 +62,43 @@ public struct MeshRendererComponent {
     }
 }
 
+public struct MaterialComponent {
+    public var materialHandle: AssetHandle?
+
+    public init(materialHandle: AssetHandle? = nil) {
+        self.materialHandle = materialHandle
+    }
+}
+
+public enum ProjectionType: UInt32 {
+    case perspective = 0
+}
+
+public struct CameraComponent {
+    public var fovDegrees: Float
+    public var nearPlane: Float
+    public var farPlane: Float
+    public var projectionType: ProjectionType
+    public var isPrimary: Bool
+    public var isEditor: Bool
+
+    public init(
+        fovDegrees: Float = 45.0,
+        nearPlane: Float = 0.1,
+        farPlane: Float = 1000.0,
+        projectionType: ProjectionType = .perspective,
+        isPrimary: Bool = true,
+        isEditor: Bool = true
+    ) {
+        self.fovDegrees = fovDegrees
+        self.nearPlane = nearPlane
+        self.farPlane = farPlane
+        self.projectionType = projectionType
+        self.isPrimary = isPrimary
+        self.isEditor = isEditor
+    }
+}
+
 public enum LightType {
     case point
     case spot
@@ -90,6 +127,31 @@ public struct LightComponent {
         self.range = range
         self.innerConeCos = innerConeCos
         self.outerConeCos = outerConeCos
+    }
+}
+
+public struct LightOrbitComponent {
+    public var centerEntityId: UUID?
+    public var radius: Float
+    public var speed: Float
+    public var height: Float
+    public var phase: Float
+    public var affectsDirection: Bool
+
+    public init(
+        centerEntityId: UUID? = nil,
+        radius: Float = 1.0,
+        speed: Float = 1.0,
+        height: Float = 0.0,
+        phase: Float = 0.0,
+        affectsDirection: Bool = true
+    ) {
+        self.centerEntityId = centerEntityId
+        self.radius = radius
+        self.speed = speed
+        self.height = height
+        self.phase = phase
+        self.affectsDirection = affectsDirection
     }
 }
 

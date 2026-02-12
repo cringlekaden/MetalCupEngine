@@ -33,6 +33,7 @@ public final class Renderer: NSObject {
     private let _brdfLutSize = 512
     private let _skyRebuildQueue = DispatchQueue(label: "MetalCup.Renderer.SkyRebuild", qos: .userInitiated)
     private var _skyRebuildInFlight = false
+    private var _didLogIBLReport = false
 
     // MARK: - Static sizes
 
@@ -83,48 +84,56 @@ public final class Renderer: NSObject {
 
     // MARK: - Render target rebuild
 
+    private func currentDrawableSize() -> (width: Int, height: Int)? {
+        let width = Int(Renderer.DrawableSize.x)
+        let height = Int(Renderer.DrawableSize.y)
+        guard width > 0, height > 0 else { return nil }
+        return (width, height)
+    }
+
     private func rebuildRenderTargets() {
+        guard let size = currentDrawableSize() else { return }
         // Base HDR scene color
         let baseColorDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: Preferences.HDRPixelFormat,
-            width: Int(Renderer.DrawableSize.x),
-            height: Int(Renderer.DrawableSize.y),
+            width: size.width,
+            height: size.height,
             mipmapped: false
         )
         baseColorDesc.usage = [.renderTarget, .shaderRead]
         baseColorDesc.storageMode = .private
-        if let texture = Engine.Device.makeTexture(descriptor: baseColorDesc) {
+        if let texture = makeRenderTargetTexture(descriptor: baseColorDesc, label: "RenderTarget.BaseColor") {
             AssetManager.registerRuntimeTexture(handle: BuiltinAssets.baseColorRender, texture: texture)
         }
         // Final LDR scene color
         let finalColorDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: Preferences.defaultColorPixelFormat,
-            width: Int(Renderer.DrawableSize.x),
-            height: Int(Renderer.DrawableSize.y),
+            width: size.width,
+            height: size.height,
             mipmapped: false
         )
         finalColorDesc.usage = [.renderTarget, .shaderRead]
         finalColorDesc.storageMode = .private
-        if let texture = Engine.Device.makeTexture(descriptor: finalColorDesc) {
+        if let texture = makeRenderTargetTexture(descriptor: finalColorDesc, label: "RenderTarget.FinalColor") {
             AssetManager.registerRuntimeTexture(handle: BuiltinAssets.finalColorRender, texture: texture)
         }
         // Base depth
         let baseDepthDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: Preferences.defaultDepthPixelFormat,
-            width: Int(Renderer.DrawableSize.x),
-            height: Int(Renderer.DrawableSize.y),
+            width: size.width,
+            height: size.height,
             mipmapped: false
         )
         baseDepthDesc.usage = [.renderTarget, .shaderRead]
         baseDepthDesc.storageMode = .private
-        if let texture = Engine.Device.makeTexture(descriptor: baseDepthDesc) {
+        if let texture = makeRenderTargetTexture(descriptor: baseDepthDesc, label: "RenderTarget.BaseDepth") {
             AssetManager.registerRuntimeTexture(handle: BuiltinAssets.baseDepthRender, texture: texture)
         }
         // Bloom half-res ping/pong
         let useHalfResBloom = Renderer.settings.hasPerfFlag(.halfResBloom)
         let divisor = useHalfResBloom ? 2 : 1
-        let bw = max(1, Int(Renderer.DrawableSize.x) / divisor)
-        let bh = max(1, Int(Renderer.DrawableSize.y) / divisor)
+        let bw = max(1, size.width / divisor)
+        let bh = max(1, size.height / divisor)
         let bloomDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: Preferences.HDRPixelFormat,
             width: bw,
@@ -133,77 +142,182 @@ public final class Renderer: NSObject {
         )
         bloomDesc.usage = [.renderTarget, .shaderRead]
         bloomDesc.storageMode = .private
-        if let ping = Engine.Device.makeTexture(descriptor: bloomDesc) {
+        if let ping = makeRenderTargetTexture(descriptor: bloomDesc, label: "RenderTarget.BloomPing") {
             AssetManager.registerRuntimeTexture(handle: BuiltinAssets.bloomPing, texture: ping)
         }
-        if let pong = Engine.Device.makeTexture(descriptor: bloomDesc) {
+        if let pong = makeRenderTargetTexture(descriptor: bloomDesc, label: "RenderTarget.BloomPong") {
             AssetManager.registerRuntimeTexture(handle: BuiltinAssets.bloomPong, texture: pong)
         }
         Renderer.settings.bloomTexelSize = SIMD2<Float>(1.0 / Float(bw), 1.0 / Float(bh))
     }
 
+    private func makeRenderTargetTexture(descriptor: MTLTextureDescriptor, label: String) -> MTLTexture? {
+        guard let texture = Engine.Device.makeTexture(descriptor: descriptor) else { return nil }
+        texture.label = label
+        return texture
+    }
+
+    private struct FullscreenPass {
+        var pipeline: RenderPipelineStateType
+        var label: String
+        var sampler: SamplerStateType?
+        var texture0: MTLTexture?
+        var texture1: MTLTexture?
+        var settings: RendererSettings?
+
+        func encode(into encoder: MTLRenderCommandEncoder, quad: MCMesh) {
+            encoder.setRenderPipelineState(Graphics.RenderPipelineStates[pipeline])
+            encoder.label = label
+            encoder.pushDebugGroup(label)
+            encoder.setCullMode(.none)
+            if let sampler {
+                encoder.setFragmentSamplerState(Graphics.SamplerStates[sampler], index: FragmentSamplerIndex.linearClamp)
+            }
+            if let texture0 {
+                encoder.setFragmentTexture(texture0, index: PostProcessTextureIndex.source)
+            }
+            if let texture1 {
+                encoder.setFragmentTexture(texture1, index: PostProcessTextureIndex.bloom)
+            }
+            if var settings {
+                encoder.setFragmentBytes(&settings, length: RendererSettings.stride, index: FragmentBufferIndex.rendererSettings)
+            }
+            quad.drawPrimitives(encoder)
+            encoder.popDebugGroup()
+        }
+    }
+
+    private struct IBLGenerationConfig {
+        var qualityPreset: IBLQualityPreset
+        var irradianceSamples: UInt32
+        var prefilterSamplesMin: UInt32
+        var prefilterSamplesMax: UInt32
+        var fireflyClamp: Float
+        var fireflyClampEnabled: Bool
+        var samplingStrategy: String
+    }
+
     // MARK: - Render pass descriptor helpers
-    private func createColorAndDepthRenderPassDescriptor(colorTarget: AssetHandle, depthTarget: AssetHandle) -> MTLRenderPassDescriptor {
+    private func makeRenderPassDescriptor(
+        colorTarget: AssetHandle,
+        depthTarget: AssetHandle? = nil,
+        slice: Int? = nil,
+        level: Int = 0
+    ) -> MTLRenderPassDescriptor {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = AssetManager.texture(handle: colorTarget)
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = ClearColor.Black
-        pass.depthAttachment.texture = AssetManager.texture(handle: depthTarget)
-        pass.depthAttachment.loadAction = .clear
-        pass.depthAttachment.storeAction = .store
+        pass.colorAttachments[0].level = level
+        if let slice {
+            pass.colorAttachments[0].slice = slice
+        }
+        if let depthTarget {
+            pass.depthAttachment.texture = AssetManager.texture(handle: depthTarget)
+            pass.depthAttachment.loadAction = .clear
+            pass.depthAttachment.storeAction = .store
+        }
         return pass
+    }
+
+    private func createColorAndDepthRenderPassDescriptor(colorTarget: AssetHandle, depthTarget: AssetHandle) -> MTLRenderPassDescriptor {
+        makeRenderPassDescriptor(colorTarget: colorTarget, depthTarget: depthTarget)
     }
 
     private func createColorOnlyRenderPassDescriptor(colorTarget: AssetHandle) -> MTLRenderPassDescriptor {
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = AssetManager.texture(handle: colorTarget)
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = ClearColor.Black
-        return pass
+        makeRenderPassDescriptor(colorTarget: colorTarget)
     }
 
     private func createColorOnlyRenderPassDescriptor(colorTarget: AssetHandle, level: Int) -> MTLRenderPassDescriptor {
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = AssetManager.texture(handle: colorTarget)
-        pass.colorAttachments[0].level = level
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = ClearColor.Black
-        return pass
+        makeRenderPassDescriptor(colorTarget: colorTarget, level: level)
     }
 
     private func createCubemapRenderPassDescriptor(target: AssetHandle, face: Int) -> MTLRenderPassDescriptor {
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = AssetManager.texture(handle: target)
-        pass.colorAttachments[0].slice = face
-        pass.colorAttachments[0].level = 0
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = ClearColor.Black
-        return pass
+        makeRenderPassDescriptor(colorTarget: target, slice: face, level: 0)
     }
 
     private func createMippedCubemapRenderPassDescriptor(target: AssetHandle, face: Int, mip: Int) -> MTLRenderPassDescriptor {
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = AssetManager.texture(handle: target)
-        pass.colorAttachments[0].slice = face
-        pass.colorAttachments[0].level = mip
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = ClearColor.Black
-        return pass
+        makeRenderPassDescriptor(colorTarget: target, slice: face, level: mip)
     }
 
     // MARK: - IBL generation
+    private func iblQualityPreset() -> IBLQualityPreset {
+        return IBLQualityPreset(rawValue: Renderer.settings.iblQualityPreset) ?? .high
+    }
+
+    private func iblSampleMultiplier(for preset: IBLQualityPreset) -> Float {
+        switch preset {
+        case .low:
+            return 0.25
+        case .medium:
+            return 0.5
+        case .high:
+            return 1.0
+        case .ultra:
+            return 2.0
+        case .custom:
+            return max(Renderer.settings.iblSampleMultiplier, 0.1)
+        }
+    }
+
+    private func iblConfig() -> IBLGenerationConfig {
+        let preset = iblQualityPreset()
+        let multiplier = iblSampleMultiplier(for: preset)
+        let irradianceSamples = UInt32(max(512.0, min(8192.0, multiplier * 2048.0)))
+        let prefilterBase = max(128.0, min(4096.0, multiplier * 1024.0))
+        let minSamples = UInt32(max(128.0, min(1024.0, prefilterBase * 0.25)))
+        let maxSamples = UInt32(max(512.0, min(4096.0, prefilterBase)))
+        return IBLGenerationConfig(
+            qualityPreset: preset,
+            irradianceSamples: irradianceSamples,
+            prefilterSamplesMin: minSamples,
+            prefilterSamplesMax: maxSamples,
+            fireflyClamp: Renderer.settings.iblFireflyClamp,
+            fireflyClampEnabled: Renderer.settings.iblFireflyClampEnabled != 0,
+            samplingStrategy: "cosine + GGX importance sampling"
+        )
+    }
+
+    private func validateIBLResources() {
+        guard let env = AssetManager.texture(handle: BuiltinAssets.environmentCubemap),
+              let irradiance = AssetManager.texture(handle: BuiltinAssets.irradianceCubemap),
+              let prefiltered = AssetManager.texture(handle: BuiltinAssets.prefilteredCubemap) else { return }
+        assert(env.textureType == .typeCube)
+        assert(irradiance.textureType == .typeCube)
+        assert(prefiltered.textureType == .typeCube)
+        assert(env.mipmapLevelCount >= 1)
+        assert(prefiltered.mipmapLevelCount >= 1)
+        assert(env.width == env.height)
+        assert(prefiltered.width == prefiltered.height)
+    }
+
+    private func logIBLReportIfNeeded(config: IBLGenerationConfig, environment: MTLTexture?) {
+        guard !_didLogIBLReport else { return }
+        _didLogIBLReport = true
+        let envSize = environment?.width ?? 0
+        let envMips = environment?.mipmapLevelCount ?? 0
+        let prefiltered = AssetManager.texture(handle: BuiltinAssets.prefilteredCubemap)
+        let prefilteredMips = prefiltered?.mipmapLevelCount ?? 0
+        print(
+            "IBL_REPORT::preset=\(config.qualityPreset) irradianceSamples=\(config.irradianceSamples) " +
+            "prefilterSamples[min:\(config.prefilterSamplesMin),max:\(config.prefilterSamplesMax)] " +
+            "fireflyClamp=\(config.fireflyClamp) enabled=\(config.fireflyClampEnabled) " +
+            "envSize=\(envSize) envMips=\(envMips) prefilteredMips=\(prefilteredMips) " +
+            "sampling=\(config.samplingStrategy)"
+        )
+    }
 
     private func renderSkyToEnvironmentMap(hdriHandle: AssetHandle?, intensity: Float) {
+        _didLogIBLReport = false
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render Sky To Cubemap"
         guard let cubemapMesh = AssetManager.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
         guard let envHandle = hdriHandle,
               let envTexture = AssetManager.texture(handle: envHandle) else { return }
+        ensureIBLRenderTargets()
+        validateIBLResources()
+        logIBLReportIfNeeded(config: iblConfig(), environment: envTexture)
         for face in 0..<6 {
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createCubemapRenderPassDescriptor(target: BuiltinAssets.environmentCubemap, face: face)) else { continue }
             encoder.label = "Cubemap face \(face)"
@@ -211,11 +325,11 @@ public final class Renderer: NSObject {
             encoder.setCullMode(.front)
             encoder.setFrontFacing(.clockwise)
             var vp = _viewProjections[face]
-            encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: 1)
+            encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
             var skyIntensity = intensity
-            encoder.setFragmentBytes(&skyIntensity, length: MemoryLayout<Float>.stride, index: 0)
-            encoder.setFragmentTexture(envTexture, index: 0)
-            encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: 0)
+            encoder.setFragmentBytes(&skyIntensity, length: MemoryLayout<Float>.stride, index: FragmentBufferIndex.skyIntensity)
+            encoder.setFragmentTexture(envTexture, index: IBLTextureIndex.environment)
+            encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
             cubemapMesh.drawPrimitives(encoder)
             encoder.endEncoding()
         }
@@ -229,9 +343,12 @@ public final class Renderer: NSObject {
     }
 
     private func renderIrradianceMap() {
+        let config = iblConfig()
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render Irradiance Map"
         guard let cubemapMesh = AssetManager.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
+        ensureIBLRenderTargets()
+        validateIBLResources()
         for face in 0..<6 {
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createCubemapRenderPassDescriptor(target: BuiltinAssets.irradianceCubemap, face: face)) else { continue }
             encoder.label = "Irradiance Cubemap face: \(face)"
@@ -239,9 +356,14 @@ public final class Renderer: NSObject {
             encoder.setCullMode(.front)
             encoder.setFrontFacing(.clockwise)
             var vp = _viewProjections[face]
-            encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: 1)
-            encoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.environmentCubemap), index: 0)
-            encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: 0)
+            encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
+            var params = IBLIrradianceParams()
+            params.sampleCount = config.irradianceSamples
+            params.fireflyClamp = config.fireflyClamp
+            params.fireflyClampEnabled = config.fireflyClampEnabled ? 1 : 0
+            encoder.setFragmentBytes(&params, length: IBLIrradianceParams.stride, index: FragmentBufferIndex.iblParams)
+            encoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.environmentCubemap), index: IBLTextureIndex.environment)
+            encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
             cubemapMesh.drawPrimitives(encoder)
             encoder.endEncoding()
         }
@@ -254,11 +376,15 @@ public final class Renderer: NSObject {
             let prefiltered = AssetManager.texture(handle: BuiltinAssets.prefilteredCubemap),
             let env = AssetManager.texture(handle: BuiltinAssets.environmentCubemap)
         else { return }
+        let config = iblConfig()
         let mipCount = prefiltered.mipmapLevelCount
         let baseSize = prefiltered.width
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render Prefiltered Specular Map"
         guard let cubemapMesh = AssetManager.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
+        ensureIBLRenderTargets()
+        validateIBLResources()
+        logIBLReportIfNeeded(config: config, environment: env)
         for mip in 0..<mipCount {
             let roughness = Float(mip) / Float(max(mipCount - 1, 1))
             let mipSize = max(1, baseSize >> mip)
@@ -275,11 +401,16 @@ public final class Renderer: NSObject {
                     znear: 0, zfar: 1
                 ))
                 var vp = _viewProjections[face]
-                var r = roughness
-                encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: 1)
-                encoder.setFragmentBytes(&r, length: MemoryLayout<Float>.stride, index: 0)
-                encoder.setFragmentTexture(env, index: 0)
-                encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: 0)
+                encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
+                var params = IBLPrefilterParams()
+                params.roughness = roughness
+                params.sampleCount = prefilterSampleCount(for: roughness, config: config)
+                params.fireflyClamp = config.fireflyClamp
+                params.fireflyClampEnabled = config.fireflyClampEnabled ? 1 : 0
+                params.envMipCount = Float(mipCount)
+                encoder.setFragmentBytes(&params, length: IBLPrefilterParams.stride, index: FragmentBufferIndex.iblParams)
+                encoder.setFragmentTexture(env, index: IBLTextureIndex.environment)
+                encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
                 cubemapMesh.drawPrimitives(encoder)
                 encoder.endEncoding()
             }
@@ -288,25 +419,40 @@ public final class Renderer: NSObject {
         commandBuffer.waitUntilCompleted()
     }
 
+    private func prefilterSampleCount(for roughness: Float, config: IBLGenerationConfig) -> UInt32 {
+        let glossyFactor = pow(max(1.0 - roughness, 0.0), 2.0)
+        let range = max(Float(config.prefilterSamplesMax - config.prefilterSamplesMin), 1.0)
+        let samples = Float(config.prefilterSamplesMin) + range * glossyFactor
+        return UInt32(max(Float(config.prefilterSamplesMin), min(Float(config.prefilterSamplesMax), samples)))
+    }
+
     private func renderBRDFLUT() {
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render BRDF LUT"
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.brdfLut)) else { return }
-        encoder.label = "BRDF LUT Encoder"
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.BRDF])
-        encoder.setCullMode(.none)
-        if let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh) {
-            quadMesh.drawPrimitives(encoder)
-        }
+        guard let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
+        let pass = FullscreenPass(
+            pipeline: .BRDF,
+            label: "BRDF LUT Encoder",
+            sampler: nil,
+            texture0: nil,
+            texture1: nil,
+            settings: nil
+        )
+        pass.encode(into: encoder, quad: quadMesh)
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
     }
 
     private func renderProceduralSkyToEnvironmentMap(params: SkyParams) {
+        _didLogIBLReport = false
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render Procedural Sky To Cubemap"
         guard let cubemapMesh = AssetManager.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
+        ensureIBLRenderTargets()
+        validateIBLResources()
+        logIBLReportIfNeeded(config: iblConfig(), environment: AssetManager.texture(handle: BuiltinAssets.environmentCubemap))
         for face in 0..<6 {
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createCubemapRenderPassDescriptor(target: BuiltinAssets.environmentCubemap, face: face)) else { continue }
             encoder.label = "Procedural Sky face \(face)"
@@ -315,8 +461,8 @@ public final class Renderer: NSObject {
             encoder.setFrontFacing(.clockwise)
             var vp = _viewProjections[face]
             var skyParams = params
-            encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: 1)
-            encoder.setFragmentBytes(&skyParams, length: SkyParams.stride, index: 0)
+            encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
+            encoder.setFragmentBytes(&skyParams, length: SkyParams.stride, index: FragmentBufferIndex.skyParams)
             cubemapMesh.drawPrimitives(encoder)
             encoder.endEncoding()
         }
@@ -381,6 +527,19 @@ public final class Renderer: NSObject {
         }
     }
 
+    private func ensureIBLRenderTargets() {
+        if let env = AssetManager.texture(handle: BuiltinAssets.environmentCubemap),
+           env.usage.contains(.renderTarget) {
+            return
+        }
+        BuiltinAssets.registerIBLTextures(
+            environmentSize: _environmentSize,
+            irradianceSize: _irradianceSize,
+            prefilteredSize: _prefilteredSize,
+            brdfLutSize: _brdfLutSize
+        )
+    }
+
     // MARK: - Bloom (multi-scale)
 
     private func renderBloom(commandBuffer: MTLCommandBuffer) {
@@ -418,20 +577,20 @@ public final class Renderer: NSObject {
         let extractStart = CACurrentMediaTime()
         do {
             guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.bloomPing, level: 0)) else { return }
-            enc.label = "Bloom Extract"
-            enc.pushDebugGroup("Bloom Extract")
-            enc.setRenderPipelineState(Graphics.RenderPipelineStates[.BloomExtract])
-            enc.setCullMode(.none)
-            enc.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: 0)
-            enc.setFragmentTexture(sceneTex, index: 0)
             var params = settings
             let size0 = mipSize(ping, 0)
             params.bloomTexelSize = SIMD2<Float>(1.0 / size0.x, 1.0 / size0.y)
             params.bloomMipLevel = 0
-            enc.setFragmentBytes(&params, length: RendererSettings.stride, index: 0)
             setViewport(enc, size0)
-            quadMesh.drawPrimitives(enc)
-            enc.popDebugGroup()
+            let pass = FullscreenPass(
+                pipeline: .BloomExtract,
+                label: "Bloom Extract",
+                sampler: .LinearClampToZero,
+                texture0: sceneTex,
+                texture1: nil,
+                settings: params
+            )
+            pass.encode(into: enc, quad: quadMesh)
             enc.endEncoding()
         }
         Renderer.profiler.record(.bloomExtract, seconds: CACurrentMediaTime() - extractStart)
@@ -450,30 +609,30 @@ public final class Renderer: NSObject {
                 let blurStart = CACurrentMediaTime()
                 // Horizontal: ping -> pong
                 guard let encH = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.bloomPong, level: mip)) else { return }
-                encH.label = "Bloom Blur H \(mip) \(i)"
-                encH.pushDebugGroup("Bloom Blur H")
-                encH.setRenderPipelineState(Graphics.RenderPipelineStates[.BloomBlurH])
-                encH.setCullMode(.none)
-                encH.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: 0)
-                encH.setFragmentTexture(ping, index: 0)
-                encH.setFragmentBytes(&params, length: RendererSettings.stride, index: 0)
                 setViewport(encH, size)
-                quadMesh.drawPrimitives(encH)
-                encH.popDebugGroup()
+                let passH = FullscreenPass(
+                    pipeline: .BloomBlurH,
+                    label: "Bloom Blur H \(mip) \(i)",
+                    sampler: .LinearClampToZero,
+                    texture0: ping,
+                    texture1: nil,
+                    settings: params
+                )
+                passH.encode(into: encH, quad: quadMesh)
                 encH.endEncoding()
 
                 // Vertical: pong -> ping
                 guard let encV = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.bloomPing, level: mip)) else { return }
-                encV.label = "Bloom Blur V \(mip) \(i)"
-                encV.pushDebugGroup("Bloom Blur V")
-                encV.setRenderPipelineState(Graphics.RenderPipelineStates[.BloomBlurV])
-                encV.setCullMode(.none)
-                encV.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: 0)
-                encV.setFragmentTexture(pong, index: 0)
-                encV.setFragmentBytes(&params, length: RendererSettings.stride, index: 0)
                 setViewport(encV, size)
-                quadMesh.drawPrimitives(encV)
-                encV.popDebugGroup()
+                let passV = FullscreenPass(
+                    pipeline: .BloomBlurV,
+                    label: "Bloom Blur V \(mip) \(i)",
+                    sampler: .LinearClampToZero,
+                    texture0: pong,
+                    texture1: nil,
+                    settings: params
+                )
+                passV.encode(into: encV, quad: quadMesh)
                 encV.endEncoding()
                 blurTotal += CACurrentMediaTime() - blurStart
             }
@@ -493,16 +652,16 @@ public final class Renderer: NSObject {
 
                 let downsampleStart = CACurrentMediaTime()
                 guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.bloomPing, level: mip)) else { return }
-                enc.label = "Bloom Downsample \(mip)"
-                enc.pushDebugGroup("Bloom Downsample")
-                enc.setRenderPipelineState(Graphics.RenderPipelineStates[.BloomDownsample])
-                enc.setCullMode(.none)
-                enc.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: 0)
-                enc.setFragmentTexture(ping, index: 0)
-                enc.setFragmentBytes(&params, length: RendererSettings.stride, index: 0)
                 setViewport(enc, size)
-                quadMesh.drawPrimitives(enc)
-                enc.popDebugGroup()
+                let pass = FullscreenPass(
+                    pipeline: .BloomDownsample,
+                    label: "Bloom Downsample \(mip)",
+                    sampler: .LinearClampToZero,
+                    texture0: ping,
+                    texture1: nil,
+                    settings: params
+                )
+                pass.encode(into: enc, quad: quadMesh)
                 enc.endEncoding()
                 downsampleTotal += CACurrentMediaTime() - downsampleStart
 
@@ -523,13 +682,31 @@ public final class Renderer: NSObject {
 extension Renderer: MTKViewDelegate {
 
     public func updateScreenSize(view: MTKView) {
+        applyViewSizes(view: view)
+        SceneManager.currentScene.updateAspectRatio()
+        rebuildRenderTargets()
+    }
+
+    private func applyViewSizes(view: MTKView) {
         Renderer.ScreenSize = SIMD2<Float>(Float(view.bounds.width), Float(view.bounds.height))
         Renderer.DrawableSize = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
         if Renderer.ViewportSize.x.isZero || Renderer.ViewportSize.y.isZero {
             Renderer.ViewportSize = Renderer.ScreenSize
         }
-        SceneManager.currentScene.updateAspectRatio()
-        rebuildRenderTargets()
+    }
+
+    private func updateFrameSizingIfNeeded(view: MTKView) {
+        if _lastPerfFlags != Renderer.settings.perfFlags {
+            _lastPerfFlags = Renderer.settings.perfFlags
+            updateScreenSize(view: view)
+        }
+        let currentSize = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
+        if Renderer.DrawableSize != currentSize
+            || AssetManager.texture(handle: BuiltinAssets.baseColorRender) == nil
+            || AssetManager.texture(handle: BuiltinAssets.baseDepthRender) == nil {
+            Renderer.DrawableSize = currentSize
+            updateScreenSize(view: view)
+        }
     }
 
     public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -539,8 +716,8 @@ extension Renderer: MTKViewDelegate {
     private func renderColorAndDepthToTexture(renderPipelineState: RenderPipelineStateType, colorTarget: AssetHandle, depthTarget: AssetHandle, commandBuffer: MTLCommandBuffer) {
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createColorAndDepthRenderPassDescriptor(colorTarget: colorTarget, depthTarget: depthTarget)) else { return }
         encoder.setRenderPipelineState(Graphics.RenderPipelineStates[renderPipelineState])
-        encoder.label = "Render To Texture"
-        encoder.pushDebugGroup("Scene -> colorTarget & depthTarget")
+        encoder.label = "Scene Pass"
+        encoder.pushDebugGroup("Scene Pass")
         delegate?.renderScene(into: encoder)
         encoder.popDebugGroup()
         encoder.endEncoding()
@@ -548,71 +725,56 @@ extension Renderer: MTKViewDelegate {
     
     private func renderColorToTexture(renderPipelineState: RenderPipelineStateType, colorTarget: AssetHandle, commandBuffer: MTLCommandBuffer) {
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: colorTarget)) else { return }
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[renderPipelineState])
-        encoder.label = "Render To Texture"
-        encoder.pushDebugGroup("Scene -> colorTarget")
-        encoder.setCullMode(.none)
-        encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: 0)
-        encoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.baseColorRender), index: 0)
-        encoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.bloomPing), index: 1)
-        var settings = Renderer.settings
-        encoder.setFragmentBytes(&settings, length: RendererSettings.stride, index: 0)
-        if let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh) {
-            quadMesh.drawPrimitives(encoder)
-        }
-        encoder.popDebugGroup()
+        guard let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
+        let pass = FullscreenPass(
+            pipeline: renderPipelineState,
+            label: "Final Composite",
+            sampler: .LinearClampToZero,
+            texture0: AssetManager.texture(handle: BuiltinAssets.baseColorRender),
+            texture1: AssetManager.texture(handle: BuiltinAssets.bloomPing),
+            settings: Renderer.settings
+        )
+        pass.encode(into: encoder, quad: quadMesh)
         encoder.endEncoding()
     }
 
     private func renderToWindow(renderPipelineState: RenderPipelineStateType, view: MTKView, commandBuffer: MTLCommandBuffer) {
         guard let rpd = view.currentRenderPassDescriptor else { return }
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else { return }
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[renderPipelineState])
-        encoder.label = "Render To Screen"
-        encoder.pushDebugGroup("Final Composite -> Drawable")
-        encoder.setCullMode(.none)
-        encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: 0)
-        encoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.baseColorRender), index: 0)
-        encoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.bloomPing), index: 1)
-        var settings = Renderer.settings
-        encoder.setFragmentBytes(&settings, length: RendererSettings.stride, index: 0)
-        if let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh) {
-            quadMesh.drawPrimitives(encoder)
-        }
-        encoder.popDebugGroup()
+        guard let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
+        let pass = FullscreenPass(
+            pipeline: renderPipelineState,
+            label: "Final Composite -> Drawable",
+            sampler: .LinearClampToZero,
+            texture0: AssetManager.texture(handle: BuiltinAssets.baseColorRender),
+            texture1: AssetManager.texture(handle: BuiltinAssets.bloomPing),
+            settings: Renderer.settings
+        )
+        pass.encode(into: encoder, quad: quadMesh)
         encoder.endEncoding()
     }
 
     public func draw(in view: MTKView) {
         let frameStart = CACurrentMediaTime()
-        Mouse.BeginFrame()
+        defer { Mouse.BeginFrame() }
         GameTime.UpdateTime(1.0 / Float(view.preferredFramesPerSecond))
         guard let drawable = view.currentDrawable,
               view.drawableSize.width > 0,
               view.drawableSize.height > 0 else { return }
-        let currentSize = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
-        if _lastPerfFlags != Renderer.settings.perfFlags {
-            _lastPerfFlags = Renderer.settings.perfFlags
-            updateScreenSize(view: view)
-        }
-        if Renderer.DrawableSize != currentSize
-            || AssetManager.texture(handle: BuiltinAssets.baseColorRender) == nil
-            || AssetManager.texture(handle: BuiltinAssets.baseDepthRender) == nil {
-            Renderer.DrawableSize = currentSize
-            updateScreenSize(view: view)
-        }
+        updateFrameSizingIfNeeded(view: view)
         let updateStart = CACurrentMediaTime()
         delegate?.update()
         Renderer.profiler.record(.update, seconds: CACurrentMediaTime() - updateStart)
         updateSkyIfNeeded(scene: SceneManager.currentScene)
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
-        commandBuffer.label = "MetalCup Frame Command Buffer"
+        commandBuffer.label = "MetalCup Frame"
         let gpuStart = CACurrentMediaTime()
         commandBuffer.addCompletedHandler { _ in
             Renderer.profiler.record(.gpu, seconds: CACurrentMediaTime() - gpuStart)
         }
 
         let renderStart = CACurrentMediaTime()
+        // Scene Pass -> Bloom -> Final Composite -> ImGui overlays
         let sceneStart = CACurrentMediaTime()
         renderColorAndDepthToTexture(
             renderPipelineState: .HDRBasic,
@@ -621,9 +783,11 @@ extension Renderer: MTKViewDelegate {
             commandBuffer: commandBuffer
         )
         Renderer.profiler.record(.scene, seconds: CACurrentMediaTime() - sceneStart)
+
         let bloomStart = CACurrentMediaTime()
         renderBloom(commandBuffer: commandBuffer)
         Renderer.profiler.record(.bloom, seconds: CACurrentMediaTime() - bloomStart)
+
         let compositeStart = CACurrentMediaTime()
         renderColorToTexture(
             renderPipelineState: .Final,
@@ -631,6 +795,7 @@ extension Renderer: MTKViewDelegate {
             commandBuffer: commandBuffer
         )
         Renderer.profiler.record(.composite, seconds: CACurrentMediaTime() - compositeStart)
+
         let overlaysStart = CACurrentMediaTime()
         delegate?.renderOverlays(view: view, commandBuffer: commandBuffer)
         Renderer.profiler.record(.overlays, seconds: CACurrentMediaTime() - overlaysStart)

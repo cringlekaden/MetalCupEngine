@@ -7,9 +7,9 @@ public enum SkySystem {
         let elevation = elevationDegrees * Float.pi / 180.0
         let cosEl = cos(elevation)
         let dir = SIMD3<Float>(
-            cosEl * sin(azimuth),
+            cosEl * cos(-azimuth),
             -sin(elevation),
-            cosEl * cos(azimuth)
+            cosEl * sin(-azimuth)
         )
         return simd_normalize(dir)
     }
@@ -29,7 +29,8 @@ public enum SkySystem {
 
         var light = scene.get(LightComponent.self, for: sunEntity) ?? LightComponent(type: .directional)
         light.type = .directional
-        light.direction = sunDir
+        light.direction = -sunDir
+        light.direction.y = -light.direction.y
         light.data.color = SIMD3<Float>(repeating: 1.0)
         light.data.brightness = max(sky.intensity, 0.0)
         light.data.diffuseIntensity = 1.0

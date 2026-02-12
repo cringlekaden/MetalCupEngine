@@ -35,6 +35,55 @@ extension SIMD2<Float>: sizeable {}
 extension SIMD3<Float>: sizeable {}
 extension SIMD4<Float>: sizeable {}
 
+public enum VertexBufferIndex {
+    public static let vertices = 0
+    public static let sceneConstants = 1
+    public static let modelConstants = 2
+    public static let cubemapViewProjection = 1
+}
+
+public enum FragmentBufferIndex {
+    public static let material = 1
+    public static let rendererSettings = 2
+    public static let lightCount = 3
+    public static let lightData = 4
+    public static let iblParams = 0
+    public static let skyParams = 0
+    public static let skyIntensity = 0
+}
+
+public enum FragmentTextureIndex {
+    public static let albedo = 0
+    public static let normal = 1
+    public static let metallic = 2
+    public static let roughness = 3
+    public static let metalRoughness = 4
+    public static let ao = 5
+    public static let emissive = 6
+    public static let irradiance = 7
+    public static let prefiltered = 8
+    public static let brdfLut = 9
+    public static let clearcoat = 10
+    public static let clearcoatRoughness = 11
+    public static let sheenColor = 12
+    public static let sheenIntensity = 13
+    public static let skybox = 14
+}
+
+public enum FragmentSamplerIndex {
+    public static let linear = 0
+    public static let linearClamp = 1
+}
+
+public enum PostProcessTextureIndex {
+    public static let source = 0
+    public static let bloom = 1
+}
+
+public enum IBLTextureIndex {
+    public static let environment = 0
+}
+
 public struct Vertex: sizeable {
     public var position: SIMD3<Float>
     public var color: SIMD4<Float>
@@ -67,6 +116,7 @@ public struct MetalCupMaterial: sizeable {
     public var aoScalar: Float = 1.0
     public var emissiveColor = SIMD3<Float>(0.0, 0.0, 0.0)
     public var emissiveScalar: Float = 1.0
+    public var alphaCutoff: Float = 0.5
     public var flags: UInt32 = 0
     public var clearcoatFactor: Float = 0.0
     public var clearcoatRoughness: Float = 0.1
@@ -117,6 +167,22 @@ public struct LightData: sizeable {
     public init() {}
 }
 
+public struct IBLIrradianceParams: sizeable {
+    public var sampleCount: UInt32 = 2048
+    public var fireflyClamp: Float = 100.0
+    public var fireflyClampEnabled: UInt32 = 1
+    public var padding: Float = 0.0
+}
+
+public struct IBLPrefilterParams: sizeable {
+    public var roughness: Float = 0.0
+    public var sampleCount: UInt32 = 1024
+    public var fireflyClamp: Float = 100.0
+    public var fireflyClampEnabled: UInt32 = 1
+    public var envMipCount: Float = 1.0
+    public var padding: Float = 0.0
+}
+
 public struct SkyParams: sizeable {
     public var sunDirection = SIMD3<Float>(0, 1, 0)
     public var sunAngularRadius: Float = 0.00935
@@ -127,3 +193,5 @@ public struct SkyParams: sizeable {
     public var skyTint: SIMD3<Float> = SIMD3<Float>(1, 1, 1)
     public var padding: Float = 0.0
 }
+
+public typealias SkyUniforms = SkyParams
