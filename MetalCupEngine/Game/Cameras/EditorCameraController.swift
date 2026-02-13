@@ -1,3 +1,7 @@
+/// EditorCameraController.swift
+/// Defines the EditorCameraController types and helpers for the engine.
+/// Created by Kaden Cringle.
+
 import simd
 
 public final class EditorCameraController {

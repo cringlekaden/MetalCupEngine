@@ -1,9 +1,6 @@
-//
-//  Keyboard.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/18/26.
-//
+/// Keyboard.swift
+/// Defines the Keyboard types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 public final class Keyboard {
     

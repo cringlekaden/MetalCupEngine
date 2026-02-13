@@ -1,9 +1,6 @@
-//
-//  Color.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/18/26.
-//
+/// ColorUtil.swift
+/// Defines the ColorUtil types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import simd
 

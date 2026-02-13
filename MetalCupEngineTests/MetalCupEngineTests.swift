@@ -1,9 +1,6 @@
-//
-//  MetalCupEngineTests.swift
-//  MetalCupEngineTests
-//
-//  Created by Kaden Cringle on 2/3/26.
-//
+/// MetalCupEngineTests.swift
+/// Defines the MetalCupEngineTests types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import XCTest
 @testable import MetalCupEngine

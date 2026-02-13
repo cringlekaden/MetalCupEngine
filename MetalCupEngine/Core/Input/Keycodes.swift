@@ -1,9 +1,6 @@
-//
-//  Keycodes.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/18/26.
-//
+/// Keycodes.swift
+/// Defines the Keycodes types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 public enum KeyCodes: UInt16 {
     //Special Chars

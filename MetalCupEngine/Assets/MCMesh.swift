@@ -1,9 +1,6 @@
-//
-//  MCMesh.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/21/26.
-//
+/// MCMesh.swift
+/// Defines the MCMesh types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 import Foundation
@@ -115,7 +112,8 @@ public class MCMesh {
                         roughnessMapHandle: AssetHandle? = nil,
                         mrMapHandle: AssetHandle? = nil,
                         aoMapHandle: AssetHandle? = nil,
-                        emissiveMapHandle: AssetHandle? = nil) {
+                        emissiveMapHandle: AssetHandle? = nil,
+                        useEmbeddedMaterial: Bool = true) {
         if(_vertexBuffer != nil) {
             renderCommandEncoder.setVertexBuffer(_vertexBuffer, offset: 0, index: VertexBufferIndex.vertices)
             if(_submeshes.count > 0) {
@@ -128,9 +126,12 @@ public class MCMesh {
                         roughnessMapHandle: roughnessMapHandle,
                         mrMapHandle: mrMapHandle,
                         aoMapHandle: aoMapHandle,
-                        emissiveMapHandle: emissiveMapHandle
+                        emissiveMapHandle: emissiveMapHandle,
+                        useEmbeddedTextures: useEmbeddedMaterial
                     )
-                    submesh.applyMaterials(renderCommandEncoder: renderCommandEncoder, customMaterial: material)
+                    submesh.applyMaterials(renderCommandEncoder: renderCommandEncoder,
+                                           customMaterial: material,
+                                           useEmbeddedMaterial: useEmbeddedMaterial)
                     renderCommandEncoder.drawIndexedPrimitives(type: submesh.primitiveType, indexCount: submesh.indexCount, indexType: submesh.indexType, indexBuffer: submesh.indexBuffer, indexBufferOffset: submesh.indexBufferOffset, instanceCount: _instanceCount)
                 }
             } else {
@@ -276,42 +277,48 @@ class Submesh {
                        roughnessMapHandle: AssetHandle?,
                        mrMapHandle: AssetHandle?,
                        aoMapHandle: AssetHandle?,
-                       emissiveMapHandle: AssetHandle?) {
+                       emissiveMapHandle: AssetHandle?,
+                       useEmbeddedTextures: Bool) {
         renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.Linear], index: FragmentSamplerIndex.linear)
         renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
-        let albedoMapTexture = albedoMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? _albedoMapTexture
+        let albedoMapTexture = albedoMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? (useEmbeddedTextures ? _albedoMapTexture : nil)
         renderCommandEncoder.setFragmentTexture(albedoMapTexture, index: FragmentTextureIndex.albedo)
-        let normalMapTexture = normalMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? _normalMapTexture
+        let normalMapTexture = normalMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? (useEmbeddedTextures ? _normalMapTexture : nil)
         renderCommandEncoder.setFragmentTexture(normalMapTexture, index: FragmentTextureIndex.normal)
-        let metallicMapTexture = metallicMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? _metallicMapTexture
+        let metallicMapTexture = metallicMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? (useEmbeddedTextures ? _metallicMapTexture : nil)
         renderCommandEncoder.setFragmentTexture(metallicMapTexture, index: FragmentTextureIndex.metallic)
-        let roughnessMapTexture = roughnessMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? _roughnessMapTexture
+        let roughnessMapTexture = roughnessMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? (useEmbeddedTextures ? _roughnessMapTexture : nil)
         renderCommandEncoder.setFragmentTexture(roughnessMapTexture, index: FragmentTextureIndex.roughness)
-        let mrMapTexture = mrMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? _mrMapTexture
+        let mrMapTexture = mrMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? (useEmbeddedTextures ? _mrMapTexture : nil)
         renderCommandEncoder.setFragmentTexture(mrMapTexture, index: FragmentTextureIndex.metalRoughness)
-        let aoMapTexture = aoMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? _aoMapTexture
+        let aoMapTexture = aoMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? (useEmbeddedTextures ? _aoMapTexture : nil)
         renderCommandEncoder.setFragmentTexture(aoMapTexture, index: FragmentTextureIndex.ao)
-        let emissiveMapTexture = emissiveMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? _emissiveMapTexture
+        let emissiveMapTexture = emissiveMapHandle.flatMap { AssetManager.texture(handle: $0) } ?? (useEmbeddedTextures ? _emissiveMapTexture : nil)
         renderCommandEncoder.setFragmentTexture(emissiveMapTexture, index: FragmentTextureIndex.emissive)
-        let clearcoatMapTexture = _clearcoatMapTexture
+        let clearcoatMapTexture = useEmbeddedTextures ? _clearcoatMapTexture : nil
         renderCommandEncoder.setFragmentTexture(clearcoatMapTexture, index: FragmentTextureIndex.clearcoat)
-        let clearcoatRoughnessMapTexture = _clearcoatRoughnessMapTexture
+        let clearcoatRoughnessMapTexture = useEmbeddedTextures ? _clearcoatRoughnessMapTexture : nil
         renderCommandEncoder.setFragmentTexture(clearcoatRoughnessMapTexture, index: FragmentTextureIndex.clearcoatRoughness)
-        let sheenColorMapTexture = _sheenColorMapTexture
+        let sheenColorMapTexture = useEmbeddedTextures ? _sheenColorMapTexture : nil
         renderCommandEncoder.setFragmentTexture(sheenColorMapTexture, index: FragmentTextureIndex.sheenColor)
-        let sheenIntensityMapTexture = _sheenIntensityMapTexture
+        let sheenIntensityMapTexture = useEmbeddedTextures ? _sheenIntensityMapTexture : nil
         renderCommandEncoder.setFragmentTexture(sheenIntensityMapTexture, index: FragmentTextureIndex.sheenIntensity)
         renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.irradianceCubemap), index: FragmentTextureIndex.irradiance)
         renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.prefilteredCubemap), index: FragmentTextureIndex.prefiltered)
         renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.brdfLut), index: FragmentTextureIndex.brdfLut)
     }
     
-    func applyMaterials(renderCommandEncoder: MTLRenderCommandEncoder, customMaterial: MetalCupMaterial?) {
-        var material: MetalCupMaterial = customMaterial ?? _material
-        if material.flags == 0 {
-            material.flags = _materialFlags.rawValue
-        } else {
-            material.flags |= _materialFlags.rawValue
+    func applyMaterials(renderCommandEncoder: MTLRenderCommandEncoder, customMaterial: MetalCupMaterial?, useEmbeddedMaterial: Bool) {
+        var material: MetalCupMaterial = customMaterial ?? MetalCupMaterial()
+        if useEmbeddedMaterial {
+            if customMaterial == nil {
+                material = _material
+            }
+            if material.flags == 0 {
+                material.flags = _materialFlags.rawValue
+            } else {
+                material.flags |= _materialFlags.rawValue
+            }
         }
         renderCommandEncoder.setFragmentBytes(&material, length: MetalCupMaterial.stride, index: FragmentBufferIndex.material)
     }

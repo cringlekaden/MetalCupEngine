@@ -1,9 +1,6 @@
-//
-//  AssetTypes.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// AssetTypes.swift
+/// Defines the AssetTypes types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 

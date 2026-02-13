@@ -1,9 +1,6 @@
-//
-//  MaterialAsset.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// MaterialAsset.swift
+/// Defines the MaterialAsset types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 import simd

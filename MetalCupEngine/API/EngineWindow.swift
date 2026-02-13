@@ -1,9 +1,6 @@
-//
-//  EngineWindow.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// EngineWindow.swift
+/// Defines the EngineWindow types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import AppKit
 import MetalKit
@@ -164,7 +161,13 @@ public final class EngineWindow: NSObject {
 
         window.contentView = view
         window.acceptsMouseMovedEvents = true
-        if spec.centered { window.center() }
+        if let screen = window.screen ?? NSScreen.main {
+            let visibleFrame = screen.visibleFrame
+            window.setFrame(visibleFrame, display: true)
+            window.center()
+        } else if spec.centered {
+            window.center()
+        }
         window.makeKeyAndOrderFront(nil)
 
         self.nsWindow = window

@@ -1,9 +1,6 @@
-//
-//  VertexDescriptorLibrary.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/17/26.
-//
+/// VertexDescriptorLibrary.swift
+/// Defines the VertexDescriptorLibrary types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

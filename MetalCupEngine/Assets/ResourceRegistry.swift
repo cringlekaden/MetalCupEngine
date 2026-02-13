@@ -1,3 +1,7 @@
+/// ResourceRegistry.swift
+/// Defines the ResourceRegistry types and helpers for the engine.
+/// Created by Kaden Cringle.
+
 import Foundation
 import MetalKit
 

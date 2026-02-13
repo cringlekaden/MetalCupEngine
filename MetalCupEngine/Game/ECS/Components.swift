@@ -1,3 +1,7 @@
+/// Components.swift
+/// Defines the Components types and helpers for the engine.
+/// Created by Kaden Cringle.
+
 import Foundation
 import simd
 

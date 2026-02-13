@@ -1,9 +1,6 @@
-//
-//  BuiltinAssets.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 2/5/26.
-//
+/// BuiltinAssets.swift
+/// Defines the BuiltinAssets types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 import MetalKit

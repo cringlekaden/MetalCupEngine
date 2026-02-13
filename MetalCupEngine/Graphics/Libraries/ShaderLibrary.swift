@@ -1,9 +1,6 @@
-//
-//  VertexShaderLibrary.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/21/26.
-//
+/// ShaderLibrary.swift
+/// Defines the ShaderLibrary types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

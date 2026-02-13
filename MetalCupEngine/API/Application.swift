@@ -1,9 +1,6 @@
-//
-//  Application.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// Application.swift
+/// Defines the Application types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import AppKit
 import MetalKit
@@ -15,6 +12,8 @@ open class Application: NSObject, EventHandler {
     private(set) var window: EngineWindow!
     private(set) var renderer: Renderer!
     public let layerStack = LayerStack()
+    public var mainWindow: EngineWindow { window }
+    public var mainRenderer: Renderer { renderer }
 
     public init(specification: ApplicationSpecification) {
         self.specification = specification

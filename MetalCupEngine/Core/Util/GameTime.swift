@@ -1,9 +1,6 @@
-//
-//  GameTime.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/21/26.
-//
+/// GameTime.swift
+/// Defines the GameTime types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

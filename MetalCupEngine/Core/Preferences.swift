@@ -1,9 +1,6 @@
-//
-//  Preferences.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/17/26.
-//
+/// Preferences.swift
+/// Defines the Preferences types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

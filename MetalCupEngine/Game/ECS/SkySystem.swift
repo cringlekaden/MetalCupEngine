@@ -1,3 +1,7 @@
+/// SkySystem.swift
+/// Defines the SkySystem types and helpers for the engine.
+/// Created by Kaden Cringle.
+
 import Foundation
 import simd
 

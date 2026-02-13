@@ -1,3 +1,7 @@
+/// SceneSerialization.swift
+/// Defines the SceneSerialization types and helpers for the engine.
+/// Created by Kaden Cringle.
+
 import Foundation
 import simd
 
@@ -600,7 +604,7 @@ public struct MaterialDTO: Codable {
 
 public enum SceneSerializer {
     public static func save(scene: EngineScene, to url: URL) throws {
-        let document = scene.toDocument()
+        let document = scene.toDocument(rendererSettingsOverride: RendererSettingsDTO(settings: Renderer.settings))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(document)

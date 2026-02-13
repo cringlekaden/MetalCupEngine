@@ -1,9 +1,6 @@
-//
-//  Events.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// Events.swift
+/// Defines the Events types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 import simd

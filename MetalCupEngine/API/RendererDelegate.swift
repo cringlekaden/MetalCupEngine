@@ -1,9 +1,6 @@
-//
-//  RendererDelegate.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// RendererDelegate.swift
+/// Defines the RendererDelegate types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

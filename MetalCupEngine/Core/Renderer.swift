@@ -1,9 +1,6 @@
-//
-//  Renderer.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/17/26.
-//
+/// Renderer.swift
+/// Defines the Renderer types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 import simd

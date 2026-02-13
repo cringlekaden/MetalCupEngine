@@ -1,9 +1,6 @@
-//
-//  SamplerStateLibrary.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/21/26.
-//
+/// SamplerStateLibrary.swift
+/// Defines the SamplerStateLibrary types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

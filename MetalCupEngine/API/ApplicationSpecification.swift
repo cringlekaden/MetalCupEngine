@@ -1,9 +1,6 @@
-//
-//  ApplicationSpecification.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// ApplicationSpecification.swift
+/// Defines the ApplicationSpecification types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 import MetalKit

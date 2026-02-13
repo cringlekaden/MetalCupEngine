@@ -1,9 +1,6 @@
-//
-//  Library.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/21/26.
-//
+/// Library.swift
+/// Defines the Library types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 public class Library<T, K> {
     

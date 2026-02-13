@@ -1,9 +1,6 @@
-//
-//  RendererSettings.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 2/6/26.
-//
+/// RendererSettings.swift
+/// Defines the RendererSettings types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 

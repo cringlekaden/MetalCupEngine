@@ -1,9 +1,6 @@
-//
-//  Maths.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/18/26.
-//
+/// Maths.swift
+/// Defines the Maths types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

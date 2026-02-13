@@ -1,9 +1,6 @@
-//
-//  AssetManager.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// AssetManager.swift
+/// Defines the AssetManager types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 import MetalKit

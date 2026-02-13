@@ -1,9 +1,6 @@
-//
-//  Mouse.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/18/26.
-//
+/// Mouse.swift
+/// Defines the Mouse types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

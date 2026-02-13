@@ -1,9 +1,6 @@
-//
-//  DepthStencilStateLibrary.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/18/26.
-//
+/// DepthStencilStateLibrary.swift
+/// Defines the DepthStencilStateLibrary types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

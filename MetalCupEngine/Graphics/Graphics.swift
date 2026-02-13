@@ -1,9 +1,6 @@
-//
-//  Graphics.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/21/26.
-//
+/// Graphics.swift
+/// Defines the Graphics types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 public final class Graphics {
     

@@ -1,9 +1,6 @@
-//
-//  MetalTypes.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/21/26.
-//
+/// MetalTypes.swift
+/// Defines the MetalTypes types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import simd
 

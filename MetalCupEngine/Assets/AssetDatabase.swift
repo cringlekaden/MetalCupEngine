@@ -1,9 +1,6 @@
-//
-//  AssetDatabase.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// AssetDatabase.swift
+/// Defines the AssetDatabase types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 

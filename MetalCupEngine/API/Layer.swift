@@ -1,9 +1,6 @@
-//
-//  Layer.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// Layer.swift
+/// Defines the Layer types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

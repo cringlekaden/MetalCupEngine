@@ -1,9 +1,6 @@
-//
-//  Scene.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/18/26.
-//
+/// EngineScene.swift
+/// Defines the EngineScene types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 import simd
@@ -430,7 +427,8 @@ public class EngineScene {
                 roughnessMapHandle: roughnessMapHandle,
                 mrMapHandle: mrMapHandle,
                 aoMapHandle: aoMapHandle,
-                emissiveMapHandle: emissiveMapHandle
+                emissiveMapHandle: emissiveMapHandle,
+                useEmbeddedMaterial: false
             )
         }
     }

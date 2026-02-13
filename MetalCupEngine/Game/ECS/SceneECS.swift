@@ -1,3 +1,7 @@
+/// SceneECS.swift
+/// Defines the SceneECS types and helpers for the engine.
+/// Created by Kaden Cringle.
+
 import Foundation
 
 public struct Entity: Hashable {

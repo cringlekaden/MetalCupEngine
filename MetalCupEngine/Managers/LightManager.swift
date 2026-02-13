@@ -1,9 +1,6 @@
-//
-//  LightManager.swift
-//  MetalCup
-//
-//  Created by Kaden Cringle on 1/21/26.
-//
+/// LightManager.swift
+/// Defines the LightManager types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

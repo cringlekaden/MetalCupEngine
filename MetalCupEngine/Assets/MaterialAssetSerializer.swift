@@ -1,9 +1,6 @@
-//
-//  MaterialAssetSerializer.swift
-//  MetalCup
-//
-//  Created by Engine Scaffolding
-//
+/// MaterialAssetSerializer.swift
+/// Defines the MaterialAssetSerializer types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 import simd

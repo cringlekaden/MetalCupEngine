@@ -1,9 +1,6 @@
-//
-//  RendererSettingsBridge.swift
-//  MetalCupEngine
-//
-//  Created by Codex on 2/6/26.
-//
+/// RendererSettingsBridge.swift
+/// Defines the RendererSettingsBridge types and helpers for the engine.
+/// Created by Kaden Cringle.
 
 import Foundation
 
@@ -163,6 +160,17 @@ public func MCERendererGetIBLIntensity() -> Float {
 @_cdecl("MCERendererSetIBLIntensity")
 public func MCERendererSetIBLIntensity(_ value: Float) {
     Renderer.settings.iblIntensity = value
+}
+
+@_cdecl("MCERendererGetIBLQualityPreset")
+public func MCERendererGetIBLQualityPreset() -> UInt32 {
+    Renderer.settings.iblQualityPreset
+}
+
+@_cdecl("MCERendererSetIBLQualityPreset")
+public func MCERendererSetIBLQualityPreset(_ value: UInt32) {
+    Renderer.settings.iblQualityPreset = value
+    requestIBLRegenerate()
 }
 
 @_cdecl("MCERendererGetHalfResBloom")
