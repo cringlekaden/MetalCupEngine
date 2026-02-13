@@ -41,9 +41,6 @@ The demo highlights:
 - Configurable bloom post-processing
 - Configurable tone mapping, gamma correction, and exposure
 
-> An environment / skybox is **optional**. In the future we will offer a dynamic/generated sky in place of environment asset.
-> IBL is applied when an environment exists, but future lighting will also support purely analytic lights.
-
 ### Assets
 - USDZ asset loading via ModelIO
 - Automated asset importing
@@ -61,8 +58,9 @@ The demo highlights:
 
 ### Engine Structure
 - Built as a reusable **engine framework**
-- Scene management system (changes soon)
-- Game object / node hierarchy (changes soon)
+- Renderer settings owned by the engine and serialized with scenes
+- Scene management system
+- Entity/component runtime with editor-driven serialization
 - Render-to-texture pipeline
 - Cubemap rendering passes
 - Clean separation between rendering stages
@@ -70,31 +68,33 @@ The demo highlights:
 
 ---
 
+## Architecture
+
+- The engine owns runtime state (renderer settings, ECS components, GPU resources).
+- The editor reads and writes engine state through C-callable bridge APIs.
+- Renderer settings live in the engine and are surfaced to the editor via a thin bridge.
+
+See `ARCHITECTURE.md` at the repository root for the full structure and data flow.
+
+---
+
 ## Planned Work
 
 ### Rendering
-- Directional light support
-- Point lights with attenuation (in progress, working)
-- Spot lights
-- IBL as an additive lighting component
 - Ray-traced shadows
 - Improved specular occlusion
 - Reflection probes
 - Improved post-processing pipeline
-- Additional tone-mapping operators
 
 ### Engine Architecture
-- Entity Component System (ECS)
+- Entity Component System (ECS) (in progress)
 - Engine / Application / Layer stack (in progress)
 - Event system (in progress)
-- Serialization support
-- Improved runtime/editor boundaries
 
 ### World & Content
-- Scene serialization format
-- Asset pipeline improvements
 - Material system extensions
 - Lighting tools and utilities
+- Terrain utilities
 
 ---
 
