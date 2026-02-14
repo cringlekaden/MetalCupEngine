@@ -16,6 +16,7 @@ public final class RendererFrameContext {
 
     private let maxFramesInFlight = 3
     private var frameIndex = 0
+    private var frameCounter: UInt64 = 0
 
     private var instanceBuffers: [MTLBuffer?] = []
     private var instanceBufferCapacities: [Int] = []
@@ -27,12 +28,17 @@ public final class RendererFrameContext {
 
     public func beginFrame() {
         frameIndex = (frameIndex + 1) % maxFramesInFlight
+        frameCounter &+= 1
         ensureFrameStorage()
         batchStats = RendererBatchStats()
     }
 
     public func currentFrameIndex() -> Int {
         return frameIndex
+    }
+
+    public func currentFrameCounter() -> UInt64 {
+        return frameCounter
     }
 
     public func updateBatchStats(_ stats: RendererBatchStats) {

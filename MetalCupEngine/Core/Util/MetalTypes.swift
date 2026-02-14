@@ -48,6 +48,8 @@ public enum FragmentBufferIndex {
     public static let iblParams = ShaderBindings.FragmentBuffer.iblParams
     public static let skyParams = ShaderBindings.FragmentBuffer.skyParams
     public static let skyIntensity = ShaderBindings.FragmentBuffer.skyIntensity
+    public static let outlineParams = ShaderBindings.FragmentBuffer.outlineParams
+    public static let gridParams = ShaderBindings.FragmentBuffer.gridParams
 }
 
 public enum FragmentTextureIndex {
@@ -76,6 +78,9 @@ public enum FragmentSamplerIndex {
 public enum PostProcessTextureIndex {
     public static let source = ShaderBindings.PostProcessTexture.source
     public static let bloom = ShaderBindings.PostProcessTexture.bloom
+    public static let outlineMask = ShaderBindings.PostProcessTexture.outlineMask
+    public static let depth = ShaderBindings.PostProcessTexture.depth
+    public static let grid = ShaderBindings.PostProcessTexture.grid
 }
 
 public enum IBLTextureIndex {
@@ -102,7 +107,7 @@ public struct ModelConstants: sizeable {
 public struct InstanceData: sizeable {
     public var modelMatrix = matrix_identity_float4x4
     public var entityID: UInt32 = 0
-    public var padding = SIMD3<UInt32>(repeating: 0)
+    public var padding = SIMD4<UInt32>(repeating: 0)
 }
 
 public struct SceneConstants: sizeable {
@@ -199,3 +204,16 @@ public struct SkyParams: sizeable {
 }
 
 public typealias SkyUniforms = SkyParams
+
+public struct OutlineParams: sizeable {
+    public var selectedId: UInt32 = 0
+    public var thickness: UInt32 = 1
+    public var padding = SIMD2<UInt32>(repeating: 0)
+    public var texelSize = SIMD2<Float>(0, 0)
+}
+
+public struct GridParams: sizeable {
+    public var inverseViewProjection = matrix_identity_float4x4
+    public var cameraPosition = SIMD3<Float>(0, 0, 0)
+    public var padding: Float = 0.0
+}

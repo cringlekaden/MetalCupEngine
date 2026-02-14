@@ -7,6 +7,8 @@ import MetalKit
 public enum ShaderType {
     case BasicVertex
     case InstancedVertex
+    case DepthOnlyVertex
+    case DepthOnlyInstancedVertex
     case BasicFragment
     case SkyboxVertex
     case SkyboxFragment
@@ -27,6 +29,8 @@ public enum ShaderType {
     case HDRILuminanceFragment
     case PickInstancedVertex
     case PickFragment
+    case GridFragment
+    case OutlineFragment
 }
 
 public class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -40,6 +44,8 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
     public func registerDefaults() {
         register(.BasicVertex, name: "Basic Vertex", functionName: "vertex_basic")
         register(.InstancedVertex, name: "Instanced Vertex", functionName: "vertex_instanced")
+        register(.DepthOnlyVertex, name: "Depth Only Vertex", functionName: "vertex_depth_only")
+        register(.DepthOnlyInstancedVertex, name: "Depth Only Instanced Vertex", functionName: "vertex_depth_only_instanced")
         register(.BasicFragment, name: "Basic Fragment", functionName: "fragment_basic")
         register(.SkyboxVertex, name: "Skybox Vertex", functionName: "vertex_skybox")
         register(.SkyboxFragment, name: "Skybox Fragment", functionName: "fragment_skybox")
@@ -59,6 +65,8 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.HDRILuminanceFragment, name: "HDRI Luminance Fragment", functionName: "fragment_hdri_luminance")
         register(.PickInstancedVertex, name: "Pick Instanced Vertex", functionName: "vertex_pick_instanced")
         register(.PickFragment, name: "Pick Fragment", functionName: "fragment_pick_id")
+        register(.GridFragment, name: "Grid Fragment", functionName: "fragment_grid")
+        register(.OutlineFragment, name: "Outline Fragment", functionName: "fragment_outline_mask")
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {

@@ -10,6 +10,8 @@ enum RenderResourceTexture {
     case baseDepth
     case bloomPing
     case bloomPong
+    case outlineMask
+    case gridColor
     case pickId
     case pickDepth
 
@@ -25,6 +27,10 @@ enum RenderResourceTexture {
             return BuiltinAssets.bloomPing
         case .bloomPong:
             return BuiltinAssets.bloomPong
+        case .outlineMask:
+            return BuiltinAssets.outlineMask
+        case .gridColor:
+            return BuiltinAssets.gridColor
         case .pickId:
             return BuiltinAssets.pickIdRender
         case .pickDepth:
@@ -49,6 +55,8 @@ final class RenderResources {
             && texture(.baseDepth) != nil
             && texture(.bloomPing) != nil
             && texture(.bloomPong) != nil
+            && texture(.outlineMask) != nil
+            && texture(.gridColor) != nil
             && texture(.pickId) != nil
             && texture(.pickDepth) != nil
     }
@@ -89,6 +97,26 @@ final class RenderResources {
         baseDepthDesc.usage = [.renderTarget, .shaderRead]
         baseDepthDesc.storageMode = .private
         registerTexture(descriptor: baseDepthDesc, handle: .baseDepth, label: "RenderTarget.BaseDepth")
+
+        let outlineDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        outlineDesc.usage = [.renderTarget, .shaderRead]
+        outlineDesc.storageMode = .private
+        registerTexture(descriptor: outlineDesc, handle: .outlineMask, label: "RenderTarget.OutlineMask")
+
+        let gridDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: Preferences.HDRPixelFormat,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        gridDesc.usage = [.renderTarget, .shaderRead]
+        gridDesc.storageMode = .private
+        registerTexture(descriptor: gridDesc, handle: .gridColor, label: "RenderTarget.GridColor")
 
         let pickIdDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r32Uint,

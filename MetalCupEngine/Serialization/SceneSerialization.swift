@@ -348,6 +348,14 @@ public struct RendererSettingsDTO: Codable {
     public var normalMapMipBiasGrazing: Float
     public var shadingDebugMode: UInt32
     public var iblQualityPreset: UInt32
+    public var outlineEnabled: UInt32
+    public var outlineThickness: UInt32
+    public var outlineOpacity: Float
+    public var outlineColor: Vector3DTO
+    public var gridEnabled: UInt32
+    public var gridOpacity: Float
+    public var gridFadeDistance: Float
+    public var gridMajorLineEvery: Float
 
     public init(schemaVersion: Int = 1, settings: RendererSettings) {
         self.schemaVersion = schemaVersion
@@ -379,6 +387,137 @@ public struct RendererSettingsDTO: Codable {
         self.normalMapMipBiasGrazing = settings.normalMapMipBiasGrazing
         self.shadingDebugMode = settings.shadingDebugMode
         self.iblQualityPreset = settings.iblQualityPreset
+        self.outlineEnabled = settings.outlineEnabled
+        self.outlineThickness = settings.outlineThickness
+        self.outlineOpacity = settings.outlineOpacity
+        self.outlineColor = Vector3DTO(settings.outlineColor)
+        self.gridEnabled = settings.gridEnabled
+        self.gridOpacity = settings.gridOpacity
+        self.gridFadeDistance = settings.gridFadeDistance
+        self.gridMajorLineEvery = settings.gridMajorLineEvery
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = RendererSettings()
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        bloomThreshold = try container.decodeIfPresent(Float.self, forKey: .bloomThreshold) ?? defaults.bloomThreshold
+        bloomKnee = try container.decodeIfPresent(Float.self, forKey: .bloomKnee) ?? defaults.bloomKnee
+        bloomIntensity = try container.decodeIfPresent(Float.self, forKey: .bloomIntensity) ?? defaults.bloomIntensity
+        bloomUpsampleScale = try container.decodeIfPresent(Float.self, forKey: .bloomUpsampleScale) ?? defaults.bloomUpsampleScale
+        bloomDirtIntensity = try container.decodeIfPresent(Float.self, forKey: .bloomDirtIntensity) ?? defaults.bloomDirtIntensity
+        bloomEnabled = try container.decodeIfPresent(UInt32.self, forKey: .bloomEnabled) ?? defaults.bloomEnabled
+        bloomMaxMips = try container.decodeIfPresent(UInt32.self, forKey: .bloomMaxMips) ?? defaults.bloomMaxMips
+        blurPasses = try container.decodeIfPresent(UInt32.self, forKey: .blurPasses) ?? defaults.blurPasses
+        tonemap = try container.decodeIfPresent(UInt32.self, forKey: .tonemap) ?? defaults.tonemap
+        exposure = try container.decodeIfPresent(Float.self, forKey: .exposure) ?? defaults.exposure
+        gamma = try container.decodeIfPresent(Float.self, forKey: .gamma) ?? defaults.gamma
+        iblEnabled = try container.decodeIfPresent(UInt32.self, forKey: .iblEnabled) ?? defaults.iblEnabled
+        iblIntensity = try container.decodeIfPresent(Float.self, forKey: .iblIntensity) ?? defaults.iblIntensity
+        iblResolutionOverride = try container.decodeIfPresent(UInt32.self, forKey: .iblResolutionOverride) ?? defaults.iblResolutionOverride
+        perfFlags = try container.decodeIfPresent(UInt32.self, forKey: .perfFlags) ?? defaults.perfFlags
+        normalFlipYGlobal = try container.decodeIfPresent(UInt32.self, forKey: .normalFlipYGlobal) ?? defaults.normalFlipYGlobal
+        iblFireflyClamp = try container.decodeIfPresent(Float.self, forKey: .iblFireflyClamp) ?? defaults.iblFireflyClamp
+        iblFireflyClampEnabled = try container.decodeIfPresent(UInt32.self, forKey: .iblFireflyClampEnabled) ?? defaults.iblFireflyClampEnabled
+        iblSampleMultiplier = try container.decodeIfPresent(Float.self, forKey: .iblSampleMultiplier) ?? defaults.iblSampleMultiplier
+        iblSpecularLodExponent = try container.decodeIfPresent(Float.self, forKey: .iblSpecularLodExponent) ?? defaults.iblSpecularLodExponent
+        iblSpecularLodBias = try container.decodeIfPresent(Float.self, forKey: .iblSpecularLodBias) ?? defaults.iblSpecularLodBias
+        iblSpecularGrazingLodBias = try container.decodeIfPresent(Float.self, forKey: .iblSpecularGrazingLodBias) ?? defaults.iblSpecularGrazingLodBias
+        iblSpecularMinRoughness = try container.decodeIfPresent(Float.self, forKey: .iblSpecularMinRoughness) ?? defaults.iblSpecularMinRoughness
+        specularAAStrength = try container.decodeIfPresent(Float.self, forKey: .specularAAStrength) ?? defaults.specularAAStrength
+        normalMapMipBias = try container.decodeIfPresent(Float.self, forKey: .normalMapMipBias) ?? defaults.normalMapMipBias
+        normalMapMipBiasGrazing = try container.decodeIfPresent(Float.self, forKey: .normalMapMipBiasGrazing) ?? defaults.normalMapMipBiasGrazing
+        shadingDebugMode = try container.decodeIfPresent(UInt32.self, forKey: .shadingDebugMode) ?? defaults.shadingDebugMode
+        iblQualityPreset = try container.decodeIfPresent(UInt32.self, forKey: .iblQualityPreset) ?? defaults.iblQualityPreset
+        outlineEnabled = try container.decodeIfPresent(UInt32.self, forKey: .outlineEnabled) ?? defaults.outlineEnabled
+        outlineThickness = try container.decodeIfPresent(UInt32.self, forKey: .outlineThickness) ?? defaults.outlineThickness
+        outlineOpacity = try container.decodeIfPresent(Float.self, forKey: .outlineOpacity) ?? defaults.outlineOpacity
+        outlineColor = try container.decodeIfPresent(Vector3DTO.self, forKey: .outlineColor) ?? Vector3DTO(defaults.outlineColor)
+        gridEnabled = try container.decodeIfPresent(UInt32.self, forKey: .gridEnabled) ?? defaults.gridEnabled
+        gridOpacity = try container.decodeIfPresent(Float.self, forKey: .gridOpacity) ?? defaults.gridOpacity
+        gridFadeDistance = try container.decodeIfPresent(Float.self, forKey: .gridFadeDistance) ?? defaults.gridFadeDistance
+        gridMajorLineEvery = try container.decodeIfPresent(Float.self, forKey: .gridMajorLineEvery) ?? defaults.gridMajorLineEvery
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(bloomThreshold, forKey: .bloomThreshold)
+        try container.encode(bloomKnee, forKey: .bloomKnee)
+        try container.encode(bloomIntensity, forKey: .bloomIntensity)
+        try container.encode(bloomUpsampleScale, forKey: .bloomUpsampleScale)
+        try container.encode(bloomDirtIntensity, forKey: .bloomDirtIntensity)
+        try container.encode(bloomEnabled, forKey: .bloomEnabled)
+        try container.encode(bloomMaxMips, forKey: .bloomMaxMips)
+        try container.encode(blurPasses, forKey: .blurPasses)
+        try container.encode(tonemap, forKey: .tonemap)
+        try container.encode(exposure, forKey: .exposure)
+        try container.encode(gamma, forKey: .gamma)
+        try container.encode(iblEnabled, forKey: .iblEnabled)
+        try container.encode(iblIntensity, forKey: .iblIntensity)
+        try container.encode(iblResolutionOverride, forKey: .iblResolutionOverride)
+        try container.encode(perfFlags, forKey: .perfFlags)
+        try container.encode(normalFlipYGlobal, forKey: .normalFlipYGlobal)
+        try container.encode(iblFireflyClamp, forKey: .iblFireflyClamp)
+        try container.encode(iblFireflyClampEnabled, forKey: .iblFireflyClampEnabled)
+        try container.encode(iblSampleMultiplier, forKey: .iblSampleMultiplier)
+        try container.encode(iblSpecularLodExponent, forKey: .iblSpecularLodExponent)
+        try container.encode(iblSpecularLodBias, forKey: .iblSpecularLodBias)
+        try container.encode(iblSpecularGrazingLodBias, forKey: .iblSpecularGrazingLodBias)
+        try container.encode(iblSpecularMinRoughness, forKey: .iblSpecularMinRoughness)
+        try container.encode(specularAAStrength, forKey: .specularAAStrength)
+        try container.encode(normalMapMipBias, forKey: .normalMapMipBias)
+        try container.encode(normalMapMipBiasGrazing, forKey: .normalMapMipBiasGrazing)
+        try container.encode(shadingDebugMode, forKey: .shadingDebugMode)
+        try container.encode(iblQualityPreset, forKey: .iblQualityPreset)
+        try container.encode(outlineEnabled, forKey: .outlineEnabled)
+        try container.encode(outlineThickness, forKey: .outlineThickness)
+        try container.encode(outlineOpacity, forKey: .outlineOpacity)
+        try container.encode(outlineColor, forKey: .outlineColor)
+        try container.encode(gridEnabled, forKey: .gridEnabled)
+        try container.encode(gridOpacity, forKey: .gridOpacity)
+        try container.encode(gridFadeDistance, forKey: .gridFadeDistance)
+        try container.encode(gridMajorLineEvery, forKey: .gridMajorLineEvery)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case bloomThreshold
+        case bloomKnee
+        case bloomIntensity
+        case bloomUpsampleScale
+        case bloomDirtIntensity
+        case bloomEnabled
+        case bloomMaxMips
+        case blurPasses
+        case tonemap
+        case exposure
+        case gamma
+        case iblEnabled
+        case iblIntensity
+        case iblResolutionOverride
+        case perfFlags
+        case normalFlipYGlobal
+        case iblFireflyClamp
+        case iblFireflyClampEnabled
+        case iblSampleMultiplier
+        case iblSpecularLodExponent
+        case iblSpecularLodBias
+        case iblSpecularGrazingLodBias
+        case iblSpecularMinRoughness
+        case specularAAStrength
+        case normalMapMipBias
+        case normalMapMipBiasGrazing
+        case shadingDebugMode
+        case iblQualityPreset
+        case outlineEnabled
+        case outlineThickness
+        case outlineOpacity
+        case outlineColor
+        case gridEnabled
+        case gridOpacity
+        case gridFadeDistance
+        case gridMajorLineEvery
     }
 
     public func makeRendererSettings() -> RendererSettings {
@@ -411,6 +550,14 @@ public struct RendererSettingsDTO: Codable {
         settings.normalMapMipBiasGrazing = normalMapMipBiasGrazing
         settings.shadingDebugMode = shadingDebugMode
         settings.iblQualityPreset = iblQualityPreset
+        settings.outlineEnabled = outlineEnabled
+        settings.outlineThickness = outlineThickness
+        settings.outlineOpacity = outlineOpacity
+        settings.outlineColor = outlineColor.toSIMD()
+        settings.gridEnabled = gridEnabled
+        settings.gridOpacity = gridOpacity
+        settings.gridFadeDistance = gridFadeDistance
+        settings.gridMajorLineEvery = gridMajorLineEvery
         return settings
     }
 }

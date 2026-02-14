@@ -60,6 +60,16 @@ public struct RendererSettings: sizeable {
     public var shadingDebugMode: UInt32 = 0
     public var iblQualityPreset: UInt32 = IBLQualityPreset.high.rawValue
 
+    public var outlineEnabled: UInt32 = 1
+    public var outlineThickness: UInt32 = 1
+    public var outlineOpacity: Float = 1.0
+    public var outlinePadding: Float = 0.0
+    public var outlineColor: SIMD3<Float> = SIMD3<Float>(1.0, 0.9, 0.2)
+    public var outlineColorPadding: Float = 0.0
+    public var gridEnabled: UInt32 = 1
+    public var gridOpacity: Float = 0.85
+    public var gridFadeDistance: Float = 120.0
+    public var gridMajorLineEvery: Float = 10.0
     public var padding: SIMD2<Float> = .zero
 }
 

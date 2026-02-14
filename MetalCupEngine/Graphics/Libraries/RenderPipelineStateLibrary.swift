@@ -20,6 +20,8 @@ public enum RenderPipelineStateType {
     case BloomDownsample
     case BloomBlurH
     case BloomBlurV
+    case GridOverlay
+    case SelectionOutline
     case ProceduralSkyCubemap
     case HDRILuminance
 }
@@ -57,7 +59,7 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
         library[.DepthPrepass] = buildPipeline(label: "DepthPrepass") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = .invalid
             descriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
-            descriptor.vertexFunction = Graphics.Shaders[.BasicVertex]
+            descriptor.vertexFunction = Graphics.Shaders[.DepthOnlyVertex]
             descriptor.fragmentFunction = nil
             descriptor.vertexDescriptor = Graphics.VertexDescriptors[.Default]
         }
@@ -65,7 +67,7 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
         library[.DepthPrepassInstanced] = buildPipeline(label: "DepthPrepassInstanced") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = .invalid
             descriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
-            descriptor.vertexFunction = Graphics.Shaders[.InstancedVertex]
+            descriptor.vertexFunction = Graphics.Shaders[.DepthOnlyInstancedVertex]
             descriptor.fragmentFunction = nil
             descriptor.vertexDescriptor = Graphics.VertexDescriptors[.Default]
         }
@@ -186,6 +188,30 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
             descriptor.stencilAttachmentPixelFormat = .invalid
             descriptor.vertexFunction = Graphics.Shaders[.FinalVertex]
             descriptor.fragmentFunction = Graphics.Shaders[.BlurVFragment]
+            descriptor.vertexDescriptor = Graphics.VertexDescriptors[.Simple]
+            descriptor.rasterSampleCount = 1
+            descriptor.inputPrimitiveTopology = .triangle
+        }
+
+        library[.GridOverlay] = buildPipeline(label: "GridOverlay") { descriptor in
+            descriptor.colorAttachments[0].pixelFormat = Preferences.HDRPixelFormat
+            descriptor.colorAttachments[0].isBlendingEnabled = false
+            descriptor.depthAttachmentPixelFormat = .invalid
+            descriptor.stencilAttachmentPixelFormat = .invalid
+            descriptor.vertexFunction = Graphics.Shaders[.FinalVertex]
+            descriptor.fragmentFunction = Graphics.Shaders[.GridFragment]
+            descriptor.vertexDescriptor = Graphics.VertexDescriptors[.Simple]
+            descriptor.rasterSampleCount = 1
+            descriptor.inputPrimitiveTopology = .triangle
+        }
+
+        library[.SelectionOutline] = buildPipeline(label: "SelectionOutline") { descriptor in
+            descriptor.colorAttachments[0].pixelFormat = .r8Unorm
+            descriptor.colorAttachments[0].isBlendingEnabled = false
+            descriptor.depthAttachmentPixelFormat = .invalid
+            descriptor.stencilAttachmentPixelFormat = .invalid
+            descriptor.vertexFunction = Graphics.Shaders[.FinalVertex]
+            descriptor.fragmentFunction = Graphics.Shaders[.OutlineFragment]
             descriptor.vertexDescriptor = Graphics.VertexDescriptors[.Simple]
             descriptor.rasterSampleCount = 1
             descriptor.inputPrimitiveTopology = .triangle

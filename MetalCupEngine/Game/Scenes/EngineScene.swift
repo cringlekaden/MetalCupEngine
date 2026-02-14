@@ -14,8 +14,9 @@ public class EngineScene {
     private var _sceneConstants = SceneConstants()
     private let _editorCameraController = EditorCameraController()
     private var _cachedBatchResult: RenderBatchResult?
-    private var _cachedBatchFrameIndex: Int = -1
+    private var _cachedBatchFrameToken: UInt64 = UInt64.max
     private var _lastPickIdMap: [UInt32: Entity] = [:]
+    private var _lastPickIdByEntityId: [UUID: UInt32] = [:]
 
     public var environmentMapHandle: AssetHandle?
 
@@ -70,7 +71,6 @@ public class EngineScene {
             _lightManager.setLightData(encoder)
             renderSky(encoder)
             renderMeshes(encoder, pass: .main)
-            renderSelectionHighlight(encoder)
         case .picking:
             renderMeshes(encoder, pass: .picking)
         case .depthPrepass:
@@ -81,6 +81,26 @@ public class EngineScene {
 
     public func entity(forPickID id: UInt32) -> Entity? {
         return _lastPickIdMap[id]
+    }
+
+    public func pickId(for entityId: UUID) -> UInt32 {
+        return _lastPickIdByEntityId[entityId] ?? 0
+    }
+
+    public func gridParams() -> GridParams {
+        var params = GridParams()
+        let viewProjection = _sceneConstants.projectionMatrix * _sceneConstants.viewMatrix
+        params.inverseViewProjection = simd_inverse(viewProjection)
+        params.cameraPosition = SIMD3<Float>(
+            _sceneConstants.cameraPositionAndIBL.x,
+            _sceneConstants.cameraPositionAndIBL.y,
+            _sceneConstants.cameraPositionAndIBL.z
+        )
+        return params
+    }
+
+    public func cameraMatrices() -> (view: matrix_float4x4, projection: matrix_float4x4) {
+        return (view: _sceneConstants.viewMatrix, projection: _sceneConstants.projectionMatrix)
     }
 
     func updateCameras() {
@@ -479,10 +499,16 @@ public class EngineScene {
 
     private func applyPerDrawState(_ encoder: MTLRenderCommandEncoder, pass: RenderPassType, cullMode: MTLCullMode) {
         encoder.setTriangleFillMode(Preferences.isWireframeEnabled ? .lines : .fill)
-        let useEqual = Renderer.useDepthPrepass && pass == .main
-        encoder.setDepthStencilState(Graphics.DepthStencilStates[useEqual ? .EqualNoWrite : .Less])
+        let usePrepass = Renderer.useDepthPrepass && pass == .main
+        encoder.setDepthStencilState(Graphics.DepthStencilStates[usePrepass ? .LessEqualNoWrite : .Less])
         encoder.setCullMode(cullMode)
         encoder.setFrontFacing(.counterClockwise)
+        if pass == .depthPrepass {
+            // Small bias to prevent depth-only pass from self-occluding the main pass.
+            encoder.setDepthBias(0.0005, slopeScale: 1.0, clamp: 0.0)
+        } else {
+            encoder.setDepthBias(0.0, slopeScale: 0.0, clamp: 0.0)
+        }
     }
 
     private func encodeDepthPrepass(
@@ -493,21 +519,17 @@ public class EngineScene {
         instanceOffset: Int,
         instanceCount: Int
     ) {
-        if instanceCount > 1 {
-            encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.DepthPrepassInstanced])
-            encoder.setVertexBuffer(instanceBuffer, offset: instanceOffset, index: VertexBufferIndex.instances)
-            batch.mesh.setInstanceCount(instanceCount)
-            drawMesh(encoder, mesh: batch.mesh, bindings: nil)
-            return
-        }
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.DepthPrepass])
-        let instanceIndex = batch.instanceRange.lowerBound
-        guard instanceIndex < batchResult.instances.count else { return }
-        var modelConstants = ModelConstants()
-        modelConstants.modelMatrix = batchResult.instances[instanceIndex].modelMatrix
-        encoder.setVertexBytes(&modelConstants, length: ModelConstants.stride, index: VertexBufferIndex.modelConstants)
-        batch.mesh.setInstanceCount(1)
-        drawMesh(encoder, mesh: batch.mesh, bindings: nil)
+        encodeMeshBatch(
+            encoder,
+            batch: batch,
+            batchResult: batchResult,
+            instanceBuffer: instanceBuffer,
+            instanceOffset: instanceOffset,
+            instanceCount: instanceCount,
+            instancedPipeline: .DepthPrepassInstanced,
+            singlePipeline: .DepthPrepass,
+            bindings: nil
+        )
     }
 
     private func encodePicking(
@@ -531,21 +553,45 @@ public class EngineScene {
         instanceOffset: Int,
         instanceCount: Int
     ) {
+        encodeMeshBatch(
+            encoder,
+            batch: batch,
+            batchResult: batchResult,
+            instanceBuffer: instanceBuffer,
+            instanceOffset: instanceOffset,
+            instanceCount: instanceCount,
+            instancedPipeline: .HDRInstanced,
+            singlePipeline: .HDRBasic,
+            bindings: batch.bindings
+        )
+    }
+
+    private func encodeMeshBatch(
+        _ encoder: MTLRenderCommandEncoder,
+        batch: RenderBatch,
+        batchResult: RenderBatchResult,
+        instanceBuffer: MTLBuffer,
+        instanceOffset: Int,
+        instanceCount: Int,
+        instancedPipeline: RenderPipelineStateType,
+        singlePipeline: RenderPipelineStateType,
+        bindings: MaterialBindings?
+    ) {
         if instanceCount > 1 {
-            encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.HDRInstanced])
+            encoder.setRenderPipelineState(Graphics.RenderPipelineStates[instancedPipeline])
             encoder.setVertexBuffer(instanceBuffer, offset: instanceOffset, index: VertexBufferIndex.instances)
             batch.mesh.setInstanceCount(instanceCount)
-            drawMesh(encoder, mesh: batch.mesh, bindings: batch.bindings)
+            drawMesh(encoder, mesh: batch.mesh, bindings: bindings)
             return
         }
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.HDRBasic])
+        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[singlePipeline])
         let instanceIndex = batch.instanceRange.lowerBound
         guard instanceIndex < batchResult.instances.count else { return }
         var modelConstants = ModelConstants()
         modelConstants.modelMatrix = batchResult.instances[instanceIndex].modelMatrix
         encoder.setVertexBytes(&modelConstants, length: ModelConstants.stride, index: VertexBufferIndex.modelConstants)
         batch.mesh.setInstanceCount(1)
-        drawMesh(encoder, mesh: batch.mesh, bindings: batch.bindings)
+        drawMesh(encoder, mesh: batch.mesh, bindings: bindings)
     }
 
     private func drawMesh(_ encoder: MTLRenderCommandEncoder, mesh: MCMesh, bindings: MaterialBindings?) {
@@ -564,6 +610,7 @@ public class EngineScene {
     }
 
     private func renderSelectionHighlight(_ encoder: MTLRenderCommandEncoder) {
+        // TODO: Remove legacy wireframe highlight once outline pass fully replaces it.
         guard !SceneManager.isPlaying,
               let selectedId = SceneManager.selectedEntityUUID(),
               let entity = ecs.entity(with: selectedId),
@@ -604,12 +651,12 @@ public class EngineScene {
     }
 
     private func currentBatchResult() -> RenderBatchResult {
-        let frameIndex = RendererFrameContext.shared.currentFrameIndex()
-        if _cachedBatchFrameIndex == frameIndex, let cached = _cachedBatchResult {
+        let frameToken = RendererFrameContext.shared.currentFrameCounter()
+        if _cachedBatchFrameToken == frameToken, let cached = _cachedBatchResult {
             return cached
         }
         let result = buildRenderBatches()
-        _cachedBatchFrameIndex = frameIndex
+        _cachedBatchFrameToken = frameToken
         _cachedBatchResult = result
         return result
     }
@@ -639,10 +686,11 @@ public class EngineScene {
     private func buildRenderBatches() -> RenderBatchResult {
         var builders: [RenderBatchKey: RenderBatchBuilder] = [:]
         var pickMap: [UInt32: Entity] = [:]
+        var pickIdByEntityId: [UUID: UInt32] = [:]
         var uniqueMeshes = Set<AssetHandle>()
         var nextPickId: UInt32 = 1
-
         let items = buildRenderItems()
+
         for item in items {
             let bindings = item.bindings
             let materialKey = makeMaterialKey(bindings: bindings)
@@ -656,6 +704,7 @@ public class EngineScene {
             let pickId = nextPickId
             nextPickId &+= 1
             pickMap[pickId] = item.entity
+            pickIdByEntityId[item.entity.id] = pickId
             var instance = InstanceData()
             instance.modelMatrix = modelMatrix(for: item.transform)
             instance.entityID = pickId
@@ -684,6 +733,7 @@ public class EngineScene {
         }
 
         _lastPickIdMap = pickMap
+        _lastPickIdByEntityId = pickIdByEntityId
         let instanceBuffer = RendererFrameContext.shared.uploadInstanceData(instances)
 
         let stats = RendererBatchStats(

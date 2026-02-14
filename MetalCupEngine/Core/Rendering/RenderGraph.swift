@@ -23,7 +23,9 @@ final class RenderGraph {
         passes = [
             DepthPrepassPass(),
             ScenePass(),
+            GridOverlayPass(),
             PickingPass(),
+            SelectionOutlinePass(),
             BloomExtractPass(),
             BloomBlurPass(),
             FinalCompositePass()

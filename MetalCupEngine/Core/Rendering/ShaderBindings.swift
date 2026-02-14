@@ -20,6 +20,8 @@ enum ShaderBindings {
         static let iblParams = 0
         static let skyParams = 0
         static let skyIntensity = 0
+        static let outlineParams = 5
+        static let gridParams = 6
     }
 
     enum FragmentTexture {
@@ -48,6 +50,9 @@ enum ShaderBindings {
     enum PostProcessTexture {
         static let source = 0
         static let bloom = 1
+        static let outlineMask = 2
+        static let depth = 3
+        static let grid = 4
     }
 
     enum IBLTexture {

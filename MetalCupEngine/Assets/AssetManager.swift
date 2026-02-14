@@ -13,6 +13,7 @@ public final class AssetManager {
     private static var materialCacheModified: [AssetHandle: TimeInterval] = [:]
     private static var runtimeTextureHandles = Set<AssetHandle>()
     private static var runtimeMeshHandles = Set<AssetHandle>()
+    private static let cacheLock = NSLock()
 
     public static func handle(forSourcePath sourcePath: String) -> AssetHandle? {
         guard let database = Engine.assetDatabase else { return nil }
@@ -42,14 +43,17 @@ public final class AssetManager {
     }
 
     public static func texture(handle: AssetHandle) -> MTLTexture? {
-        if let cached = textureCache[handle] {
-            return cached
-        }
+        cacheLock.lock()
+        let cached = textureCache[handle]
+        cacheLock.unlock()
+        if let cached { return cached }
         guard let database = Engine.assetDatabase,
               let url = database.assetURL(for: handle) else { return nil }
         let loader = MTKTextureLoader(device: Engine.Device)
         let metadata = database.metadata(for: handle)
-        var options: [MTKTextureLoader.Option: Any] = [.origin: MTKTextureLoader.Origin.topLeft]
+        var options: [MTKTextureLoader.Option: Any] = [
+            .origin: MTKTextureLoader.Origin.topLeft
+        ]
         let sourcePath = metadata?.sourcePath ?? url.lastPathComponent
         switch metadata?.type {
         case .environment:
@@ -69,7 +73,9 @@ public final class AssetManager {
                AssetManager.shouldGenerateMipmaps(path: sourcePath) {
                 ensureMipmaps(texture)
             }
+            cacheLock.lock()
             textureCache[handle] = texture
+            cacheLock.unlock()
             return texture
         } catch {
             print("ERROR::ASSET::TEXTURE::__\(url.lastPathComponent)__::\(error)")
@@ -78,12 +84,15 @@ public final class AssetManager {
     }
 
     public static func mesh(handle: AssetHandle) -> MCMesh? {
-        if let cached = meshCache[handle] {
-            return cached
-        }
+        cacheLock.lock()
+        let cached = meshCache[handle]
+        cacheLock.unlock()
+        if let cached { return cached }
         guard let url = Engine.assetDatabase?.assetURL(for: handle) else { return nil }
         let mesh = MCMesh(assetURL: url)
+        cacheLock.lock()
         meshCache[handle] = mesh
+        cacheLock.unlock()
         return mesh
     }
 
@@ -91,15 +100,21 @@ public final class AssetManager {
         guard let database = Engine.assetDatabase,
               let url = database.assetURL(for: handle) else { return nil }
         let lastModified = database.metadata(for: handle)?.lastModified ?? 0
-        if let cached = materialCache[handle],
-           materialCacheModified[handle] == lastModified {
+        cacheLock.lock()
+        let cached = materialCache[handle]
+        let cachedModified = materialCacheModified[handle]
+        cacheLock.unlock()
+        if let cached,
+           cachedModified == lastModified {
             return cached
         }
 
-        if let material = MaterialAssetSerializer.load(from: url, fallbackHandle: handle) {
+            if let material = MaterialAssetSerializer.load(from: url, fallbackHandle: handle) {
+            cacheLock.lock()
             let wasCached = materialCache[handle] != nil
             materialCache[handle] = material
             materialCacheModified[handle] = lastModified
+            cacheLock.unlock()
             let action = wasCached ? "RELOAD" : "LOAD"
             print("INFO::ASSET::MATERIAL::\(action)::\(url.lastPathComponent)")
             return material
@@ -108,13 +123,17 @@ public final class AssetManager {
     }
 
     public static func registerRuntimeTexture(handle: AssetHandle, texture: MTLTexture) {
+        cacheLock.lock()
         textureCache[handle] = texture
         runtimeTextureHandles.insert(handle)
+        cacheLock.unlock()
     }
 
     public static func registerRuntimeMesh(handle: AssetHandle, mesh: MCMesh) {
+        cacheLock.lock()
         meshCache[handle] = mesh
         runtimeMeshHandles.insert(handle)
+        cacheLock.unlock()
     }
 
     public static func preload(from database: AssetDatabase) {
@@ -133,10 +152,12 @@ public final class AssetManager {
     }
 
     public static func clearCache() {
+        cacheLock.lock()
         textureCache = textureCache.filter { runtimeTextureHandles.contains($0.key) }
         meshCache = meshCache.filter { runtimeMeshHandles.contains($0.key) }
         materialCache.removeAll()
         materialCacheModified.removeAll()
+        cacheLock.unlock()
     }
 
     public static func isColorTexture(path: String) -> Bool {

@@ -323,6 +323,97 @@ public func MCERendererSetNormalMapMipBiasGrazing(_ value: Float) {
     Renderer.settings.normalMapMipBiasGrazing = max(0.0, value)
 }
 
+@_cdecl("MCERendererGetOutlineEnabled")
+public func MCERendererGetOutlineEnabled() -> UInt32 {
+    Renderer.settings.outlineEnabled
+}
+
+@_cdecl("MCERendererSetOutlineEnabled")
+public func MCERendererSetOutlineEnabled(_ value: UInt32) {
+    Renderer.settings.outlineEnabled = value != 0 ? 1 : 0
+}
+
+@_cdecl("MCERendererGetOutlineThickness")
+public func MCERendererGetOutlineThickness() -> UInt32 {
+    Renderer.settings.outlineThickness
+}
+
+@_cdecl("MCERendererSetOutlineThickness")
+public func MCERendererSetOutlineThickness(_ value: UInt32) {
+    Renderer.settings.outlineThickness = max(1, min(4, value))
+}
+
+@_cdecl("MCERendererGetOutlineOpacity")
+public func MCERendererGetOutlineOpacity() -> Float {
+    Renderer.settings.outlineOpacity
+}
+
+@_cdecl("MCERendererSetOutlineOpacity")
+public func MCERendererSetOutlineOpacity(_ value: Float) {
+    Renderer.settings.outlineOpacity = max(0.0, min(1.0, value))
+}
+
+@_cdecl("MCERendererGetOutlineColor")
+public func MCERendererGetOutlineColor(
+    _ r: UnsafeMutablePointer<Float>?,
+    _ g: UnsafeMutablePointer<Float>?,
+    _ b: UnsafeMutablePointer<Float>?
+) {
+    let color = Renderer.settings.outlineColor
+    r?.pointee = color.x
+    g?.pointee = color.y
+    b?.pointee = color.z
+}
+
+@_cdecl("MCERendererSetOutlineColor")
+public func MCERendererSetOutlineColor(_ r: Float, _ g: Float, _ b: Float) {
+    Renderer.settings.outlineColor = SIMD3<Float>(
+        max(0.0, r),
+        max(0.0, g),
+        max(0.0, b)
+    )
+}
+
+@_cdecl("MCERendererGetGridEnabled")
+public func MCERendererGetGridEnabled() -> UInt32 {
+    Renderer.settings.gridEnabled
+}
+
+@_cdecl("MCERendererSetGridEnabled")
+public func MCERendererSetGridEnabled(_ value: UInt32) {
+    Renderer.settings.gridEnabled = value != 0 ? 1 : 0
+}
+
+@_cdecl("MCERendererGetGridOpacity")
+public func MCERendererGetGridOpacity() -> Float {
+    Renderer.settings.gridOpacity
+}
+
+@_cdecl("MCERendererSetGridOpacity")
+public func MCERendererSetGridOpacity(_ value: Float) {
+    Renderer.settings.gridOpacity = max(0.0, min(1.0, value))
+}
+
+@_cdecl("MCERendererGetGridFadeDistance")
+public func MCERendererGetGridFadeDistance() -> Float {
+    Renderer.settings.gridFadeDistance
+}
+
+@_cdecl("MCERendererSetGridFadeDistance")
+public func MCERendererSetGridFadeDistance(_ value: Float) {
+    Renderer.settings.gridFadeDistance = max(0.0, value)
+}
+
+@_cdecl("MCERendererGetGridMajorLineEvery")
+public func MCERendererGetGridMajorLineEvery() -> Float {
+    Renderer.settings.gridMajorLineEvery
+}
+
+@_cdecl("MCERendererSetGridMajorLineEvery")
+public func MCERendererSetGridMajorLineEvery(_ value: Float) {
+    Renderer.settings.gridMajorLineEvery = max(1.0, value)
+}
+
 @_cdecl("MCERendererGetIBLFireflyClampEnabled")
 public func MCERendererGetIBLFireflyClampEnabled() -> UInt32 {
     Renderer.settings.iblFireflyClampEnabled

@@ -22,6 +22,8 @@ public enum BuiltinAssets {
     public static let bloomPong = AssetHandle(string: "00000000-0000-0000-0000-000000000105")
     public static let pickIdRender = AssetHandle(string: "00000000-0000-0000-0000-000000000106")
     public static let pickDepthRender = AssetHandle(string: "00000000-0000-0000-0000-000000000107")
+    public static let outlineMask = AssetHandle(string: "00000000-0000-0000-0000-000000000108")
+    public static let gridColor = AssetHandle(string: "00000000-0000-0000-0000-000000000109")
 
     // IBL textures
     public static let environmentCubemap = AssetHandle(string: "00000000-0000-0000-0000-000000000201")
