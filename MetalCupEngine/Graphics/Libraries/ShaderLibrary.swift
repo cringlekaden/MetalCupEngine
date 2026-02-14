@@ -25,6 +25,8 @@ public enum ShaderType {
     case BlurVFragment
     case ProceduralSkyFragment
     case HDRILuminanceFragment
+    case PickInstancedVertex
+    case PickFragment
 }
 
 public class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -55,6 +57,8 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.BlurVFragment, name: "Blur Vertical Fragment", functionName: "fragment_blur_v")
         register(.ProceduralSkyFragment, name: "Procedural Sky Fragment", functionName: "fragment_procedural_sky")
         register(.HDRILuminanceFragment, name: "HDRI Luminance Fragment", functionName: "fragment_hdri_luminance")
+        register(.PickInstancedVertex, name: "Pick Instanced Vertex", functionName: "vertex_pick_instanced")
+        register(.PickFragment, name: "Pick Fragment", functionName: "fragment_pick_id")
     }
     
     override subscript(_ type: ShaderType)->MTLFunction {

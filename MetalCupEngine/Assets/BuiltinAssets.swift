@@ -20,6 +20,8 @@ public enum BuiltinAssets {
     public static let baseDepthRender = AssetHandle(string: "00000000-0000-0000-0000-000000000103")
     public static let bloomPing = AssetHandle(string: "00000000-0000-0000-0000-000000000104")
     public static let bloomPong = AssetHandle(string: "00000000-0000-0000-0000-000000000105")
+    public static let pickIdRender = AssetHandle(string: "00000000-0000-0000-0000-000000000106")
+    public static let pickDepthRender = AssetHandle(string: "00000000-0000-0000-0000-000000000107")
 
     // IBL textures
     public static let environmentCubemap = AssetHandle(string: "00000000-0000-0000-0000-000000000201")

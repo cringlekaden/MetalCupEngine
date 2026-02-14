@@ -31,6 +31,14 @@ public final class SceneManager {
     public static private(set) var isPlaying: Bool = false
     public static private(set) var isPaused: Bool = false
     private static var editorSnapshot: SceneDocument?
+    private static var pendingPickRequest: SIMD2<Int>?
+    private static var pendingPickResult: PickResult?
+    private static var selectedEntityId: UUID?
+
+    public enum PickResult {
+        case none
+        case entity(Entity)
+    }
 
     public static func setScene(_ scene: EngineScene) {
         editorScene = scene
@@ -59,9 +67,45 @@ public final class SceneManager {
         }
     }
 
+    public static func requestPick(at pixel: SIMD2<Int>) {
+        pendingPickRequest = pixel
+    }
+
+    static func consumePickRequest() -> SIMD2<Int>? {
+        let request = pendingPickRequest
+        pendingPickRequest = nil
+        return request
+    }
+
+    static func handlePickResult(_ pickedId: UInt32) {
+        if pickedId == 0 {
+            pendingPickResult = .none
+            return
+        }
+        if let entity = currentScene.entity(forPickID: pickedId) {
+            pendingPickResult = .entity(entity)
+        } else {
+            pendingPickResult = .none
+        }
+    }
+
+    public static func consumePickResult() -> PickResult? {
+        let result = pendingPickResult
+        pendingPickResult = nil
+        return result
+    }
+
     public static func updateViewportSize(_ size: SIMD2<Float>) {
         Renderer.ViewportSize = size
         currentScene.updateAspectRatio()
+    }
+
+    public static func setSelectedEntityId(_ entityId: String) {
+        selectedEntityId = UUID(uuidString: entityId)
+    }
+
+    public static func selectedEntityUUID() -> UUID? {
+        return selectedEntityId
     }
 
     public static func play() {

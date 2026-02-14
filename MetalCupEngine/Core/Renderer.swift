@@ -1,19 +1,29 @@
 /// Renderer.swift
-/// Defines the Renderer types and helpers for the engine.
-/// Created by Kaden Cringle.
+/// Renderer entry point and frame orchestration.
+/// Created by Kaden Cringle
 
 import MetalKit
 import simd
 import QuartzCore
 import Foundation
 
+public enum RenderPassType {
+    case main
+    case picking
+    case depthPrepass
+}
+
 public final class Renderer: NSObject {
     weak var delegate: RendererDelegate?
     public static var settings = RendererSettings()
     public static let profiler = RendererProfiler()
+    public static var currentRenderPass: RenderPassType = .main
+    public static var useDepthPrepass: Bool = true
 
     private let _projection = float4x4(perspectiveFov: .pi / 2, aspect: 1.0, nearZ: 0.1, farZ: 10.0)
     private var _lastPerfFlags: UInt32 = Renderer.settings.perfFlags
+    private let _renderResources = RenderResources()
+    private let _renderGraph = RenderGraph()
     // MARK: - Views for capturing cubemap faces
     private let _views: [float4x4] = [
         float4x4(lookAt: .zero, center: [ 1, 0, 0], up: [0,-1, 0]),
@@ -79,110 +89,7 @@ public final class Renderer: NSObject {
         renderBRDFLUT()
     }
 
-    // MARK: - Render target rebuild
-
-    private func currentDrawableSize() -> (width: Int, height: Int)? {
-        let width = Int(Renderer.DrawableSize.x)
-        let height = Int(Renderer.DrawableSize.y)
-        guard width > 0, height > 0 else { return nil }
-        return (width, height)
-    }
-
-    private func rebuildRenderTargets() {
-        guard let size = currentDrawableSize() else { return }
-        // Base HDR scene color
-        let baseColorDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: Preferences.HDRPixelFormat,
-            width: size.width,
-            height: size.height,
-            mipmapped: false
-        )
-        baseColorDesc.usage = [.renderTarget, .shaderRead]
-        baseColorDesc.storageMode = .private
-        if let texture = makeRenderTargetTexture(descriptor: baseColorDesc, label: "RenderTarget.BaseColor") {
-            AssetManager.registerRuntimeTexture(handle: BuiltinAssets.baseColorRender, texture: texture)
-        }
-        // Final LDR scene color
-        let finalColorDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: Preferences.defaultColorPixelFormat,
-            width: size.width,
-            height: size.height,
-            mipmapped: false
-        )
-        finalColorDesc.usage = [.renderTarget, .shaderRead]
-        finalColorDesc.storageMode = .private
-        if let texture = makeRenderTargetTexture(descriptor: finalColorDesc, label: "RenderTarget.FinalColor") {
-            AssetManager.registerRuntimeTexture(handle: BuiltinAssets.finalColorRender, texture: texture)
-        }
-        // Base depth
-        let baseDepthDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: Preferences.defaultDepthPixelFormat,
-            width: size.width,
-            height: size.height,
-            mipmapped: false
-        )
-        baseDepthDesc.usage = [.renderTarget, .shaderRead]
-        baseDepthDesc.storageMode = .private
-        if let texture = makeRenderTargetTexture(descriptor: baseDepthDesc, label: "RenderTarget.BaseDepth") {
-            AssetManager.registerRuntimeTexture(handle: BuiltinAssets.baseDepthRender, texture: texture)
-        }
-        // Bloom half-res ping/pong
-        let useHalfResBloom = Renderer.settings.hasPerfFlag(.halfResBloom)
-        let divisor = useHalfResBloom ? 2 : 1
-        let bw = max(1, size.width / divisor)
-        let bh = max(1, size.height / divisor)
-        let bloomDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: Preferences.HDRPixelFormat,
-            width: bw,
-            height: bh,
-            mipmapped: true
-        )
-        bloomDesc.usage = [.renderTarget, .shaderRead]
-        bloomDesc.storageMode = .private
-        if let ping = makeRenderTargetTexture(descriptor: bloomDesc, label: "RenderTarget.BloomPing") {
-            AssetManager.registerRuntimeTexture(handle: BuiltinAssets.bloomPing, texture: ping)
-        }
-        if let pong = makeRenderTargetTexture(descriptor: bloomDesc, label: "RenderTarget.BloomPong") {
-            AssetManager.registerRuntimeTexture(handle: BuiltinAssets.bloomPong, texture: pong)
-        }
-        Renderer.settings.bloomTexelSize = SIMD2<Float>(1.0 / Float(bw), 1.0 / Float(bh))
-    }
-
-    private func makeRenderTargetTexture(descriptor: MTLTextureDescriptor, label: String) -> MTLTexture? {
-        guard let texture = Engine.Device.makeTexture(descriptor: descriptor) else { return nil }
-        texture.label = label
-        return texture
-    }
-
-    private struct FullscreenPass {
-        var pipeline: RenderPipelineStateType
-        var label: String
-        var sampler: SamplerStateType?
-        var texture0: MTLTexture?
-        var texture1: MTLTexture?
-        var settings: RendererSettings?
-
-        func encode(into encoder: MTLRenderCommandEncoder, quad: MCMesh) {
-            encoder.setRenderPipelineState(Graphics.RenderPipelineStates[pipeline])
-            encoder.label = label
-            encoder.pushDebugGroup(label)
-            encoder.setCullMode(.none)
-            if let sampler {
-                encoder.setFragmentSamplerState(Graphics.SamplerStates[sampler], index: FragmentSamplerIndex.linearClamp)
-            }
-            if let texture0 {
-                encoder.setFragmentTexture(texture0, index: PostProcessTextureIndex.source)
-            }
-            if let texture1 {
-                encoder.setFragmentTexture(texture1, index: PostProcessTextureIndex.bloom)
-            }
-            if var settings {
-                encoder.setFragmentBytes(&settings, length: RendererSettings.stride, index: FragmentBufferIndex.rendererSettings)
-            }
-            quad.drawPrimitives(encoder)
-            encoder.popDebugGroup()
-        }
-    }
+    // MARK: - IBL generation config
 
     private struct IBLGenerationConfig {
         var qualityPreset: IBLQualityPreset
@@ -199,7 +106,8 @@ public final class Renderer: NSObject {
         colorTarget: AssetHandle,
         depthTarget: AssetHandle? = nil,
         slice: Int? = nil,
-        level: Int = 0
+        level: Int = 0,
+        depthLoadAction: MTLLoadAction = .clear
     ) -> MTLRenderPassDescriptor {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = AssetManager.texture(handle: colorTarget)
@@ -212,22 +120,14 @@ public final class Renderer: NSObject {
         }
         if let depthTarget {
             pass.depthAttachment.texture = AssetManager.texture(handle: depthTarget)
-            pass.depthAttachment.loadAction = .clear
+            pass.depthAttachment.loadAction = depthLoadAction
             pass.depthAttachment.storeAction = .store
         }
         return pass
     }
 
-    private func createColorAndDepthRenderPassDescriptor(colorTarget: AssetHandle, depthTarget: AssetHandle) -> MTLRenderPassDescriptor {
-        makeRenderPassDescriptor(colorTarget: colorTarget, depthTarget: depthTarget)
-    }
-
     private func createColorOnlyRenderPassDescriptor(colorTarget: AssetHandle) -> MTLRenderPassDescriptor {
         makeRenderPassDescriptor(colorTarget: colorTarget)
-    }
-
-    private func createColorOnlyRenderPassDescriptor(colorTarget: AssetHandle, level: Int) -> MTLRenderPassDescriptor {
-        makeRenderPassDescriptor(colorTarget: colorTarget, level: level)
     }
 
     private func createCubemapRenderPassDescriptor(target: AssetHandle, face: Int) -> MTLRenderPassDescriptor {
@@ -537,141 +437,6 @@ public final class Renderer: NSObject {
         )
     }
 
-    // MARK: - Bloom (multi-scale)
-
-    private func renderBloom(commandBuffer: MTLCommandBuffer) {
-        let settings = Renderer.settings
-        if settings.bloomEnabled == 0 { return }
-        guard
-            let sceneTex = AssetManager.texture(handle: BuiltinAssets.baseColorRender),
-            let ping = AssetManager.texture(handle: BuiltinAssets.bloomPing),
-            let pong = AssetManager.texture(handle: BuiltinAssets.bloomPong),
-            let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
-        else { return }
-
-        let maxBloomMips = max(1, Int(settings.bloomMaxMips))
-        let mipCount = min(maxBloomMips, ping.mipmapLevelCount)
-        if mipCount == 0 { return }
-
-        func mipSize(_ texture: MTLTexture, _ mip: Int) -> SIMD2<Float> {
-            let w = max(1, texture.width >> mip)
-            let h = max(1, texture.height >> mip)
-            return SIMD2<Float>(Float(w), Float(h))
-        }
-
-        func setViewport(_ encoder: MTLRenderCommandEncoder, _ size: SIMD2<Float>) {
-            encoder.setViewport(MTLViewport(
-                originX: 0,
-                originY: 0,
-                width: Double(size.x),
-                height: Double(size.y),
-                znear: 0,
-                zfar: 1
-            ))
-        }
-
-        // Pass 1: Extract bright -> ping mip 0
-        let extractStart = CACurrentMediaTime()
-        do {
-            guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.bloomPing, level: 0)) else { return }
-            var params = settings
-            let size0 = mipSize(ping, 0)
-            params.bloomTexelSize = SIMD2<Float>(1.0 / size0.x, 1.0 / size0.y)
-            params.bloomMipLevel = 0
-            setViewport(enc, size0)
-            let pass = FullscreenPass(
-                pipeline: .BloomExtract,
-                label: "Bloom Extract",
-                sampler: .LinearClampToZero,
-                texture0: sceneTex,
-                texture1: nil,
-                settings: params
-            )
-            pass.encode(into: enc, quad: quadMesh)
-            enc.endEncoding()
-        }
-        Renderer.profiler.record(.bloomExtract, seconds: CACurrentMediaTime() - extractStart)
-
-        let passes = max(1, Int(settings.blurPasses))
-
-        var blurTotal: Double = 0
-        var downsampleTotal: Double = 0
-        func blurMip(_ mip: Int) {
-            let size = mipSize(ping, mip)
-            var params = settings
-            params.bloomTexelSize = SIMD2<Float>(1.0 / size.x, 1.0 / size.y)
-            params.bloomMipLevel = Float(mip)
-
-            for i in 0..<passes {
-                let blurStart = CACurrentMediaTime()
-                // Horizontal: ping -> pong
-                guard let encH = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.bloomPong, level: mip)) else { return }
-                setViewport(encH, size)
-                let passH = FullscreenPass(
-                    pipeline: .BloomBlurH,
-                    label: "Bloom Blur H \(mip) \(i)",
-                    sampler: .LinearClampToZero,
-                    texture0: ping,
-                    texture1: nil,
-                    settings: params
-                )
-                passH.encode(into: encH, quad: quadMesh)
-                encH.endEncoding()
-
-                // Vertical: pong -> ping
-                guard let encV = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.bloomPing, level: mip)) else { return }
-                setViewport(encV, size)
-                let passV = FullscreenPass(
-                    pipeline: .BloomBlurV,
-                    label: "Bloom Blur V \(mip) \(i)",
-                    sampler: .LinearClampToZero,
-                    texture0: pong,
-                    texture1: nil,
-                    settings: params
-                )
-                passV.encode(into: encV, quad: quadMesh)
-                encV.endEncoding()
-                blurTotal += CACurrentMediaTime() - blurStart
-            }
-        }
-
-        // Blur mip 0
-        blurMip(0)
-
-        // Downsample + blur chain
-        if mipCount > 1 {
-            for mip in 1..<mipCount {
-                let prevSize = mipSize(ping, mip - 1)
-                let size = mipSize(ping, mip)
-                var params = settings
-                params.bloomTexelSize = SIMD2<Float>(1.0 / prevSize.x, 1.0 / prevSize.y)
-                params.bloomMipLevel = Float(mip - 1)
-
-                let downsampleStart = CACurrentMediaTime()
-                guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.bloomPing, level: mip)) else { return }
-                setViewport(enc, size)
-                let pass = FullscreenPass(
-                    pipeline: .BloomDownsample,
-                    label: "Bloom Downsample \(mip)",
-                    sampler: .LinearClampToZero,
-                    texture0: ping,
-                    texture1: nil,
-                    settings: params
-                )
-                pass.encode(into: enc, quad: quadMesh)
-                enc.endEncoding()
-                downsampleTotal += CACurrentMediaTime() - downsampleStart
-
-                blurMip(mip)
-            }
-        }
-        if downsampleTotal > 0 {
-            Renderer.profiler.record(.bloomDownsample, seconds: downsampleTotal)
-        }
-        if blurTotal > 0 {
-            Renderer.profiler.record(.bloomBlur, seconds: blurTotal)
-        }
-    }
 }
 
 // MARK: - MTKViewDelegate
@@ -681,7 +446,7 @@ extension Renderer: MTKViewDelegate {
     public func updateScreenSize(view: MTKView) {
         applyViewSizes(view: view)
         SceneManager.currentScene.updateAspectRatio()
-        rebuildRenderTargets()
+        _renderResources.rebuild(drawableSize: view.drawableSize)
     }
 
     private func applyViewSizes(view: MTKView) {
@@ -699,8 +464,7 @@ extension Renderer: MTKViewDelegate {
         }
         let currentSize = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
         if Renderer.DrawableSize != currentSize
-            || AssetManager.texture(handle: BuiltinAssets.baseColorRender) == nil
-            || AssetManager.texture(handle: BuiltinAssets.baseDepthRender) == nil {
+            || !_renderResources.isValid(for: view.drawableSize) {
             Renderer.DrawableSize = currentSize
             updateScreenSize(view: view)
         }
@@ -710,30 +474,6 @@ extension Renderer: MTKViewDelegate {
         updateScreenSize(view: view)
     }
 
-    private func renderColorAndDepthToTexture(renderPipelineState: RenderPipelineStateType, colorTarget: AssetHandle, depthTarget: AssetHandle, commandBuffer: MTLCommandBuffer) {
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createColorAndDepthRenderPassDescriptor(colorTarget: colorTarget, depthTarget: depthTarget)) else { return }
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[renderPipelineState])
-        encoder.label = "Scene Pass"
-        encoder.pushDebugGroup("Scene Pass")
-        delegate?.renderScene(into: encoder)
-        encoder.popDebugGroup()
-        encoder.endEncoding()
-    }
-    
-    private func renderColorToTexture(renderPipelineState: RenderPipelineStateType, colorTarget: AssetHandle, commandBuffer: MTLCommandBuffer) {
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: colorTarget)) else { return }
-        guard let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
-        let pass = FullscreenPass(
-            pipeline: renderPipelineState,
-            label: "Final Composite",
-            sampler: .LinearClampToZero,
-            texture0: AssetManager.texture(handle: BuiltinAssets.baseColorRender),
-            texture1: AssetManager.texture(handle: BuiltinAssets.bloomPing),
-            settings: Renderer.settings
-        )
-        pass.encode(into: encoder, quad: quadMesh)
-        encoder.endEncoding()
-    }
 
     private func renderToWindow(renderPipelineState: RenderPipelineStateType, view: MTKView, commandBuffer: MTLCommandBuffer) {
         guard let rpd = view.currentRenderPassDescriptor else { return }
@@ -765,6 +505,7 @@ extension Renderer: MTKViewDelegate {
         updateSkyIfNeeded(scene: SceneManager.currentScene)
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "MetalCup Frame"
+        RendererFrameContext.shared.beginFrame()
         let gpuStart = CACurrentMediaTime()
         commandBuffer.addCompletedHandler { _ in
             Renderer.profiler.record(.gpu, seconds: CACurrentMediaTime() - gpuStart)
@@ -772,26 +513,42 @@ extension Renderer: MTKViewDelegate {
 
         let renderStart = CACurrentMediaTime()
         // Scene Pass -> Bloom -> Final Composite -> ImGui overlays
-        let sceneStart = CACurrentMediaTime()
-        renderColorAndDepthToTexture(
-            renderPipelineState: .HDRBasic,
-            colorTarget: BuiltinAssets.baseColorRender,
-            depthTarget: BuiltinAssets.baseDepthRender,
-            commandBuffer: commandBuffer
+        let graphFrame = RenderGraphFrame(
+            view: view,
+            commandBuffer: commandBuffer,
+            resources: _renderResources,
+            delegate: delegate
         )
-        Renderer.profiler.record(.scene, seconds: CACurrentMediaTime() - sceneStart)
+        _renderGraph.execute(frame: graphFrame)
 
-        let bloomStart = CACurrentMediaTime()
-        renderBloom(commandBuffer: commandBuffer)
-        Renderer.profiler.record(.bloom, seconds: CACurrentMediaTime() - bloomStart)
-
-        let compositeStart = CACurrentMediaTime()
-        renderColorToTexture(
-            renderPipelineState: .Final,
-            colorTarget: BuiltinAssets.finalColorRender,
-            commandBuffer: commandBuffer
-        )
-        Renderer.profiler.record(.composite, seconds: CACurrentMediaTime() - compositeStart)
+        if let pickRequest = SceneManager.consumePickRequest(),
+           let pickTexture = AssetManager.texture(handle: BuiltinAssets.pickIdRender),
+           let readbackBuffer = RendererFrameContext.shared.pickReadbackBuffer() {
+            let width = max(1, pickTexture.width)
+            let height = max(1, pickTexture.height)
+            let clampedX = max(0, min(pickRequest.x, width - 1))
+            let clampedY = max(0, min(pickRequest.y, height - 1))
+            let origin = MTLOrigin(x: clampedX, y: clampedY, z: 0)
+            let size = MTLSize(width: 1, height: 1, depth: 1)
+            if let blit = commandBuffer.makeBlitCommandEncoder() {
+                blit.label = "Pick Readback Blit"
+                blit.copy(from: pickTexture,
+                          sourceSlice: 0,
+                          sourceLevel: 0,
+                          sourceOrigin: origin,
+                          sourceSize: size,
+                          to: readbackBuffer,
+                          destinationOffset: 0,
+                          destinationBytesPerRow: MemoryLayout<UInt32>.stride,
+                          destinationBytesPerImage: MemoryLayout<UInt32>.stride)
+                blit.endEncoding()
+            }
+            commandBuffer.addCompletedHandler { _ in
+                let pointer = readbackBuffer.contents().bindMemory(to: UInt32.self, capacity: 1)
+                let pickedId = pointer.pointee
+                SceneManager.handlePickResult(pickedId)
+            }
+        }
 
         let overlaysStart = CACurrentMediaTime()
         delegate?.renderOverlays(view: view, commandBuffer: commandBuffer)

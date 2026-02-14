@@ -7,6 +7,9 @@ import MetalKit
 public enum RenderPipelineStateType {
     case HDRBasic
     case HDRInstanced
+    case PickID
+    case DepthPrepass
+    case DepthPrepassInstanced
     case Skybox
     case Final
     case Cubemap
@@ -40,6 +43,30 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
             descriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
             descriptor.vertexFunction = Graphics.Shaders[.InstancedVertex]
             descriptor.fragmentFunction = Graphics.Shaders[.BasicFragment]
+            descriptor.vertexDescriptor = Graphics.VertexDescriptors[.Default]
+        }
+
+        library[.PickID] = buildPipeline(label: "PickID") { descriptor in
+            descriptor.colorAttachments[0].pixelFormat = .r32Uint
+            descriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
+            descriptor.vertexFunction = Graphics.Shaders[.PickInstancedVertex]
+            descriptor.fragmentFunction = Graphics.Shaders[.PickFragment]
+            descriptor.vertexDescriptor = Graphics.VertexDescriptors[.Default]
+        }
+
+        library[.DepthPrepass] = buildPipeline(label: "DepthPrepass") { descriptor in
+            descriptor.colorAttachments[0].pixelFormat = .invalid
+            descriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
+            descriptor.vertexFunction = Graphics.Shaders[.BasicVertex]
+            descriptor.fragmentFunction = nil
+            descriptor.vertexDescriptor = Graphics.VertexDescriptors[.Default]
+        }
+
+        library[.DepthPrepassInstanced] = buildPipeline(label: "DepthPrepassInstanced") { descriptor in
+            descriptor.colorAttachments[0].pixelFormat = .invalid
+            descriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
+            descriptor.vertexFunction = Graphics.Shaders[.InstancedVertex]
+            descriptor.fragmentFunction = nil
             descriptor.vertexDescriptor = Graphics.VertexDescriptors[.Default]
         }
 

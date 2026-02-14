@@ -1,6 +1,6 @@
 /// MetalTypes.swift
-/// Defines the MetalTypes types and helpers for the engine.
-/// Created by Kaden Cringle.
+/// Shared Metal data types and Swift-side shader bindings.
+/// Created by Kaden Cringle
 
 import simd
 
@@ -33,52 +33,53 @@ extension SIMD3<Float>: sizeable {}
 extension SIMD4<Float>: sizeable {}
 
 public enum VertexBufferIndex {
-    public static let vertices = 0
-    public static let sceneConstants = 1
-    public static let modelConstants = 2
-    public static let cubemapViewProjection = 1
+    public static let vertices = ShaderBindings.VertexBuffer.vertices
+    public static let sceneConstants = ShaderBindings.VertexBuffer.sceneConstants
+    public static let modelConstants = ShaderBindings.VertexBuffer.modelConstants
+    public static let instances = ShaderBindings.VertexBuffer.instances
+    public static let cubemapViewProjection = ShaderBindings.VertexBuffer.cubemapViewProjection
 }
 
 public enum FragmentBufferIndex {
-    public static let material = 1
-    public static let rendererSettings = 2
-    public static let lightCount = 3
-    public static let lightData = 4
-    public static let iblParams = 0
-    public static let skyParams = 0
-    public static let skyIntensity = 0
+    public static let material = ShaderBindings.FragmentBuffer.material
+    public static let rendererSettings = ShaderBindings.FragmentBuffer.rendererSettings
+    public static let lightCount = ShaderBindings.FragmentBuffer.lightCount
+    public static let lightData = ShaderBindings.FragmentBuffer.lightData
+    public static let iblParams = ShaderBindings.FragmentBuffer.iblParams
+    public static let skyParams = ShaderBindings.FragmentBuffer.skyParams
+    public static let skyIntensity = ShaderBindings.FragmentBuffer.skyIntensity
 }
 
 public enum FragmentTextureIndex {
-    public static let albedo = 0
-    public static let normal = 1
-    public static let metallic = 2
-    public static let roughness = 3
-    public static let metalRoughness = 4
-    public static let ao = 5
-    public static let emissive = 6
-    public static let irradiance = 7
-    public static let prefiltered = 8
-    public static let brdfLut = 9
-    public static let clearcoat = 10
-    public static let clearcoatRoughness = 11
-    public static let sheenColor = 12
-    public static let sheenIntensity = 13
-    public static let skybox = 14
+    public static let albedo = ShaderBindings.FragmentTexture.albedo
+    public static let normal = ShaderBindings.FragmentTexture.normal
+    public static let metallic = ShaderBindings.FragmentTexture.metallic
+    public static let roughness = ShaderBindings.FragmentTexture.roughness
+    public static let metalRoughness = ShaderBindings.FragmentTexture.metalRoughness
+    public static let ao = ShaderBindings.FragmentTexture.ao
+    public static let emissive = ShaderBindings.FragmentTexture.emissive
+    public static let irradiance = ShaderBindings.FragmentTexture.irradiance
+    public static let prefiltered = ShaderBindings.FragmentTexture.prefiltered
+    public static let brdfLut = ShaderBindings.FragmentTexture.brdfLut
+    public static let clearcoat = ShaderBindings.FragmentTexture.clearcoat
+    public static let clearcoatRoughness = ShaderBindings.FragmentTexture.clearcoatRoughness
+    public static let sheenColor = ShaderBindings.FragmentTexture.sheenColor
+    public static let sheenIntensity = ShaderBindings.FragmentTexture.sheenIntensity
+    public static let skybox = ShaderBindings.FragmentTexture.skybox
 }
 
 public enum FragmentSamplerIndex {
-    public static let linear = 0
-    public static let linearClamp = 1
+    public static let linear = ShaderBindings.FragmentSampler.linear
+    public static let linearClamp = ShaderBindings.FragmentSampler.linearClamp
 }
 
 public enum PostProcessTextureIndex {
-    public static let source = 0
-    public static let bloom = 1
+    public static let source = ShaderBindings.PostProcessTexture.source
+    public static let bloom = ShaderBindings.PostProcessTexture.bloom
 }
 
 public enum IBLTextureIndex {
-    public static let environment = 0
+    public static let environment = ShaderBindings.IBLTexture.environment
 }
 
 public struct Vertex: sizeable {
@@ -96,6 +97,12 @@ public struct SimpleVertex: sizeable {
 
 public struct ModelConstants: sizeable {
     public var modelMatrix = matrix_identity_float4x4
+}
+
+public struct InstanceData: sizeable {
+    public var modelMatrix = matrix_identity_float4x4
+    public var entityID: UInt32 = 0
+    public var padding = SIMD3<UInt32>(repeating: 0)
 }
 
 public struct SceneConstants: sizeable {
