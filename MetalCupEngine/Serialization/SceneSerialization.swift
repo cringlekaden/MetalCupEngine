@@ -44,6 +44,9 @@ public struct EntityDocument: Codable {
 public struct ComponentsDocument: Codable {
     public var name: NameComponentDTO?
     public var transform: TransformComponentDTO?
+    public var layer: LayerComponentDTO?
+    public var prefabLink: PrefabLinkComponentDTO?
+    public var prefabOverrides: PrefabOverrideComponentDTO?
     public var meshRenderer: MeshRendererComponentDTO?
     public var materialComponent: MaterialComponentDTO?
     public var light: LightComponentDTO?
@@ -57,6 +60,9 @@ public struct ComponentsDocument: Codable {
     public init(
         name: NameComponentDTO? = nil,
         transform: TransformComponentDTO? = nil,
+        layer: LayerComponentDTO? = nil,
+        prefabLink: PrefabLinkComponentDTO? = nil,
+        prefabOverrides: PrefabOverrideComponentDTO? = nil,
         meshRenderer: MeshRendererComponentDTO? = nil,
         materialComponent: MaterialComponentDTO? = nil,
         light: LightComponentDTO? = nil,
@@ -69,6 +75,9 @@ public struct ComponentsDocument: Codable {
     ) {
         self.name = name
         self.transform = transform
+        self.layer = layer
+        self.prefabLink = prefabLink
+        self.prefabOverrides = prefabOverrides
         self.meshRenderer = meshRenderer
         self.materialComponent = materialComponent
         self.light = light
@@ -110,6 +119,40 @@ public struct TransformComponentDTO: Codable {
         self.position = position
         self.rotation = rotation
         self.scale = scale
+    }
+}
+
+public struct LayerComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var layerIndex: Int32
+
+    public init(schemaVersion: Int = 1, layerIndex: Int32) {
+        self.schemaVersion = schemaVersion
+        self.layerIndex = layerIndex
+    }
+}
+
+public struct PrefabLinkComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var prefabHandle: AssetHandle
+    public var prefabEntityId: UUID
+    public var instanceId: UUID
+
+    public init(schemaVersion: Int = 1, prefabHandle: AssetHandle, prefabEntityId: UUID, instanceId: UUID) {
+        self.schemaVersion = schemaVersion
+        self.prefabHandle = prefabHandle
+        self.prefabEntityId = prefabEntityId
+        self.instanceId = instanceId
+    }
+}
+
+public struct PrefabOverrideComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var overriddenComponents: [String]
+
+    public init(schemaVersion: Int = 1, overriddenComponents: [String]) {
+        self.schemaVersion = schemaVersion
+        self.overriddenComponents = overriddenComponents
     }
 }
 
@@ -243,15 +286,17 @@ public struct LightOrbitComponentDTO: Codable {
 public struct CameraComponentDTO: Codable {
     public var schemaVersion: Int
     public var fovDegrees: Float
+    public var orthoSize: Float
     public var nearPlane: Float
     public var farPlane: Float
     public var projectionType: UInt32
     public var isPrimary: Bool
     public var isEditor: Bool
 
-    public init(schemaVersion: Int = 1, component: CameraComponent) {
+    public init(schemaVersion: Int = 2, component: CameraComponent) {
         self.schemaVersion = schemaVersion
         self.fovDegrees = component.fovDegrees
+        self.orthoSize = component.orthoSize
         self.nearPlane = component.nearPlane
         self.farPlane = component.farPlane
         self.projectionType = component.projectionType.rawValue
@@ -259,9 +304,22 @@ public struct CameraComponentDTO: Codable {
         self.isEditor = component.isEditor
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        fovDegrees = try container.decodeIfPresent(Float.self, forKey: .fovDegrees) ?? 45.0
+        orthoSize = try container.decodeIfPresent(Float.self, forKey: .orthoSize) ?? 10.0
+        nearPlane = try container.decodeIfPresent(Float.self, forKey: .nearPlane) ?? 0.1
+        farPlane = try container.decodeIfPresent(Float.self, forKey: .farPlane) ?? 1000.0
+        projectionType = try container.decodeIfPresent(UInt32.self, forKey: .projectionType) ?? ProjectionType.perspective.rawValue
+        isPrimary = try container.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? true
+        isEditor = try container.decodeIfPresent(Bool.self, forKey: .isEditor) ?? false
+    }
+
     public func toComponent() -> CameraComponent {
         return CameraComponent(
             fovDegrees: fovDegrees,
+            orthoSize: orthoSize,
             nearPlane: nearPlane,
             farPlane: farPlane,
             projectionType: ProjectionType(rawValue: projectionType) ?? .perspective,

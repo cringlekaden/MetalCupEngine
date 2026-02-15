@@ -70,7 +70,7 @@ open class Application: NSObject, EventHandler {
 
 extension Application: RendererDelegate {
     public func update() {
-        layerStack.updateAll(deltaTime: GameTime.DeltaTime)
+        layerStack.updateAll()
     }
     public func renderScene(into encoder: MTLRenderCommandEncoder) {
         layerStack.renderAll(with: encoder)

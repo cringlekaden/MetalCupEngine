@@ -111,3 +111,14 @@ public enum MaterialAssetSerializer {
         return document
     }
 }
+
+public enum MaterialSerializer {
+    public static func load(from url: URL, fallbackHandle: AssetHandle?) -> MaterialAsset? {
+        return MaterialAssetSerializer.load(from: url, fallbackHandle: fallbackHandle)
+    }
+
+    @discardableResult
+    public static func save(_ asset: MaterialAsset, to url: URL) -> Bool {
+        return MaterialAssetSerializer.save(asset, to: url)
+    }
+}

@@ -117,4 +117,31 @@ extension matrix_float4x4 {
         )
         return result
     }
+
+    static func orthographic(left: Float, right: Float, bottom: Float, top: Float, near: Float, far: Float) -> matrix_float4x4 {
+        let rl = right - left
+        let tb = top - bottom
+        let fn = far - near
+        var result = matrix_identity_float4x4
+        result.columns = (
+            .init(2.0 / rl, 0, 0, 0),
+            .init(0, 2.0 / tb, 0, 0),
+            .init(0, 0, -2.0 / fn, 0),
+            .init(-(right + left) / rl, -(top + bottom) / tb, -(far + near) / fn, 1.0)
+        )
+        return result
+    }
+
+    static func orthographic(size: Float, aspectRatio: Float, near: Float, far: Float) -> matrix_float4x4 {
+        let halfHeight = size * 0.5
+        let halfWidth = halfHeight * aspectRatio
+        return orthographic(
+            left: -halfWidth,
+            right: halfWidth,
+            bottom: -halfHeight,
+            top: halfHeight,
+            near: near,
+            far: far
+        )
+    }
 }

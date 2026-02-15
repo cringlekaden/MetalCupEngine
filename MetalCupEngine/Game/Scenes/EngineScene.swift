@@ -34,12 +34,7 @@ public class EngineScene {
         // Update order: camera -> scene constants -> sky system -> scene update -> light sync.
         ensureCameraEntity()
         updateCamera(isPlaying: isPlaying)
-        _sceneConstants.totalGameTime = GameTime.TotalGameTime
-        let cameraPosition = SIMD3<Float>(
-            _sceneConstants.cameraPositionAndIBL.x,
-            _sceneConstants.cameraPositionAndIBL.y,
-            _sceneConstants.cameraPositionAndIBL.z
-        )
+        _sceneConstants.totalGameTime = Time.TotalTime
         let hasEnvironment: Bool = {
             guard let (_, sky) = ecs.activeSkyLight(), sky.enabled else { return false }
             switch sky.mode {
@@ -61,6 +56,10 @@ public class EngineScene {
         syncLights()
     }
 
+    public func onFixedUpdate() {
+        doFixedUpdate()
+    }
+
     public func onRender(encoder: MTLRenderCommandEncoder) {
         encoder.pushDebugGroup("Rendering Scene \(name)...")
         encoder.setVertexBytes(&_sceneConstants, length: SceneConstants.stride, index: VertexBufferIndex.sceneConstants)
@@ -77,6 +76,58 @@ public class EngineScene {
             renderMeshes(encoder, pass: .depthPrepass)
         }
         encoder.popDebugGroup()
+    }
+
+    public func renderPreview(encoder: MTLRenderCommandEncoder, cameraEntity: Entity, viewportSize: SIMD2<Float>) {
+        guard let transform = ecs.get(TransformComponent.self, for: cameraEntity),
+              let camera = ecs.get(CameraComponent.self, for: cameraEntity),
+              viewportSize.x > 1, viewportSize.y > 1 else {
+            return
+        }
+
+        let previousConstants = _sceneConstants
+        let previousPass = Renderer.currentRenderPass
+        let previousUsePrepass = Renderer.useDepthPrepass
+
+        let aspect = max(0.01, viewportSize.x / viewportSize.y)
+        var previewConstants = _sceneConstants
+        previewConstants.viewMatrix = viewMatrix(from: transform)
+        previewConstants.skyViewMatrix = previewConstants.viewMatrix
+        previewConstants.skyViewMatrix[3][0] = 0
+        previewConstants.skyViewMatrix[3][1] = 0
+        previewConstants.skyViewMatrix[3][2] = 0
+        previewConstants.projectionMatrix = projectionMatrix(from: camera, aspectRatio: aspect)
+        previewConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, previousConstants.cameraPositionAndIBL.w)
+        _sceneConstants = previewConstants
+
+        Renderer.currentRenderPass = .main
+        Renderer.useDepthPrepass = false
+        encoder.setViewport(MTLViewport(originX: 0,
+                                        originY: 0,
+                                        width: Double(viewportSize.x),
+                                        height: Double(viewportSize.y),
+                                        znear: 0,
+                                        zfar: 1))
+        encoder.setVertexBytes(&_sceneConstants, length: SceneConstants.stride, index: VertexBufferIndex.sceneConstants)
+        var settings = Renderer.settings
+        encoder.setFragmentBytes(&settings, length: RendererSettings.stride, index: FragmentBufferIndex.rendererSettings)
+        _lightManager.setLightData(encoder)
+        renderSky(encoder)
+        renderMeshes(encoder, pass: .main)
+
+        Renderer.useDepthPrepass = previousUsePrepass
+        Renderer.currentRenderPass = previousPass
+        _sceneConstants = previousConstants
+    }
+
+    public func raycast(origin: SIMD3<Float>, direction: SIMD3<Float>, mask: LayerMask = .all) -> Entity? {
+        return nil
+    }
+
+    public func raycast(hitEntity: Entity?, mask: LayerMask = .all) -> Entity? {
+        guard let entity = hitEntity else { return nil }
+        let layer = layerIndex(for: entity)
+        return mask.contains(layerIndex: layer) ? entity : nil
     }
 
     public func entity(forPickID id: UInt32) -> Entity? {
@@ -115,16 +166,115 @@ public class EngineScene {
 
     func doUpdate() {}
 
+    func doFixedUpdate() {}
+
     public func toDocument(rendererSettingsOverride: RendererSettingsDTO? = nil) -> SceneDocument {
+        func overrideSet(for entity: Entity) -> Set<PrefabOverrideType> {
+            return ecs.get(PrefabOverrideComponent.self, for: entity)?.overridden ?? []
+        }
+
+        func shouldSerializeOverride(_ type: PrefabOverrideType, for entity: Entity) -> Bool {
+            return overrideSet(for: entity).contains(type)
+        }
+
+        func transformDTO(for entity: Entity) -> TransformComponentDTO? {
+            return ecs.get(TransformComponent.self, for: entity).map { component in
+                TransformComponentDTO(
+                    position: Vector3DTO(component.position),
+                    rotation: Vector3DTO(component.rotation),
+                    scale: Vector3DTO(component.scale)
+                )
+            }
+        }
+
         let entities = ecs.allEntities().map { entity -> EntityDocument in
+            let prefabLink = ecs.get(PrefabInstanceComponent.self, for: entity)
+            let prefabOverrides = ecs.get(PrefabOverrideComponent.self, for: entity)
+            let prefabOverridesDTO: PrefabOverrideComponentDTO? = prefabOverrides.map {
+                PrefabOverrideComponentDTO(overriddenComponents: $0.overridden.map { $0.rawValue })
+            }
+
+            if let prefabLink {
+                let components = ComponentsDocument(
+                    name: shouldSerializeOverride(.name, for: entity)
+                        ? ecs.get(NameComponent.self, for: entity).map { NameComponentDTO(name: $0.name) }
+                        : nil,
+                    transform: transformDTO(for: entity),
+                    layer: shouldSerializeOverride(.layer, for: entity)
+                        ? ecs.get(LayerComponent.self, for: entity).map { LayerComponentDTO(layerIndex: $0.index) }
+                        : nil,
+                    prefabLink: PrefabLinkComponentDTO(
+                        prefabHandle: prefabLink.prefabHandle,
+                        prefabEntityId: prefabLink.prefabEntityId,
+                        instanceId: prefabLink.instanceId
+                    ),
+                    prefabOverrides: prefabOverridesDTO,
+                    meshRenderer: shouldSerializeOverride(.meshRenderer, for: entity)
+                        ? ecs.get(MeshRendererComponent.self, for: entity).map { component in
+                            MeshRendererComponentDTO(
+                                meshHandle: component.meshHandle,
+                                materialHandle: component.materialHandle,
+                                material: component.material.map { MaterialDTO(material: $0) },
+                                albedoMapHandle: component.albedoMapHandle,
+                                normalMapHandle: component.normalMapHandle,
+                                metallicMapHandle: component.metallicMapHandle,
+                                roughnessMapHandle: component.roughnessMapHandle,
+                                mrMapHandle: component.mrMapHandle,
+                                aoMapHandle: component.aoMapHandle,
+                                emissiveMapHandle: component.emissiveMapHandle
+                            )
+                        }
+                        : nil,
+                    materialComponent: shouldSerializeOverride(.material, for: entity)
+                        ? ecs.get(MaterialComponent.self, for: entity).map { MaterialComponentDTO(materialHandle: $0.materialHandle) }
+                        : nil,
+                    light: shouldSerializeOverride(.light, for: entity)
+                        ? ecs.get(LightComponent.self, for: entity).map { component in
+                            LightComponentDTO(
+                                type: LightTypeDTO(from: component.type),
+                                data: LightDataDTO(from: component.data),
+                                direction: Vector3DTO(component.direction),
+                                range: component.range,
+                                innerConeCos: component.innerConeCos,
+                                outerConeCos: component.outerConeCos
+                            )
+                        }
+                        : nil,
+                    lightOrbit: shouldSerializeOverride(.lightOrbit, for: entity)
+                        ? ecs.get(LightOrbitComponent.self, for: entity).map { LightOrbitComponentDTO(component: $0) }
+                        : nil,
+                    camera: shouldSerializeOverride(.camera, for: entity)
+                        ? ecs.get(CameraComponent.self, for: entity).map { CameraComponentDTO(component: $0) }
+                        : nil,
+                    sky: shouldSerializeOverride(.sky, for: entity)
+                        ? ecs.get(SkyComponent.self, for: entity).map { SkyComponentDTO(environmentMapHandle: $0.environmentMapHandle) }
+                        : nil,
+                    skyLight: shouldSerializeOverride(.skyLight, for: entity)
+                        ? ecs.get(SkyLightComponent.self, for: entity).map { component in
+                            SkyLightComponentDTO(
+                                mode: component.mode.rawValue,
+                                enabled: component.enabled,
+                                intensity: component.intensity,
+                                skyTint: Vector3DTO(component.skyTint),
+                                turbidity: component.turbidity,
+                                azimuthDegrees: component.azimuthDegrees,
+                                elevationDegrees: component.elevationDegrees,
+                                hdriHandle: component.hdriHandle,
+                                realtimeUpdate: component.realtimeUpdate
+                            )
+                        }
+                        : nil,
+                    skyLightTag: shouldSerializeOverride(.skyLightTag, for: entity) && ecs.has(SkyLightTag.self, entity) ? TagComponentDTO() : nil,
+                    skySunTag: shouldSerializeOverride(.skySunTag, for: entity) && ecs.has(SkySunTag.self, entity) ? TagComponentDTO() : nil
+                )
+                return EntityDocument(id: entity.id, components: components)
+            }
+
             let components = ComponentsDocument(
                 name: ecs.get(NameComponent.self, for: entity).map { NameComponentDTO(name: $0.name) },
-                transform: ecs.get(TransformComponent.self, for: entity).map { component in
-                    TransformComponentDTO(
-                        position: Vector3DTO(component.position),
-                        rotation: Vector3DTO(component.rotation),
-                        scale: Vector3DTO(component.scale)
-                    )
+                transform: transformDTO(for: entity),
+                layer: ecs.get(LayerComponent.self, for: entity).map { component in
+                    LayerComponentDTO(layerIndex: component.index)
                 },
                 meshRenderer: ecs.get(MeshRendererComponent.self, for: entity).map { component in
                     MeshRendererComponentDTO(
@@ -186,6 +336,7 @@ public class EngineScene {
     public func apply(document: SceneDocument) {
         ecs.clear()
         name = document.name
+        var prefabHandles = Set<AssetHandle>()
         for entityDoc in document.entities {
             let entity = ecs.createEntity(id: entityDoc.id, name: entityDoc.components.name?.name)
             if let transform = entityDoc.components.transform {
@@ -197,6 +348,93 @@ public class EngineScene {
                 ecs.add(component, to: entity)
             } else {
                 ecs.add(TransformComponent(), to: entity)
+            }
+
+            if let prefabLink = entityDoc.components.prefabLink {
+                let component = PrefabInstanceComponent(
+                    prefabHandle: prefabLink.prefabHandle,
+                    prefabEntityId: prefabLink.prefabEntityId,
+                    instanceId: prefabLink.instanceId
+                )
+                ecs.add(component, to: entity)
+                prefabHandles.insert(prefabLink.prefabHandle)
+                if let overrides = entityDoc.components.prefabOverrides {
+                    let overrideSet = Set(overrides.overriddenComponents.compactMap { PrefabOverrideType(rawValue: $0) })
+                    ecs.add(PrefabOverrideComponent(overridden: overrideSet), to: entity)
+                }
+                if let layer = entityDoc.components.layer {
+                    ecs.add(LayerComponent(index: layer.layerIndex), to: entity)
+                }
+                if let name = entityDoc.components.name {
+                    ecs.add(NameComponent(name: name.name), to: entity)
+                }
+                if let meshRenderer = entityDoc.components.meshRenderer {
+                    let component = MeshRendererComponent(
+                        meshHandle: meshRenderer.meshHandle,
+                        materialHandle: meshRenderer.materialHandle,
+                        material: meshRenderer.material?.toMaterial(),
+                        albedoMapHandle: meshRenderer.albedoMapHandle,
+                        normalMapHandle: meshRenderer.normalMapHandle,
+                        metallicMapHandle: meshRenderer.metallicMapHandle,
+                        roughnessMapHandle: meshRenderer.roughnessMapHandle,
+                        mrMapHandle: meshRenderer.mrMapHandle,
+                        aoMapHandle: meshRenderer.aoMapHandle,
+                        emissiveMapHandle: meshRenderer.emissiveMapHandle
+                    )
+                    ecs.add(component, to: entity)
+                }
+                if let materialComponent = entityDoc.components.materialComponent {
+                    ecs.add(MaterialComponent(materialHandle: materialComponent.materialHandle), to: entity)
+                }
+                if let light = entityDoc.components.light {
+                    let component = LightComponent(
+                        type: light.type.toLightType(),
+                        data: light.data.toLightData(),
+                        direction: light.direction.toSIMD(),
+                        range: light.range,
+                        innerConeCos: light.innerConeCos,
+                        outerConeCos: light.outerConeCos
+                    )
+                    ecs.add(component, to: entity)
+                }
+                if let lightOrbit = entityDoc.components.lightOrbit {
+                    ecs.add(lightOrbit.toComponent(), to: entity)
+                }
+                if let camera = entityDoc.components.camera {
+                    ecs.add(camera.toComponent(), to: entity)
+                }
+                if let sky = entityDoc.components.sky {
+                    ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
+                }
+                if let skyLight = entityDoc.components.skyLight {
+                    let component = SkyLightComponent(
+                        mode: SkyMode(rawValue: skyLight.mode) ?? .hdri,
+                        enabled: skyLight.enabled,
+                        intensity: skyLight.intensity,
+                        skyTint: skyLight.skyTint.toSIMD(),
+                        turbidity: skyLight.turbidity,
+                        azimuthDegrees: skyLight.azimuthDegrees,
+                        elevationDegrees: skyLight.elevationDegrees,
+                        hdriHandle: skyLight.hdriHandle,
+                        needsRegenerate: true,
+                        realtimeUpdate: skyLight.realtimeUpdate,
+                        lastRegenerateTime: 0.0
+                    )
+                    ecs.add(component, to: entity)
+                }
+                if entityDoc.components.skyLightTag != nil {
+                    ecs.add(SkyLightTag(), to: entity)
+                }
+                if entityDoc.components.skySunTag != nil {
+                    ecs.add(SkySunTag(), to: entity)
+                }
+                continue
+            }
+
+            if let layer = entityDoc.components.layer {
+                ecs.add(LayerComponent(index: layer.layerIndex), to: entity)
+            } else {
+                ecs.add(LayerComponent(), to: entity)
             }
             if let meshRenderer = entityDoc.components.meshRenderer {
                 let component = MeshRendererComponent(
@@ -260,7 +498,109 @@ public class EngineScene {
                 ecs.add(SkySunTag(), to: entity)
             }
         }
+        if !prefabHandles.isEmpty {
+            PrefabSystem.shared.applyPrefabs(handles: prefabHandles, to: self)
+        }
         ensureCameraEntity()
+    }
+
+    @discardableResult
+    public func instantiate(prefab: PrefabDocument, prefabHandle: AssetHandle?) -> [Entity] {
+        var created: [Entity] = []
+        created.reserveCapacity(prefab.entities.count)
+        let instanceId = UUID()
+
+        for entityDoc in prefab.entities {
+            let entityName = entityDoc.components.name?.name ?? "Entity"
+            let entity = ecs.createEntity(name: entityName)
+            created.append(entity)
+
+            if let transform = entityDoc.components.transform {
+                let component = TransformComponent(
+                    position: transform.position.toSIMD(),
+                    rotation: transform.rotation.toSIMD(),
+                    scale: transform.scale.toSIMD()
+                )
+                ecs.add(component, to: entity)
+            } else {
+                ecs.add(TransformComponent(), to: entity)
+            }
+            if let layer = entityDoc.components.layer {
+                ecs.add(LayerComponent(index: layer.layerIndex), to: entity)
+            } else {
+                ecs.add(LayerComponent(), to: entity)
+            }
+            if let prefabHandle {
+                let link = PrefabInstanceComponent(prefabHandle: prefabHandle, prefabEntityId: entityDoc.localId, instanceId: instanceId)
+                ecs.add(link, to: entity)
+            } else {
+                print("WARN::PREFAB::Instantiate missing handle for \(prefab.name)")
+            }
+            if let meshRenderer = entityDoc.components.meshRenderer {
+                let component = MeshRendererComponent(
+                    meshHandle: meshRenderer.meshHandle,
+                    materialHandle: meshRenderer.materialHandle,
+                    material: meshRenderer.material?.toMaterial(),
+                    albedoMapHandle: meshRenderer.albedoMapHandle,
+                    normalMapHandle: meshRenderer.normalMapHandle,
+                    metallicMapHandle: meshRenderer.metallicMapHandle,
+                    roughnessMapHandle: meshRenderer.roughnessMapHandle,
+                    mrMapHandle: meshRenderer.mrMapHandle,
+                    aoMapHandle: meshRenderer.aoMapHandle,
+                    emissiveMapHandle: meshRenderer.emissiveMapHandle
+                )
+                ecs.add(component, to: entity)
+            }
+            if let materialComponent = entityDoc.components.materialComponent {
+                let component = MaterialComponent(materialHandle: materialComponent.materialHandle)
+                ecs.add(component, to: entity)
+            }
+            if let light = entityDoc.components.light {
+                let component = LightComponent(
+                    type: light.type.toLightType(),
+                    data: light.data.toLightData(),
+                    direction: light.direction.toSIMD(),
+                    range: light.range,
+                    innerConeCos: light.innerConeCos,
+                    outerConeCos: light.outerConeCos
+                )
+                ecs.add(component, to: entity)
+            }
+            if let lightOrbit = entityDoc.components.lightOrbit {
+                ecs.add(lightOrbit.toComponent(), to: entity)
+            }
+            if let camera = entityDoc.components.camera {
+                ecs.add(camera.toComponent(), to: entity)
+            }
+            if let sky = entityDoc.components.sky {
+                ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
+            }
+            if let skyLight = entityDoc.components.skyLight {
+                let component = SkyLightComponent(
+                    mode: SkyMode(rawValue: skyLight.mode) ?? .hdri,
+                    enabled: skyLight.enabled,
+                    intensity: skyLight.intensity,
+                    skyTint: skyLight.skyTint.toSIMD(),
+                    turbidity: skyLight.turbidity,
+                    azimuthDegrees: skyLight.azimuthDegrees,
+                    elevationDegrees: skyLight.elevationDegrees,
+                    hdriHandle: skyLight.hdriHandle,
+                    needsRegenerate: true,
+                    realtimeUpdate: skyLight.realtimeUpdate,
+                    lastRegenerateTime: 0.0
+                )
+                ecs.add(component, to: entity)
+            }
+            if entityDoc.components.skyLightTag != nil {
+                ecs.add(SkyLightTag(), to: entity)
+            }
+            if entityDoc.components.skySunTag != nil {
+                ecs.add(SkySunTag(), to: entity)
+            }
+        }
+
+        ensureCameraEntity()
+        return created
     }
 
     private func ensureCameraEntity() {
@@ -271,20 +611,12 @@ public class EngineScene {
     }
 
     private func updateCamera(isPlaying: Bool) {
-        guard var active = ecs.activeCamera() else { return }
-        var transform = active.1
-        let camera = active.2
-        if !isPlaying && camera.isEditor {
-            _editorCameraController.update(transform: &transform)
-            ecs.add(transform, to: active.0)
+        guard var active = resolveActiveCamera(isPlaying: isPlaying) else { return }
+        if active.shouldUpdateEditorCamera {
+            _editorCameraController.update(transform: &active.transform)
+            ecs.add(active.transform, to: active.entity)
         }
-        _sceneConstants.viewMatrix = viewMatrix(from: transform)
-        _sceneConstants.skyViewMatrix = _sceneConstants.viewMatrix
-        _sceneConstants.skyViewMatrix[3][0] = 0
-        _sceneConstants.skyViewMatrix[3][1] = 0
-        _sceneConstants.skyViewMatrix[3][2] = 0
-        _sceneConstants.projectionMatrix = projectionMatrix(from: camera)
-        _sceneConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, 1.0)
+        applyCameraConstants(transform: active.transform, camera: active.camera, aspectRatio: Renderer.AspectRatio)
     }
 
     private func viewMatrix(from transform: TransformComponent) -> matrix_float4x4 {
@@ -296,21 +628,54 @@ public class EngineScene {
         return matrix
     }
 
-    private func projectionMatrix(from camera: CameraComponent) -> matrix_float4x4 {
+    private func projectionMatrix(from camera: CameraComponent, aspectRatio: Float) -> matrix_float4x4 {
         let nearPlane = max(0.01, camera.nearPlane)
         let farPlane = max(nearPlane + 0.01, camera.farPlane)
-        return matrix_float4x4.perspective(
-            fovDegrees: camera.fovDegrees,
-            aspectRatio: Renderer.AspectRatio,
-            near: nearPlane,
-            far: farPlane
-        )
+        switch camera.projectionType {
+        case .perspective:
+            return matrix_float4x4.perspective(
+                fovDegrees: camera.fovDegrees,
+                aspectRatio: aspectRatio,
+                near: nearPlane,
+                far: farPlane
+            )
+        case .orthographic:
+            let size = max(0.01, camera.orthoSize)
+            return matrix_float4x4.orthographic(
+                size: size,
+                aspectRatio: aspectRatio,
+                near: nearPlane,
+                far: farPlane
+            )
+        }
+    }
+
+    private func resolveActiveCamera(isPlaying: Bool) -> (entity: Entity, transform: TransformComponent, camera: CameraComponent, shouldUpdateEditorCamera: Bool)? {
+        let selected: (Entity, TransformComponent, CameraComponent)? = {
+            if isPlaying {
+                return ecs.activeCamera(allowEditor: false) ?? ecs.activeCamera(allowEditor: true)
+            }
+            return ecs.activeCamera(allowEditor: true, preferEditor: true)
+        }()
+        guard let selected else { return nil }
+        let shouldUpdateEditorCamera = !isPlaying && selected.2.isEditor
+        return (selected.0, selected.1, selected.2, shouldUpdateEditorCamera)
+    }
+
+    private func applyCameraConstants(transform: TransformComponent, camera: CameraComponent, aspectRatio: Float) {
+        _sceneConstants.viewMatrix = viewMatrix(from: transform)
+        _sceneConstants.skyViewMatrix = _sceneConstants.viewMatrix
+        _sceneConstants.skyViewMatrix[3][0] = 0
+        _sceneConstants.skyViewMatrix[3][1] = 0
+        _sceneConstants.skyViewMatrix[3][2] = 0
+        _sceneConstants.projectionMatrix = projectionMatrix(from: camera, aspectRatio: aspectRatio)
+        _sceneConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, 1.0)
     }
 
     public func onEvent(_ event: Event) {}
 
     private func updateLightOrbits() {
-        let t = GameTime.TotalGameTime
+        let t = Time.TotalTime
         ecs.viewLightOrbits { entity, transform, orbit in
             let angle = t * orbit.speed + orbit.phase
             let centerPosition: SIMD3<Float> = {
@@ -661,6 +1026,10 @@ public class EngineScene {
         return result
     }
 
+    func layerIndex(for entity: Entity) -> Int32 {
+        return ecs.get(LayerComponent.self, for: entity)?.index ?? LayerCatalog.defaultLayerIndex
+    }
+
     // Gather -> group -> encode pipeline for meshes.
     private func buildRenderItems() -> [RenderItem] {
         let items = ecs.viewTransformMeshRendererArray()
@@ -670,6 +1039,10 @@ public class EngineScene {
         for (entity, transform, meshRenderer) in items {
             guard let meshHandle = meshRenderer.meshHandle,
                   let mesh = AssetManager.mesh(handle: meshHandle) else { continue }
+            let layer = layerIndex(for: entity)
+            if !Renderer.layerFilterMask.contains(layerIndex: layer) {
+                continue
+            }
             let bindings = resolveMaterialBindings(entity: entity, meshRenderer: meshRenderer)
             renderItems.append(RenderItem(
                 entity: entity,

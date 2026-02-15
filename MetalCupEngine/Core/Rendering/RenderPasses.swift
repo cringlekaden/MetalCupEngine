@@ -48,6 +48,17 @@ struct RenderPassHelpers {
     static func textureSize(_ texture: MTLTexture) -> SIMD2<Float> {
         SIMD2<Float>(Float(texture.width), Float(texture.height))
     }
+
+    static func withRenderPass(_ pass: RenderPassType, _ body: () -> Void) {
+        let previous = Renderer.currentRenderPass
+        Renderer.currentRenderPass = pass
+        body()
+        Renderer.currentRenderPass = previous
+    }
+
+    static func shouldRenderEditorOverlays() -> Bool {
+        return !SceneManager.isPlaying
+    }
 }
 
 struct FullscreenPass {
@@ -103,11 +114,11 @@ final class DepthPrepassPass: RenderGraphPass {
         encoder.label = "Depth Prepass"
         encoder.pushDebugGroup("Depth Prepass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(depth))
-        Renderer.currentRenderPass = .depthPrepass
-        frame.delegate?.renderScene(into: encoder)
+        RenderPassHelpers.withRenderPass(.depthPrepass) {
+            frame.delegate?.renderScene(into: encoder)
+        }
         encoder.popDebugGroup()
         encoder.endEncoding()
-        Renderer.currentRenderPass = .main
     }
 }
 
@@ -128,8 +139,9 @@ final class ScenePass: RenderGraphPass {
         encoder.label = "Scene Pass"
         encoder.pushDebugGroup("Scene Pass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(baseColor))
-        Renderer.currentRenderPass = .main
-        frame.delegate?.renderScene(into: encoder)
+        RenderPassHelpers.withRenderPass(.main) {
+            frame.delegate?.renderScene(into: encoder)
+        }
         encoder.popDebugGroup()
         encoder.endEncoding()
         Renderer.profiler.record(.scene, seconds: CACurrentMediaTime() - sceneStart)
@@ -155,11 +167,11 @@ final class PickingPass: RenderGraphPass {
         encoder.label = "Picking Pass"
         encoder.pushDebugGroup("Picking Pass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(pickId))
-        Renderer.currentRenderPass = .picking
-        frame.delegate?.renderScene(into: encoder)
+        RenderPassHelpers.withRenderPass(.picking) {
+            frame.delegate?.renderScene(into: encoder)
+        }
         encoder.popDebugGroup()
         encoder.endEncoding()
-        Renderer.currentRenderPass = .main
     }
 }
 
@@ -177,7 +189,7 @@ final class GridOverlayPass: RenderGraphPass {
             encoder.endEncoding()
         }
 
-        if Renderer.settings.gridEnabled == 0 || SceneManager.isPlaying {
+        if Renderer.settings.gridEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays() {
             return
         }
         guard
@@ -212,7 +224,7 @@ final class SelectionOutlinePass: RenderGraphPass {
             encoder.endEncoding()
         }
 
-        if Renderer.settings.outlineEnabled == 0 || SceneManager.isPlaying {
+        if Renderer.settings.outlineEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays() {
             return
         }
         guard

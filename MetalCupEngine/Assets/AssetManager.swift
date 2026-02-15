@@ -109,7 +109,7 @@ public final class AssetManager {
             return cached
         }
 
-            if let material = MaterialAssetSerializer.load(from: url, fallbackHandle: handle) {
+            if let material = MaterialSerializer.load(from: url, fallbackHandle: handle) {
             cacheLock.lock()
             let wasCached = materialCache[handle] != nil
             materialCache[handle] = material

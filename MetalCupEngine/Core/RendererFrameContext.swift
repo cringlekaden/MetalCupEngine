@@ -50,7 +50,7 @@ public final class RendererFrameContext {
         let requiredBytes = InstanceData.stride(data.count)
         ensureInstanceBufferCapacity(requiredBytes)
         guard let buffer = instanceBuffers[frameIndex] else { return nil }
-        data.withUnsafeBytes { bytes in
+        _ = data.withUnsafeBytes { bytes in
             memcpy(buffer.contents(), bytes.baseAddress, bytes.count)
         }
         return buffer

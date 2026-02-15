@@ -35,7 +35,7 @@ public final class EditorCameraController {
 
         let mouseDelta = SIMD2<Float>(Mouse.GetDX(), Mouse.GetDY())
         let scrollDelta = Mouse.GetDWheel()
-        let dt = GameTime.DeltaTime
+        let dt = Time.DeltaTime
 
         if altDown && leftMouse && shiftDown {
             pan(delta: mouseDelta)

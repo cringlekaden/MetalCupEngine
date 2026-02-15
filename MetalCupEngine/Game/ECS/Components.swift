@@ -29,6 +29,52 @@ public struct TransformComponent {
     }
 }
 
+public struct LayerComponent {
+    public var index: Int32
+
+    public init(index: Int32 = LayerCatalog.defaultLayerIndex) {
+        self.index = index
+    }
+}
+
+public enum PrefabOverrideType: String, Codable, CaseIterable {
+    case name
+    case layer
+    case meshRenderer
+    case material
+    case light
+    case lightOrbit
+    case camera
+    case sky
+    case skyLight
+    case skyLightTag
+    case skySunTag
+}
+
+public struct PrefabOverrideComponent {
+    public var overridden: Set<PrefabOverrideType>
+
+    public init(overridden: Set<PrefabOverrideType> = []) {
+        self.overridden = overridden
+    }
+
+    public func contains(_ type: PrefabOverrideType) -> Bool {
+        return overridden.contains(type)
+    }
+}
+
+public struct PrefabInstanceComponent {
+    public var prefabHandle: AssetHandle
+    public var prefabEntityId: UUID
+    public var instanceId: UUID
+
+    public init(prefabHandle: AssetHandle, prefabEntityId: UUID, instanceId: UUID = UUID()) {
+        self.prefabHandle = prefabHandle
+        self.prefabEntityId = prefabEntityId
+        self.instanceId = instanceId
+    }
+}
+
 public struct MeshRendererComponent {
     public var meshHandle: AssetHandle?
     public var materialHandle: AssetHandle?
@@ -76,10 +122,12 @@ public struct MaterialComponent {
 
 public enum ProjectionType: UInt32 {
     case perspective = 0
+    case orthographic = 1
 }
 
 public struct CameraComponent {
     public var fovDegrees: Float
+    public var orthoSize: Float
     public var nearPlane: Float
     public var farPlane: Float
     public var projectionType: ProjectionType
@@ -88,6 +136,7 @@ public struct CameraComponent {
 
     public init(
         fovDegrees: Float = 45.0,
+        orthoSize: Float = 10.0,
         nearPlane: Float = 0.1,
         farPlane: Float = 1000.0,
         projectionType: ProjectionType = .perspective,
@@ -95,6 +144,7 @@ public struct CameraComponent {
         isEditor: Bool = true
     ) {
         self.fovDegrees = fovDegrees
+        self.orthoSize = orthoSize
         self.nearPlane = nearPlane
         self.farPlane = farPlane
         self.projectionType = projectionType

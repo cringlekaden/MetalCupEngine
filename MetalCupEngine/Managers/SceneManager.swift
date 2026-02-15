@@ -31,7 +31,7 @@ public final class SceneManager {
     public static private(set) var isPlaying: Bool = false
     public static private(set) var isPaused: Bool = false
     private static var editorSnapshot: SceneDocument?
-    private static var pendingPickRequest: SIMD2<Int>?
+    private static var pendingPickRequest: (pixel: SIMD2<Int>, mask: LayerMask)?
     private static var pendingPickResult: PickResult?
     private static var selectedEntityId: UUID?
 
@@ -52,10 +52,11 @@ public final class SceneManager {
     }
     
     public static func update() {
+        applyPrefabMaintenance(scene: currentScene)
         if isPlaying {
-            runtimeScene?.onUpdate(isPlaying: true, isPaused: isPaused)
+            updateRuntimeScene()
         } else {
-            editorScene?.onUpdate(isPlaying: false, isPaused: false)
+            updateEditorScene()
         }
     }
     
@@ -67,25 +68,33 @@ public final class SceneManager {
         }
     }
 
-    public static func requestPick(at pixel: SIMD2<Int>) {
-        pendingPickRequest = pixel
+    public static func raycast(origin: SIMD3<Float>, direction: SIMD3<Float>, mask: LayerMask = .all) -> Entity? {
+        return currentScene.raycast(origin: origin, direction: direction, mask: mask)
     }
 
-    static func consumePickRequest() -> SIMD2<Int>? {
+    public static func requestPick(at pixel: SIMD2<Int>, mask: LayerMask = .all) {
+        pendingPickRequest = (pixel: pixel, mask: mask)
+    }
+
+    static func consumePickRequest() -> (pixel: SIMD2<Int>, mask: LayerMask)? {
         let request = pendingPickRequest
         pendingPickRequest = nil
         return request
     }
 
-    static func handlePickResult(_ pickedId: UInt32) {
+    static func handlePickResult(_ pickedId: UInt32, mask: LayerMask) {
         if pickedId == 0 {
-            pendingPickResult = .none
+            pendingPickResult = SceneManager.PickResult.none
             return
         }
         if let entity = currentScene.entity(forPickID: pickedId) {
-            pendingPickResult = .entity(entity)
+            if let hit = currentScene.raycast(hitEntity: entity, mask: mask) {
+                pendingPickResult = .entity(hit)
+            } else {
+                pendingPickResult = SceneManager.PickResult.none
+            }
         } else {
-            pendingPickResult = .none
+            pendingPickResult = SceneManager.PickResult.none
         }
     }
 
@@ -117,6 +126,7 @@ public final class SceneManager {
         } else {
             runtimeScene = makeEmptyScene()
         }
+        Time.Reset()
         isPlaying = true
         isPaused = false
     }
@@ -133,6 +143,7 @@ public final class SceneManager {
         runtimeScene = nil
         isPlaying = false
         isPaused = false
+        Time.Reset()
     }
 
     public static func pause() {
@@ -169,5 +180,27 @@ public final class SceneManager {
     private static func makeEmptyScene() -> EngineScene {
         let document = SceneDocument(id: UUID(), name: "Untitled", entities: [])
         return SerializedScene(document: document)
+    }
+
+    private static func applyPrefabMaintenance(scene: EngineScene) {
+        PrefabSystem.shared.applyIfNeeded(scene: scene)
+    }
+
+    private static func updateRuntimeScene() {
+        runtimeScene?.onUpdate(isPlaying: true, isPaused: isPaused)
+        if isPaused {
+            _ = Time.ConsumeFixedSteps()
+            return
+        }
+        let steps = Time.ConsumeFixedSteps()
+        if steps > 0 {
+            for _ in 0..<steps {
+                runtimeScene?.onFixedUpdate()
+            }
+        }
+    }
+
+    private static func updateEditorScene() {
+        editorScene?.onUpdate(isPlaying: false, isPaused: false)
     }
 }

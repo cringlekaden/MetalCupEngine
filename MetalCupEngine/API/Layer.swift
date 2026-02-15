@@ -10,6 +10,7 @@ open class Layer {
     open func onAttach() {}
     open func onDetach() {}
     open func onUpdate() {}
+    open func onFixedUpdate() {}
     open func onRender(encoder: MTLRenderCommandEncoder) {}
     open func onOverlayRender(view: MTKView, commandBuffer: MTLCommandBuffer) {}
     open func onEvent(_ event: Event) {}
@@ -31,8 +32,12 @@ public final class LayerStack {
         }
     }
 
-    public func updateAll(deltaTime: Float) {
+    public func updateAll() {
         for layer in layers { layer.onUpdate() }
+    }
+
+    public func fixedUpdateAll() {
+        for layer in layers { layer.onFixedUpdate() }
     }
 
     public func renderAll(with encoder: MTLRenderCommandEncoder) {
@@ -51,4 +56,3 @@ public final class LayerStack {
         }
     }
 }
-

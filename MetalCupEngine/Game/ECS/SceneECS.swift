@@ -17,6 +17,9 @@ public final class SceneECS {
 
     private var nameComponents: [Entity: NameComponent] = [:]
     private var transformComponents: [Entity: TransformComponent] = [:]
+    private var layerComponents: [Entity: LayerComponent] = [:]
+    private var prefabInstanceComponents: [Entity: PrefabInstanceComponent] = [:]
+    private var prefabOverrideComponents: [Entity: PrefabOverrideComponent] = [:]
     private var meshRendererComponents: [Entity: MeshRendererComponent] = [:]
     private var materialComponents: [Entity: MaterialComponent] = [:]
     private var cameraComponents: [Entity: CameraComponent] = [:]
@@ -35,6 +38,7 @@ public final class SceneECS {
 
         nameComponents[entity] = NameComponent(name: name)
         transformComponents[entity] = TransformComponent()
+        layerComponents[entity] = LayerComponent()
 
         return entity
     }
@@ -45,6 +49,7 @@ public final class SceneECS {
         if let name {
             nameComponents[entity] = NameComponent(name: name)
         }
+        layerComponents[entity] = LayerComponent()
         return entity
     }
 
@@ -52,6 +57,9 @@ public final class SceneECS {
         aliveEntities.remove(e)
         nameComponents.removeValue(forKey: e)
         transformComponents.removeValue(forKey: e)
+        layerComponents.removeValue(forKey: e)
+        prefabInstanceComponents.removeValue(forKey: e)
+        prefabOverrideComponents.removeValue(forKey: e)
         meshRendererComponents.removeValue(forKey: e)
         materialComponents.removeValue(forKey: e)
         cameraComponents.removeValue(forKey: e)
@@ -67,6 +75,9 @@ public final class SceneECS {
         aliveEntities.removeAll()
         nameComponents.removeAll()
         transformComponents.removeAll()
+        layerComponents.removeAll()
+        prefabInstanceComponents.removeAll()
+        prefabOverrideComponents.removeAll()
         meshRendererComponents.removeAll()
         materialComponents.removeAll()
         cameraComponents.removeAll()
@@ -88,6 +99,12 @@ public final class SceneECS {
             nameComponents[entity] = value
         case let value as TransformComponent:
             transformComponents[entity] = value
+        case let value as LayerComponent:
+            layerComponents[entity] = value
+        case let value as PrefabInstanceComponent:
+            prefabInstanceComponents[entity] = value
+        case let value as PrefabOverrideComponent:
+            prefabOverrideComponents[entity] = value
         case let value as MeshRendererComponent:
             meshRendererComponents[entity] = value
         case let value as MaterialComponent:
@@ -117,6 +134,12 @@ public final class SceneECS {
             nameComponents.removeValue(forKey: entity)
         case is TransformComponent.Type:
             transformComponents.removeValue(forKey: entity)
+        case is LayerComponent.Type:
+            layerComponents.removeValue(forKey: entity)
+        case is PrefabInstanceComponent.Type:
+            prefabInstanceComponents.removeValue(forKey: entity)
+        case is PrefabOverrideComponent.Type:
+            prefabOverrideComponents.removeValue(forKey: entity)
         case is MeshRendererComponent.Type:
             meshRendererComponents.removeValue(forKey: entity)
         case is MaterialComponent.Type:
@@ -146,6 +169,12 @@ public final class SceneECS {
             return nameComponents[entity] as? T
         case is TransformComponent.Type:
             return transformComponents[entity] as? T
+        case is LayerComponent.Type:
+            return layerComponents[entity] as? T
+        case is PrefabInstanceComponent.Type:
+            return prefabInstanceComponents[entity] as? T
+        case is PrefabOverrideComponent.Type:
+            return prefabOverrideComponents[entity] as? T
         case is MeshRendererComponent.Type:
             return meshRendererComponents[entity] as? T
         case is MaterialComponent.Type:
@@ -213,13 +242,23 @@ public final class SceneECS {
         }
     }
 
-    public func activeCamera() -> (Entity, TransformComponent, CameraComponent)? {
-        if let primary = cameraComponents.first(where: { $0.value.isPrimary }) {
-            if let transform = transformComponents[primary.key] {
-                return (primary.key, transform, primary.value)
+    public func activeCamera(allowEditor: Bool = true, preferEditor: Bool = false) -> (Entity, TransformComponent, CameraComponent)? {
+        let candidates = cameraComponents.filter { allowEditor || !$0.value.isEditor }
+        if preferEditor {
+            if let primaryEditor = candidates.first(where: { $0.value.isEditor && $0.value.isPrimary }),
+               let transform = transformComponents[primaryEditor.key] {
+                return (primaryEditor.key, transform, primaryEditor.value)
+            }
+            if let editor = candidates.first(where: { $0.value.isEditor }),
+               let transform = transformComponents[editor.key] {
+                return (editor.key, transform, editor.value)
             }
         }
-        if let entry = cameraComponents.first, let transform = transformComponents[entry.key] {
+        if let primary = candidates.first(where: { $0.value.isPrimary }),
+           let transform = transformComponents[primary.key] {
+            return (primary.key, transform, primary.value)
+        }
+        if let entry = candidates.first, let transform = transformComponents[entry.key] {
             return (entry.key, transform, entry.value)
         }
         return nil

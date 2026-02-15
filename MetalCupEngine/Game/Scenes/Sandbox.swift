@@ -74,8 +74,8 @@ class Sandbox: EngineScene {
         let polledDelta = SIMD2<Float>(Mouse.GetDX(), Mouse.GetDY())
         let frameMouseDelta = mouseDelta + polledDelta
         if isLeftDown, let pbrTest, var transform = ecs.get(TransformComponent.self, for: pbrTest) {
-            transform.rotation.x += frameMouseDelta.y * GameTime.DeltaTime
-            transform.rotation.y += frameMouseDelta.x * GameTime.DeltaTime
+            transform.rotation.x += frameMouseDelta.y * Time.DeltaTime
+            transform.rotation.y += frameMouseDelta.x * Time.DeltaTime
             ecs.add(transform, to: pbrTest)
         }
         // consume per-frame delta
@@ -205,7 +205,7 @@ class Sandbox: EngineScene {
         guard let meshHandle = AssetManager.handle(forSourcePath: "sphere/sphere.obj"),
               AssetManager.mesh(handle: meshHandle) != nil else { return nil }
         let entity = ecs.createEntity(name: "Light Marker")
-        var transform = TransformComponent(position: position, scale: SIMD3<Float>(repeating: 0.2))
+        let transform = TransformComponent(position: position, scale: SIMD3<Float>(repeating: 0.2))
         ecs.add(transform, to: entity)
         var material = MetalCupMaterial()
         material.baseColor = color

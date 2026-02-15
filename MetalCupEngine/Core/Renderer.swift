@@ -19,6 +19,7 @@ public final class Renderer: NSObject {
     public static let profiler = RendererProfiler()
     public static var currentRenderPass: RenderPassType = .main
     public static var useDepthPrepass: Bool = true
+    public static var layerFilterMask: LayerMask = .all
 
     private let _projection = float4x4(perspectiveFov: .pi / 2, aspect: 1.0, nearZ: 0.1, farZ: 10.0)
     private var _lastPerfFlags: UInt32 = Renderer.settings.perfFlags
@@ -494,7 +495,7 @@ extension Renderer: MTKViewDelegate {
     public func draw(in view: MTKView) {
         let frameStart = CACurrentMediaTime()
         defer { Mouse.BeginFrame() }
-        GameTime.UpdateTime(1.0 / Float(view.preferredFramesPerSecond))
+        Time.UpdateFrame(at: frameStart)
         guard let drawable = view.currentDrawable,
               view.drawableSize.width > 0,
               view.drawableSize.height > 0 else { return }
@@ -526,8 +527,8 @@ extension Renderer: MTKViewDelegate {
            let readbackBuffer = RendererFrameContext.shared.pickReadbackBuffer() {
             let width = max(1, pickTexture.width)
             let height = max(1, pickTexture.height)
-            let clampedX = max(0, min(pickRequest.x, width - 1))
-            let clampedY = max(0, min(pickRequest.y, height - 1))
+            let clampedX = max(0, min(pickRequest.pixel.x, width - 1))
+            let clampedY = max(0, min(pickRequest.pixel.y, height - 1))
             let origin = MTLOrigin(x: clampedX, y: clampedY, z: 0)
             let size = MTLSize(width: 1, height: 1, depth: 1)
             if let blit = commandBuffer.makeBlitCommandEncoder() {
@@ -546,7 +547,7 @@ extension Renderer: MTKViewDelegate {
             commandBuffer.addCompletedHandler { _ in
                 let pointer = readbackBuffer.contents().bindMemory(to: UInt32.self, capacity: 1)
                 let pickedId = pointer.pointee
-                SceneManager.handlePickResult(pickedId)
+                SceneManager.handlePickResult(pickedId, mask: pickRequest.mask)
             }
         }
 
