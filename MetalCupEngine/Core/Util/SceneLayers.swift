@@ -24,13 +24,12 @@ public struct LayerMask: OptionSet {
 }
 
 public final class LayerCatalog {
-    public static let shared = LayerCatalog()
     public static let maxLayers: Int32 = 32
     public static let defaultLayerIndex: Int32 = 0
 
     public private(set) var names: [String] = LayerCatalog.defaultNames()
 
-    private init() {}
+    public init() {}
 
     public func setNames(_ names: [String]) {
         self.names = LayerCatalog.normalizedNames(names)
@@ -61,4 +60,3 @@ public final class LayerCatalog {
         return result
     }
 }
-

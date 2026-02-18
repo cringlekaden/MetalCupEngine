@@ -35,10 +35,15 @@ public enum MaterialAssetSerializer {
         let decoder = JSONDecoder()
         do {
             let data = try Data(contentsOf: url)
+            _ = MCE_VERIFY(!data.isEmpty, "Material load empty data: \(url.lastPathComponent)")
             let document = try decoder.decode(MaterialAssetDocument.self, from: data)
             return material(from: document, url: url, fallbackHandle: fallbackHandle)
         } catch {
-            EngineLog.shared.logWarning("Material load failed \(url.lastPathComponent): \(error)", category: .assets)
+            EngineLoggerContext.log(
+                "Material load failed \(url.lastPathComponent): \(error)",
+                level: .warning,
+                category: .assets
+            )
             let fallbackHandle = fallbackHandle ?? AssetHandle()
             let name = url.deletingPathExtension().lastPathComponent
             return MaterialAsset.default(handle: fallbackHandle, name: name)
@@ -54,7 +59,11 @@ public enum MaterialAssetSerializer {
             try data.write(to: url, options: [.atomic])
             return true
         } catch {
-            EngineLog.shared.logWarning("Material save failed \(url.lastPathComponent): \(error)", category: .assets)
+            EngineLoggerContext.log(
+                "Material save failed \(url.lastPathComponent): \(error)",
+                level: .warning,
+                category: .assets
+            )
             return false
         }
     }

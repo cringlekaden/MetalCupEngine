@@ -6,7 +6,6 @@ import MetalKit
 import simd
 
 public class EngineScene {
-    public let data: Scene
     public let ecs: SceneECS
     public let runtime = SceneRuntime()
     public var prefabSystem: PrefabSystem?
@@ -18,6 +17,7 @@ public class EngineScene {
     private let _editorCameraController = EditorCameraController()
     private var _cachedBatchResult: Any?
     private var _cachedBatchFrameToken: UInt64 = UInt64.max
+    private var lastFrameContext: FrameContext?
 
     private static var debugFrameCounter: UInt64 = 0
 
@@ -28,23 +28,23 @@ public class EngineScene {
                 environmentMapHandle: AssetHandle?,
                 prefabSystem: PrefabSystem? = nil,
                 shouldBuildScene: Bool = true) {
-        self.data = Scene(id: id, name: name, environmentMapHandle: environmentMapHandle, shouldBuildScene: shouldBuildScene)
-        self.id = data.id
-        self.name = data.name
-        self.environmentMapHandle = data.environmentMapHandle
-        self.ecs = data.ecs
+        self.id = id
+        self.name = name
+        self.environmentMapHandle = environmentMapHandle
+        self.ecs = SceneECS()
         self.prefabSystem = prefabSystem
         if shouldBuildScene {
             buildScene()
         }
     }
 
-    public func onUpdate(isPlaying: Bool = true, isPaused: Bool = false) {
+    public func onUpdate(frame: FrameContext, isPlaying: Bool = true, isPaused: Bool = false) {
         EngineScene.debugFrameCounter &+= 1
+        lastFrameContext = frame
         // Update order: camera -> scene constants -> sky system -> scene update -> light sync.
         ensureCameraEntity()
-        updateCamera(isPlaying: isPlaying)
-        _sceneConstants.totalGameTime = Time.TotalTime
+        updateCamera(isPlaying: isPlaying, frame: frame)
+        _sceneConstants.totalGameTime = frame.time.totalTime
         let hasEnvironment: Bool = {
             guard let (_, sky) = ecs.activeSkyLight(), sky.enabled else { return false }
             switch sky.mode {
@@ -60,14 +60,14 @@ public class EngineScene {
         _sceneConstants.cameraPositionAndIBL.w = iblIntensity
         SkySystem.update(scene: ecs)
         if isPlaying && !isPaused {
-            updateLightOrbits()
+            updateLightOrbits(totalTime: frame.time.totalTime)
             doUpdate()
         }
         syncLights()
     }
 
-    func runtimeUpdate(isPlaying: Bool, isPaused: Bool) {
-        onUpdate(isPlaying: isPlaying, isPaused: isPaused)
+    func runtimeUpdate(isPlaying: Bool, isPaused: Bool, frame: FrameContext) {
+        onUpdate(frame: frame, isPlaying: isPlaying, isPaused: isPaused)
     }
 
     func runtimeFixedUpdate() {
@@ -78,17 +78,36 @@ public class EngineScene {
         doFixedUpdate()
     }
 
-    public func onRender(encoder: MTLRenderCommandEncoder) {
-        SceneRenderer.renderScene(into: encoder, scene: self)
+    public func onRender(encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {
+        SceneRenderer.renderScene(into: encoder, scene: self, frameContext: frameContext)
+    }
+
+    @discardableResult
+    public func render(view: SceneView, context: RenderContext, frameContext: RendererFrameContext) -> RenderOutputs {
+        SceneRenderer.render(scene: self, view: view, context: context, frameContext: frameContext)
     }
 
     @discardableResult
     public func render(view: SceneView, context: RenderContext) -> RenderOutputs {
-        SceneRenderer.render(scene: self, view: view, context: context)
+        let storage = RendererFrameContextStorage()
+        let frameContext = storage.beginFrame()
+        return render(view: view, context: context, frameContext: frameContext)
+    }
+
+    public func renderPreview(encoder: MTLRenderCommandEncoder, cameraEntity: Entity, viewportSize: SIMD2<Float>, frameContext: RendererFrameContext) {
+        SceneRenderer.renderPreview(
+            encoder: encoder,
+            scene: self,
+            cameraEntity: cameraEntity,
+            viewportSize: viewportSize,
+            frameContext: frameContext
+        )
     }
 
     public func renderPreview(encoder: MTLRenderCommandEncoder, cameraEntity: Entity, viewportSize: SIMD2<Float>) {
-        SceneRenderer.renderPreview(encoder: encoder, scene: self, cameraEntity: cameraEntity, viewportSize: viewportSize)
+        let storage = RendererFrameContextStorage()
+        let frameContext = storage.beginFrame()
+        renderPreview(encoder: encoder, cameraEntity: cameraEntity, viewportSize: viewportSize, frameContext: frameContext)
     }
 
     public func raycast(origin: SIMD3<Float>, direction: SIMD3<Float>, mask: LayerMask = .all) -> Entity? {
@@ -102,11 +121,11 @@ public class EngineScene {
     }
 
     func updateCameras() {
-        updateCamera(isPlaying: false)
+        updateCamera(isPlaying: false, frame: currentFrameForUpdates())
     }
 
     public func updateAspectRatio() {
-        updateCamera(isPlaying: false)
+        updateCamera(isPlaying: false, frame: currentFrameForUpdates())
     }
 
     func buildScene() {}
@@ -283,7 +302,6 @@ public class EngineScene {
     public func apply(document: SceneDocument) {
         ecs.clear()
         name = document.name
-        data.name = name
         var prefabHandles = Set<AssetHandle>()
         for entityDoc in document.entities {
             let entity = ecs.createEntity(id: entityDoc.id, name: entityDoc.components.name?.name)
@@ -482,7 +500,11 @@ public class EngineScene {
                 let link = PrefabInstanceComponent(prefabHandle: prefabHandle, prefabEntityId: entityDoc.localId, instanceId: instanceId)
                 ecs.add(link, to: entity)
             } else {
-                EngineLog.shared.logWarning("Prefab instantiate missing handle for \(prefab.name)", category: .scene)
+                EngineLoggerContext.log(
+                    "Prefab instantiate missing handle for \(prefab.name)",
+                    level: .warning,
+                    category: .scene
+                )
             }
             if let meshRenderer = entityDoc.components.meshRenderer {
                 let component = MeshRendererComponent(
@@ -558,10 +580,10 @@ public class EngineScene {
         ecs.add(CameraComponent(isPrimary: true, isEditor: true), to: entity)
     }
 
-    private func updateCamera(isPlaying: Bool) {
+    private func updateCamera(isPlaying: Bool, frame: FrameContext) {
         guard var active = resolveActiveCamera(isPlaying: isPlaying) else { return }
         if active.shouldUpdateEditorCamera {
-            _editorCameraController.update(transform: &active.transform)
+            _editorCameraController.update(transform: &active.transform, frame: frame)
             ecs.add(active.transform, to: active.entity)
         }
         applyCameraConstants(transform: active.transform, camera: active.camera, aspectRatio: Renderer.AspectRatio)
@@ -604,8 +626,8 @@ public class EngineScene {
 
     public func onEvent(_ event: Event) {}
 
-    private func updateLightOrbits() {
-        let t = Time.TotalTime
+    private func updateLightOrbits(totalTime: Float) {
+        let t = totalTime
         ecs.viewLightOrbits { entity, transform, orbit in
             let angle = t * orbit.speed + orbit.phase
             let centerPosition: SIMD3<Float> = {
@@ -677,6 +699,30 @@ public class EngineScene {
             lightData.append(data)
         }
         _lightManager.setLights(lightData)
+    }
+
+    private func currentFrameForUpdates() -> FrameContext {
+        if let lastFrameContext { return lastFrameContext }
+        let frameTime = FrameTime(
+            deltaTime: 0.0,
+            unscaledDeltaTime: 0.0,
+            timeScale: 1.0,
+            fixedDeltaTime: 1.0 / 60.0,
+            frameCount: 0,
+            totalTime: 0.0,
+            unscaledTotalTime: 0.0
+        )
+        let inputState = InputState(
+            mousePosition: .zero,
+            mouseDelta: .zero,
+            scrollDelta: 0,
+            mouseButtons: [],
+            keys: [],
+            viewportOrigin: .zero,
+            viewportSize: .zero,
+            textInput: ""
+        )
+        return FrameContext(time: frameTime, input: inputState)
     }
 
     private func layerIndex(for entity: Entity) -> Int32 {

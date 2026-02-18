@@ -30,8 +30,8 @@ public final class SceneRuntime {
         isPaused = false
     }
 
-    public func update(scene: EngineScene) {
-        scene.runtimeUpdate(isPlaying: isPlaying, isPaused: isPaused)
+    public func update(scene: EngineScene, frame: FrameContext) {
+        scene.runtimeUpdate(isPlaying: isPlaying, isPaused: isPaused, frame: frame)
     }
 
     public func fixedUpdate(scene: EngineScene) {

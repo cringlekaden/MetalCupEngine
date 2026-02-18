@@ -46,6 +46,6 @@ public enum OutlineSystem {
         params.texelSize = SIMD2<Float>(1.0 / Float(pickId.width), 1.0 / Float(pickId.height))
         encoder.setFragmentBytes(&params, length: OutlineParams.stride, index: FragmentBufferIndex.outlineParams)
 
-        quadMesh.drawPrimitives(encoder)
+        quadMesh.drawPrimitives(encoder, frameContext: frame.frameContext)
     }
 }

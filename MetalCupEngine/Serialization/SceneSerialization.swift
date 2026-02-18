@@ -818,6 +818,7 @@ public enum SceneSerializer {
 
     public static func load(from url: URL) throws -> SceneDocument {
         let data = try Data(contentsOf: url)
+        _ = MCE_VERIFY(!data.isEmpty, "Scene load empty data: \(url.lastPathComponent)")
         let decoder = JSONDecoder()
         let document = try decoder.decode(SceneDocument.self, from: data)
         return migrateIfNeeded(document)
@@ -827,8 +828,9 @@ public enum SceneSerializer {
         if document.schemaVersion == SceneSchema.currentVersion {
             return document
         }
-        EngineLog.shared.logWarning(
+        EngineLoggerContext.log(
             "Scene migrate unsupported schema \(document.schemaVersion) -> \(SceneSchema.currentVersion)",
+            level: .warning,
             category: .serialization
         )
         return document

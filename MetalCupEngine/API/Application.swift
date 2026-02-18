@@ -64,12 +64,13 @@ open class Application: NSObject, EventHandler {
 
         // Hook renderer to the MTKView
         renderer = Renderer(window.mtkView)
+        renderer.inputAccumulator = window.inputAccumulator
         renderer.delegate = self
         window.mtkView.delegate = renderer
 
         let appId = ObjectIdentifier(self)
         let rendererId = ObjectIdentifier(renderer)
-        EngineLog.shared.logDebug("Application bootstrap app=\(appId) renderer=\(rendererId)", category: .core)
+        engineContext.log.logDebug("Application bootstrap app=\(appId) renderer=\(rendererId)", category: .core)
     }
 
     // MARK: - EventHandler
@@ -94,14 +95,14 @@ open class Application: NSObject, EventHandler {
 }
 
 extension Application: RendererDelegate {
-    public func update() {
-        layerStack.updateAll()
+    public func update(frame: FrameContext) {
+        layerStack.updateAll(frame: frame)
     }
-    public func renderScene(into encoder: MTLRenderCommandEncoder) {
-        layerStack.renderAll(with: encoder)
+    public func renderScene(into encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {
+        layerStack.renderAll(with: encoder, frameContext: frameContext)
     }
 
-    public func renderOverlays(view: MTKView, commandBuffer: MTLCommandBuffer) {
-        layerStack.renderOverlays(view: view, commandBuffer: commandBuffer)
+    public func renderOverlays(view: MTKView, commandBuffer: MTLCommandBuffer, frameContext: RendererFrameContext) {
+        layerStack.renderOverlays(view: view, commandBuffer: commandBuffer, frameContext: frameContext)
     }
 }

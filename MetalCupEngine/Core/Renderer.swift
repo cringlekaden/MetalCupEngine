@@ -16,6 +16,7 @@ public enum RenderPassType {
 
 public final class Renderer: NSObject {
     public var delegate: RendererDelegate?
+    public var inputAccumulator: InputAccumulator?
     public static var settings = RendererSettings()
     public static let profiler = RendererProfiler()
     public static var currentRenderPass: RenderPassType = .main
@@ -27,6 +28,14 @@ public final class Renderer: NSObject {
     private var _lastPerfFlags: UInt32 = Renderer.settings.perfFlags
     private let _renderResources = RenderResources()
     private let _renderGraph = RenderGraph()
+    private let _frameContextStorage = RendererFrameContextStorage()
+    private var _lastFrameTimestamp: TimeInterval?
+    private var _frameCount: UInt64 = 0
+    private var _totalTime: Float = 0.0
+    private var _unscaledTotalTime: Float = 0.0
+    private var _timeScale: Float = 1.0
+    private var _fixedDeltaTime: Float = 1.0 / 60.0
+    private let _maxFrameDelta: Float = 0.25
     // MARK: - Views for capturing cubemap faces
     private let _views: [float4x4] = [
         float4x4(lookAt: .zero, center: [ 1, 0, 0], up: [0,-1, 0]),
@@ -93,7 +102,8 @@ public final class Renderer: NSObject {
         _iblHandleSets = [builtinHandles, alternateHandles]
         _activeIBLHandleIndex = 0
         ensureIBLTextureSet(handles: alternateHandles)
-        renderBRDFLUT()
+        let frameContext = _frameContextStorage.beginFrame()
+        renderBRDFLUT(frameContext: frameContext)
     }
 
     // MARK: - IBL generation config
@@ -288,7 +298,7 @@ public final class Renderer: NSObject {
         }
     }
 
-    private func renderSkyToEnvironmentMap(hdriHandle: AssetHandle?, intensity: Float, targetEnvironment: MTLTexture) {
+    private func renderSkyToEnvironmentMap(hdriHandle: AssetHandle?, intensity: Float, targetEnvironment: MTLTexture, frameContext: RendererFrameContext) {
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render Sky To Cubemap"
         guard let cubemapMesh = AssetManager.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
@@ -307,7 +317,7 @@ public final class Renderer: NSObject {
             encoder.setFragmentBytes(&skyIntensity, length: MemoryLayout<Float>.stride, index: FragmentBufferIndex.skyIntensity)
             encoder.setFragmentTexture(envTexture, index: IBLTextureIndex.environment)
             encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
-            cubemapMesh.drawPrimitives(encoder)
+            cubemapMesh.drawPrimitives(encoder, frameContext: frameContext)
             encoder.endEncoding()
         }
         if targetEnvironment.mipmapLevelCount > 1,
@@ -319,7 +329,7 @@ public final class Renderer: NSObject {
         commandBuffer.waitUntilCompleted()
     }
 
-    private func renderIrradianceMap(sourceEnvironment: MTLTexture, targetIrradiance: MTLTexture) {
+    private func renderIrradianceMap(sourceEnvironment: MTLTexture, targetIrradiance: MTLTexture, frameContext: RendererFrameContext) {
         let config = iblConfig()
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render Irradiance Map"
@@ -340,14 +350,14 @@ public final class Renderer: NSObject {
             encoder.setFragmentBytes(&params, length: IBLIrradianceParams.stride, index: FragmentBufferIndex.iblParams)
             encoder.setFragmentTexture(sourceEnvironment, index: IBLTextureIndex.environment)
             encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
-            cubemapMesh.drawPrimitives(encoder)
+            cubemapMesh.drawPrimitives(encoder, frameContext: frameContext)
             encoder.endEncoding()
         }
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
     }
 
-    private func renderPrefilteredSpecularMap(sourceEnvironment: MTLTexture, targetPrefiltered: MTLTexture) {
+    private func renderPrefilteredSpecularMap(sourceEnvironment: MTLTexture, targetPrefiltered: MTLTexture, frameContext: RendererFrameContext) {
         let config = iblConfig()
         let mipCount = targetPrefiltered.mipmapLevelCount
         let baseSize = targetPrefiltered.width
@@ -385,7 +395,7 @@ public final class Renderer: NSObject {
                 encoder.setFragmentBytes(&params, length: IBLPrefilterParams.stride, index: FragmentBufferIndex.iblParams)
                 encoder.setFragmentTexture(sourceEnvironment, index: IBLTextureIndex.environment)
                 encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
-                cubemapMesh.drawPrimitives(encoder)
+                cubemapMesh.drawPrimitives(encoder, frameContext: frameContext)
                 encoder.endEncoding()
             }
         }
@@ -400,7 +410,7 @@ public final class Renderer: NSObject {
         return UInt32(max(Float(config.prefilterSamplesMin), min(Float(config.prefilterSamplesMax), samples)))
     }
 
-    private func renderBRDFLUT() {
+    private func renderBRDFLUT(frameContext: RendererFrameContext) {
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render BRDF LUT"
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.brdfLut)) else { return }
@@ -413,13 +423,13 @@ public final class Renderer: NSObject {
             texture1: nil,
             settings: nil
         )
-        pass.encode(into: encoder, quad: quadMesh)
+        pass.encode(into: encoder, quad: quadMesh, frameContext: frameContext)
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
     }
 
-    private func renderProceduralSkyToEnvironmentMap(params: SkyParams, targetEnvironment: MTLTexture) {
+    private func renderProceduralSkyToEnvironmentMap(params: SkyParams, targetEnvironment: MTLTexture, frameContext: RendererFrameContext) {
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render Procedural Sky To Cubemap"
         guard let cubemapMesh = AssetManager.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
@@ -434,7 +444,7 @@ public final class Renderer: NSObject {
             var skyParams = params
             encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
             encoder.setFragmentBytes(&skyParams, length: SkyParams.stride, index: FragmentBufferIndex.skyParams)
-            cubemapMesh.drawPrimitives(encoder)
+            cubemapMesh.drawPrimitives(encoder, frameContext: frameContext)
             encoder.endEncoding()
         }
         if targetEnvironment.mipmapLevelCount > 1,
@@ -521,6 +531,7 @@ public final class Renderer: NSObject {
         _skyRebuildInFlight = true
         _skyRebuildQueue.async { [weak self] in
             guard let self = self else { return }
+            let frameContext = RendererFrameContextStorage().beginFrame()
             self.ensureIBLTextureSet(handles: nextHandles)
             guard let targetEnv = AssetManager.texture(handle: nextHandles.environment),
                   let targetIrr = AssetManager.texture(handle: nextHandles.irradiance),
@@ -535,7 +546,8 @@ public final class Renderer: NSObject {
                 self.renderSkyToEnvironmentMap(
                     hdriHandle: snapshot.hdriHandle,
                     intensity: snapshot.intensity,
-                    targetEnvironment: targetEnv
+                    targetEnvironment: targetEnv,
+                    frameContext: frameContext
                 )
             case .procedural:
                 let sunDir = SkySystem.sunDirection(azimuthDegrees: snapshot.azimuthDegrees, elevationDegrees: snapshot.elevationDegrees)
@@ -547,11 +559,11 @@ public final class Renderer: NSObject {
                 params.sunAngularRadius = 0.00935
                 params.sunIntensity = max(1.0, snapshot.intensity * 10.0)
                 params.sunColor = SIMD3<Float>(1.0, 0.98, 0.92)
-                self.renderProceduralSkyToEnvironmentMap(params: params, targetEnvironment: targetEnv)
+                self.renderProceduralSkyToEnvironmentMap(params: params, targetEnvironment: targetEnv, frameContext: frameContext)
             }
 
-            self.renderIrradianceMap(sourceEnvironment: targetEnv, targetIrradiance: targetIrr)
-            self.renderPrefilteredSpecularMap(sourceEnvironment: targetEnv, targetPrefiltered: targetPre)
+            self.renderIrradianceMap(sourceEnvironment: targetEnv, targetIrradiance: targetIrr, frameContext: frameContext)
+            self.renderPrefilteredSpecularMap(sourceEnvironment: targetEnv, targetPrefiltered: targetPre, frameContext: frameContext)
 
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
@@ -613,7 +625,7 @@ extension Renderer: MTKViewDelegate {
     }
 
 
-    private func renderToWindow(renderPipelineState: RenderPipelineStateType, view: MTKView, commandBuffer: MTLCommandBuffer) {
+    private func renderToWindow(renderPipelineState: RenderPipelineStateType, view: MTKView, commandBuffer: MTLCommandBuffer, frameContext: RendererFrameContext) {
         guard let rpd = view.currentRenderPassDescriptor else { return }
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else { return }
         guard let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
@@ -625,27 +637,37 @@ extension Renderer: MTKViewDelegate {
             texture1: AssetManager.texture(handle: BuiltinAssets.bloomPing),
             settings: Renderer.settings
         )
-        pass.encode(into: encoder, quad: quadMesh)
+        pass.encode(into: encoder, quad: quadMesh, frameContext: frameContext)
         encoder.endEncoding()
     }
 
     public func draw(in view: MTKView) {
         let frameStart = CACurrentMediaTime()
-        defer { Mouse.BeginFrame() }
-        Time.UpdateFrame(at: frameStart)
         updateFrameSizingIfNeeded(view: view)
         guard let drawable = view.currentDrawable,
               view.drawableSize.width > 0,
               view.drawableSize.height > 0 else { return }
         let updateStart = CACurrentMediaTime()
-        delegate?.update()
+        let frameTime = buildFrameTime(timestamp: frameStart)
+        let inputState = inputAccumulator?.snapshotAndReset() ?? InputState(
+            mousePosition: .zero,
+            mouseDelta: .zero,
+            scrollDelta: 0,
+            mouseButtons: [],
+            keys: [],
+            viewportOrigin: .zero,
+            viewportSize: .zero,
+            textInput: ""
+        )
+        let frame = FrameContext(time: frameTime, input: inputState)
+        delegate?.update(frame: frame)
         Renderer.profiler.record(.update, seconds: CACurrentMediaTime() - updateStart)
         if let scene = delegate?.activeScene() {
             updateSkyIfNeeded(scene: scene)
         }
         guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "MetalCup Frame"
-        RendererFrameContext.shared.beginFrame()
+        let frameContext = _frameContextStorage.beginFrame()
         let gpuStart = CACurrentMediaTime()
         commandBuffer.addCompletedHandler { _ in
             Renderer.profiler.record(.gpu, seconds: CACurrentMediaTime() - gpuStart)
@@ -660,13 +682,14 @@ extension Renderer: MTKViewDelegate {
             sceneView: sceneView,
             commandBuffer: commandBuffer,
             resources: _renderResources,
-            delegate: delegate
+            delegate: delegate,
+            frameContext: frameContext
         )
         _renderGraph.execute(frame: graphFrame)
 
         if let pickRequest = PickingSystem.consumeRequest(),
            let pickTexture = AssetManager.texture(handle: BuiltinAssets.pickIdRender),
-           let readbackBuffer = RendererFrameContext.shared.pickReadbackBuffer() {
+           let readbackBuffer = frameContext.pickReadbackBuffer() {
             PickingSystem.enqueueReadback(
                 request: pickRequest,
                 pickTexture: pickTexture,
@@ -678,7 +701,7 @@ extension Renderer: MTKViewDelegate {
         }
 
         let overlaysStart = CACurrentMediaTime()
-        delegate?.renderOverlays(view: view, commandBuffer: commandBuffer)
+        delegate?.renderOverlays(view: view, commandBuffer: commandBuffer, frameContext: frameContext)
         Renderer.profiler.record(.overlays, seconds: CACurrentMediaTime() - overlaysStart)
         Renderer.profiler.record(.render, seconds: CACurrentMediaTime() - renderStart)
         
@@ -687,6 +710,31 @@ extension Renderer: MTKViewDelegate {
         commandBuffer.commit()
         Renderer.profiler.record(.present, seconds: CACurrentMediaTime() - presentStart)
         Renderer.profiler.record(.frame, seconds: CACurrentMediaTime() - frameStart)
+    }
+
+    private func buildFrameTime(timestamp: TimeInterval) -> FrameTime {
+        let deltaSeconds: Float
+        if let last = _lastFrameTimestamp {
+            deltaSeconds = Float(timestamp - last)
+        } else {
+            deltaSeconds = 0.0
+        }
+        _lastFrameTimestamp = timestamp
+        let clampedUnscaled = min(max(deltaSeconds, 0.0), _maxFrameDelta)
+        let unscaledDelta = clampedUnscaled
+        let delta = clampedUnscaled * _timeScale
+        _unscaledTotalTime += unscaledDelta
+        _totalTime += delta
+        _frameCount &+= 1
+        return FrameTime(
+            deltaTime: delta,
+            unscaledDeltaTime: unscaledDelta,
+            timeScale: _timeScale,
+            fixedDeltaTime: _fixedDeltaTime,
+            frameCount: _frameCount,
+            totalTime: _totalTime,
+            unscaledTotalTime: _unscaledTotalTime
+        )
     }
 
 }

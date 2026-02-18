@@ -39,7 +39,11 @@ public final class PrefabSystem {
             guard let prefab = loadPrefab(handle: handle, database: database) else { continue }
             let updated = apply(prefab: prefab, prefabHandle: handle, to: scene)
             if updated > 0 {
-                EngineLog.shared.logDebug("Prefab apply prefab=\(prefab.name) instances=\(updated)", category: .scene)
+                EngineLoggerContext.log(
+                    "Prefab apply prefab=\(prefab.name) instances=\(updated)",
+                    level: .debug,
+                    category: .scene
+                )
             }
         }
     }
@@ -57,7 +61,11 @@ public final class PrefabSystem {
             prefabCache[handle] = prefab
             return prefab
         } catch {
-            EngineLog.shared.logWarning("Prefab load failed \(url.lastPathComponent): \(error)", category: .assets)
+            EngineLoggerContext.log(
+                "Prefab load failed \(url.lastPathComponent): \(error)",
+                level: .warning,
+                category: .assets
+            )
             return nil
         }
     }
@@ -65,7 +73,11 @@ public final class PrefabSystem {
     private func logMissing(handle: AssetHandle) {
         if loggedMissing.contains(handle) { return }
         loggedMissing.insert(handle)
-        EngineLog.shared.logWarning("Prefab missing asset for handle \(handle.rawValue.uuidString)", category: .assets)
+        EngineLoggerContext.log(
+            "Prefab missing asset for handle \(handle.rawValue.uuidString)",
+            level: .warning,
+            category: .assets
+        )
     }
 
     private func apply(prefab: PrefabDocument, prefabHandle: AssetHandle, to scene: EngineScene) -> Int {

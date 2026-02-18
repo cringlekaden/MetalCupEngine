@@ -19,7 +19,7 @@ public final class EditorCameraController {
 
     public init() {}
 
-    public func update(transform: inout TransformComponent) {
+    public func update(transform: inout TransformComponent, frame: FrameContext) {
         if !lastInitialized {
             yaw = transform.rotation.y
             pitch = transform.rotation.x
@@ -28,14 +28,17 @@ public final class EditorCameraController {
             lastInitialized = true
         }
 
-        let altDown = Keyboard.IsKeyPressed(.option) || Keyboard.IsKeyPressed(.rightOption)
-        let shiftDown = Keyboard.IsKeyPressed(.shift)
-        let rightMouse = Mouse.IsMouseButtonPressed(button: .right)
-        let leftMouse = Mouse.IsMouseButtonPressed(button: .left)
+        let keys = frame.input.keys
+        let mouseButtons = frame.input.mouseButtons
 
-        let mouseDelta = SIMD2<Float>(Mouse.GetDX(), Mouse.GetDY())
-        let scrollDelta = Mouse.GetDWheel()
-        let dt = Time.DeltaTime
+        let altDown = keyDown(.option, keys: keys) || keyDown(.rightOption, keys: keys)
+        let shiftDown = keyDown(.shift, keys: keys)
+        let rightMouse = mouseDown(.right, buttons: mouseButtons)
+        let leftMouse = mouseDown(.left, buttons: mouseButtons)
+
+        let mouseDelta = frame.input.mouseDelta
+        let scrollDelta = frame.input.scrollDelta
+        let dt = frame.time.deltaTime
 
         if altDown && leftMouse && shiftDown {
             pan(delta: mouseDelta)
@@ -45,7 +48,7 @@ public final class EditorCameraController {
             dolly(delta: mouseDelta.y)
         } else if rightMouse {
             freeLook(delta: mouseDelta)
-            fly(dt: dt)
+            fly(dt: dt, keys: keys)
         } else {
             if scrollDelta != 0 {
                 zoom(delta: scrollDelta)
@@ -87,20 +90,30 @@ public final class EditorCameraController {
         pitch = clampPitch(pitch)
     }
 
-    private func fly(dt: Float) {
+    private func fly(dt: Float, keys: [Bool]) {
         let forward = forwardVector(pitch: pitch, yaw: yaw)
         let right = rightVector(pitch: pitch, yaw: yaw)
         var move = SIMD3<Float>.zero
-        if Keyboard.IsKeyPressed(.w) { move += forward }
-        if Keyboard.IsKeyPressed(.s) { move -= forward }
-        if Keyboard.IsKeyPressed(.a) { move -= right }
-        if Keyboard.IsKeyPressed(.d) { move += right }
-        if Keyboard.IsKeyPressed(.q) { move.y -= 1 }
-        if Keyboard.IsKeyPressed(.e) { move.y += 1 }
+        if keyDown(.w, keys: keys) { move += forward }
+        if keyDown(.s, keys: keys) { move -= forward }
+        if keyDown(.a, keys: keys) { move -= right }
+        if keyDown(.d, keys: keys) { move += right }
+        if keyDown(.q, keys: keys) { move.y -= 1 }
+        if keyDown(.e, keys: keys) { move.y += 1 }
         if simd_length_squared(move) > 0 {
             let delta = simd_normalize(move) * moveSpeed * dt
             focalPoint += delta
         }
+    }
+
+    private func keyDown(_ code: KeyCodes, keys: [Bool]) -> Bool {
+        let index = Int(code.rawValue)
+        return index >= 0 && index < keys.count ? keys[index] : false
+    }
+
+    private func mouseDown(_ code: MouseCodes, buttons: [Bool]) -> Bool {
+        let index = Int(code.rawValue)
+        return index >= 0 && index < buttons.count ? buttons[index] : false
     }
 
     private func forwardVector(pitch: Float, yaw: Float) -> SIMD3<Float> {

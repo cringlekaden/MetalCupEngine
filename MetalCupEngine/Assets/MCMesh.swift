@@ -61,10 +61,18 @@ public class MCMesh {
         do {
             mdlMeshes = try MTKMesh.newMeshes(asset: asset, device: Engine.Device).modelIOMeshes
         } catch {
-            EngineLog.shared.logError("Mesh load failed \(name): \(error)", category: .assets)
+            EngineLoggerContext.log(
+                "Mesh load failed \(name): \(error)",
+                level: .error,
+                category: .assets
+            )
         }
         guard !mdlMeshes.isEmpty else {
-            EngineLog.shared.logError("Mesh load failed \(name): no ModelIO meshes found.", category: .assets)
+            EngineLoggerContext.log(
+                "Mesh load failed \(name): no ModelIO meshes found.",
+                level: .error,
+                category: .assets
+            )
             return
         }
         var mtkMeshes: [MTKMesh] = []
@@ -81,11 +89,19 @@ public class MCMesh {
                 let mtkMesh = try MTKMesh(mesh: mdlMesh, device: Engine.Device)
                 mtkMeshes.append(mtkMesh)
             } catch {
-                EngineLog.shared.logError("Mesh load failed \(name): \(error)", category: .assets)
+                EngineLoggerContext.log(
+                    "Mesh load failed \(name): \(error)",
+                    level: .error,
+                    category: .assets
+                )
             }
         }
         guard let mtkMesh = mtkMeshes.first, let mdlMesh = mdlMeshes.first else {
-            EngineLog.shared.logError("Mesh load failed \(name): no Metal meshes created.", category: .assets)
+            EngineLoggerContext.log(
+                "Mesh load failed \(name): no Metal meshes created.",
+                level: .error,
+                category: .assets
+            )
             return
         }
         self._vertexBuffer = mtkMesh.vertexBuffers[0].buffer
@@ -116,6 +132,7 @@ public class MCMesh {
     }
     
     func drawPrimitives(_ renderCommandEncoder: MTLRenderCommandEncoder,
+                        frameContext: RendererFrameContext,
                         material: MetalCupMaterial? = nil,
                         albedoMapHandle: AssetHandle? = nil,
                         normalMapHandle: AssetHandle? = nil,
@@ -131,6 +148,7 @@ public class MCMesh {
                 for submesh in _submeshes {
                     submesh.applyTextures(
                         renderCommandEncoder: renderCommandEncoder,
+                        frameContext: frameContext,
                         albedoMapHandle: albedoMapHandle,
                         normalMapHandle: normalMapHandle,
                         metallicMapHandle: metallicMapHandle,
@@ -172,6 +190,7 @@ public class MCMesh {
                     renderCommandEncoder.setFragmentBytes(&resolvedMaterial, length: MetalCupMaterial.stride, index: FragmentBufferIndex.material)
                     applyTextureOverrides(
                         renderCommandEncoder: renderCommandEncoder,
+                        frameContext: frameContext,
                         albedoMapHandle: albedoMapHandle,
                         normalMapHandle: normalMapHandle,
                         metallicMapHandle: metallicMapHandle,
@@ -185,6 +204,7 @@ public class MCMesh {
                     renderCommandEncoder.setFragmentBytes(&resolvedMaterial, length: MetalCupMaterial.stride, index: FragmentBufferIndex.material)
                     applyTextureOverrides(
                         renderCommandEncoder: renderCommandEncoder,
+                        frameContext: frameContext,
                         albedoMapHandle: nil,
                         normalMapHandle: nil,
                         metallicMapHandle: nil,
@@ -205,6 +225,7 @@ public class MCMesh {
     }
 
     private func applyTextureOverrides(renderCommandEncoder: MTLRenderCommandEncoder,
+                                       frameContext: RendererFrameContext,
                                        albedoMapHandle: AssetHandle?,
                                        normalMapHandle: AssetHandle?,
                                        metallicMapHandle: AssetHandle?,
@@ -225,7 +246,7 @@ public class MCMesh {
         setFragmentTextureCached(renderCommandEncoder, texture: nil, index: FragmentTextureIndex.clearcoatRoughness)
         setFragmentTextureCached(renderCommandEncoder, texture: nil, index: FragmentTextureIndex.sheenColor)
         setFragmentTextureCached(renderCommandEncoder, texture: nil, index: FragmentTextureIndex.sheenIntensity)
-        let ibl = RendererFrameContext.shared.iblTextures()
+        let ibl = frameContext.iblTextures()
         setFragmentTextureCached(renderCommandEncoder, texture: ibl.irradiance, index: FragmentTextureIndex.irradiance)
         setFragmentTextureCached(renderCommandEncoder, texture: ibl.prefiltered, index: FragmentTextureIndex.prefiltered)
         setFragmentTextureCached(renderCommandEncoder, texture: ibl.brdfLut, index: FragmentTextureIndex.brdfLut)
@@ -307,6 +328,7 @@ class Submesh {
     }
     
     func applyTextures(renderCommandEncoder: MTLRenderCommandEncoder,
+                       frameContext: RendererFrameContext,
                        albedoMapHandle: AssetHandle?,
                        normalMapHandle: AssetHandle?,
                        metallicMapHandle: AssetHandle?,
@@ -339,7 +361,7 @@ class Submesh {
         renderCommandEncoder.setFragmentTexture(sheenColorMapTexture, index: FragmentTextureIndex.sheenColor)
         let sheenIntensityMapTexture = useEmbeddedTextures ? _sheenIntensityMapTexture : nil
         renderCommandEncoder.setFragmentTexture(sheenIntensityMapTexture, index: FragmentTextureIndex.sheenIntensity)
-        let ibl = RendererFrameContext.shared.iblTextures()
+        let ibl = frameContext.iblTextures()
         renderCommandEncoder.setFragmentTexture(ibl.irradiance, index: FragmentTextureIndex.irradiance)
         renderCommandEncoder.setFragmentTexture(ibl.prefiltered, index: FragmentTextureIndex.prefiltered)
         renderCommandEncoder.setFragmentTexture(ibl.brdfLut, index: FragmentTextureIndex.brdfLut)

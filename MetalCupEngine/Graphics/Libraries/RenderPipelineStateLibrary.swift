@@ -262,7 +262,11 @@ final class RenderPipelineState {
         do {
             renderPipelineState = try Engine.Device.makeRenderPipelineState(descriptor: renderPipelineDescriptor)
         } catch let error as NSError {
-            EngineLog.shared.logError("Failed to create render pipeline state: \(error)", category: .renderer)
+            EngineLoggerContext.log(
+                "Failed to create render pipeline state: \(error)",
+                level: .error,
+                category: .renderer
+            )
         }
     }
 }

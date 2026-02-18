@@ -11,9 +11,77 @@ public struct RendererBatchStats {
     public var nonInstancedDrawCalls: Int = 0
 }
 
-public final class RendererFrameContext {
-    public static let shared = RendererFrameContext()
+public struct RendererFrameContext {
+    fileprivate let storage: RendererFrameContextStorage
 
+    fileprivate init(storage: RendererFrameContextStorage) {
+        self.storage = storage
+    }
+
+    public func currentFrameIndex() -> Int {
+        storage.currentFrameIndex()
+    }
+
+    public func currentFrameCounter() -> UInt64 {
+        storage.currentFrameCounter()
+    }
+
+    public func updateBatchStats(_ stats: RendererBatchStats) {
+        storage.updateBatchStats(stats)
+    }
+
+    public func batchStats() -> RendererBatchStats {
+        storage.batchStats
+    }
+
+    public func updateIBLTextures(
+        environment: MTLTexture?,
+        irradiance: MTLTexture?,
+        prefiltered: MTLTexture?,
+        brdfLut: MTLTexture?
+    ) {
+        storage.updateIBLTextures(
+            environment: environment,
+            irradiance: irradiance,
+            prefiltered: prefiltered,
+            brdfLut: brdfLut
+        )
+    }
+
+    public func iblTextures() -> RendererFrameContextStorage.IBLTextures {
+        storage.iblTextures()
+    }
+
+    public func uploadInstanceData(_ data: [InstanceData]) -> MTLBuffer? {
+        storage.uploadInstanceData(data)
+    }
+
+    public func instanceBuffer() -> MTLBuffer? {
+        storage.instanceBuffer()
+    }
+
+    public func pickReadbackBuffer() -> MTLBuffer? {
+        storage.pickReadbackBuffer()
+    }
+
+    public func uploadSceneConstants(_ constants: SceneConstants) -> MTLBuffer? {
+        storage.uploadSceneConstants(constants)
+    }
+
+    public func makeSceneConstantsBuffer(_ constants: SceneConstants, label: String = "SceneConstants.Temp") -> MTLBuffer? {
+        storage.makeSceneConstantsBuffer(constants, label: label)
+    }
+
+    public func uploadRendererSettings(_ settings: RendererSettings) -> MTLBuffer? {
+        storage.uploadRendererSettings(settings)
+    }
+
+    public func uploadLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer?, dataBuffer: MTLBuffer?) {
+        storage.uploadLightData(data)
+    }
+}
+
+public final class RendererFrameContextStorage {
     private let maxFramesInFlight = 3
     private var frameIndex = 0
     private var frameCounter: UInt64 = 0
@@ -37,29 +105,30 @@ public final class RendererFrameContext {
 
     private(set) var batchStats = RendererBatchStats()
 
-    private init() {}
+    public init() {}
 
-    public func beginFrame() {
+    public func beginFrame() -> RendererFrameContext {
         frameIndex = (frameIndex + 1) % maxFramesInFlight
         frameCounter &+= 1
         ensureFrameStorage()
         batchStats = RendererBatchStats()
         MCMesh.resetBindingCache()
+        return RendererFrameContext(storage: self)
     }
 
-    public func currentFrameIndex() -> Int {
-        return frameIndex
+    fileprivate func currentFrameIndex() -> Int {
+        frameIndex
     }
 
-    public func currentFrameCounter() -> UInt64 {
-        return frameCounter
+    fileprivate func currentFrameCounter() -> UInt64 {
+        frameCounter
     }
 
-    public func updateBatchStats(_ stats: RendererBatchStats) {
+    fileprivate func updateBatchStats(_ stats: RendererBatchStats) {
         batchStats = stats
     }
 
-    public func updateIBLTextures(
+    fileprivate func updateIBLTextures(
         environment: MTLTexture?,
         irradiance: MTLTexture?,
         prefiltered: MTLTexture?,
@@ -73,11 +142,11 @@ public final class RendererFrameContext {
         )
     }
 
-    public func iblTextures() -> IBLTextures {
-        return currentIBLTextures
+    fileprivate func iblTextures() -> IBLTextures {
+        currentIBLTextures
     }
 
-    public func uploadInstanceData(_ data: [InstanceData]) -> MTLBuffer? {
+    fileprivate func uploadInstanceData(_ data: [InstanceData]) -> MTLBuffer? {
         guard !data.isEmpty else { return nil }
         let requiredBytes = InstanceData.stride(data.count)
         ensureInstanceBufferCapacity(requiredBytes)
@@ -89,16 +158,16 @@ public final class RendererFrameContext {
         return buffer
     }
 
-    public func instanceBuffer() -> MTLBuffer? {
-        return instanceBuffers[frameIndex] ?? nil
+    fileprivate func instanceBuffer() -> MTLBuffer? {
+        instanceBuffers[frameIndex] ?? nil
     }
 
-    public func pickReadbackBuffer() -> MTLBuffer? {
+    fileprivate func pickReadbackBuffer() -> MTLBuffer? {
         ensurePickReadbackBuffer()
         return pickReadbackBuffers[frameIndex] ?? nil
     }
 
-    public func uploadSceneConstants(_ constants: SceneConstants) -> MTLBuffer? {
+    fileprivate func uploadSceneConstants(_ constants: SceneConstants) -> MTLBuffer? {
         ensureFrameStorage()
         let requiredBytes = SceneConstants.stride
         if sceneConstantsBuffers[frameIndex] == nil {
@@ -112,7 +181,7 @@ public final class RendererFrameContext {
         return buffer
     }
 
-    public func makeSceneConstantsBuffer(_ constants: SceneConstants, label: String = "SceneConstants.Temp") -> MTLBuffer? {
+    fileprivate func makeSceneConstantsBuffer(_ constants: SceneConstants, label: String = "SceneConstants.Temp") -> MTLBuffer? {
         let requiredBytes = SceneConstants.stride
         guard let buffer = Engine.Device.makeBuffer(length: requiredBytes, options: [.storageModeShared]) else { return nil }
         buffer.label = label
@@ -121,7 +190,7 @@ public final class RendererFrameContext {
         return buffer
     }
 
-    public func uploadRendererSettings(_ settings: RendererSettings) -> MTLBuffer? {
+    fileprivate func uploadRendererSettings(_ settings: RendererSettings) -> MTLBuffer? {
         let requiredBytes = RendererSettings.stride
         guard let buffer = Engine.Device.makeBuffer(length: requiredBytes, options: [.storageModeShared]) else { return nil }
         buffer.label = "RendererSettings.Frame\(frameIndex)"
@@ -130,7 +199,7 @@ public final class RendererFrameContext {
         return buffer
     }
 
-    public func uploadLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer?, dataBuffer: MTLBuffer?) {
+    fileprivate func uploadLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer?, dataBuffer: MTLBuffer?) {
         ensureFrameStorage()
         let countBytes = Int32.size
         if lightCountBuffers[frameIndex] == nil {

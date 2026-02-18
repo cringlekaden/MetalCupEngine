@@ -35,7 +35,11 @@ public enum ResourceRegistry {
             return
         }
         guard let lib = buildLibraryFromResources(device: device) else {
-            EngineLog.shared.logWarning("No shader library built from resources.", category: .renderer)
+            EngineLoggerContext.log(
+                "No shader library built from resources.",
+                level: .warning,
+                category: .renderer
+            )
             return
         }
         defaultLibrary = lib
@@ -108,7 +112,11 @@ public enum ResourceRegistry {
             }
             return try device.makeLibrary(source: combinedSource, options: options)
         } catch {
-            EngineLog.shared.logError("Failed to compile shader library: \(error)", category: .renderer)
+            EngineLoggerContext.log(
+                "Failed to compile shader library: \(error)",
+                level: .error,
+                category: .renderer
+            )
             return nil
         }
     }

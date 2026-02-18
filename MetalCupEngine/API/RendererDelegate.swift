@@ -5,9 +5,9 @@
 import MetalKit
 
 public protocol RendererDelegate: AnyObject {
-    func update()
-    func renderScene(into encoder: MTLRenderCommandEncoder)
-    func renderOverlays(view: MTKView, commandBuffer: MTLCommandBuffer)
+    func update(frame: FrameContext)
+    func renderScene(into encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext)
+    func renderOverlays(view: MTKView, commandBuffer: MTLCommandBuffer, frameContext: RendererFrameContext)
     func activeScene() -> EngineScene?
     func buildSceneView() -> SceneView
     func handlePickResult(_ result: PickResult)

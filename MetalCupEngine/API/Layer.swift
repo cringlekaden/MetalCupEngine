@@ -9,10 +9,10 @@ open class Layer {
     public init(name: String) { self.name = name }
     open func onAttach() {}
     open func onDetach() {}
-    open func onUpdate() {}
+    open func onUpdate(frame: FrameContext) {}
     open func onFixedUpdate() {}
-    open func onRender(encoder: MTLRenderCommandEncoder) {}
-    open func onOverlayRender(view: MTKView, commandBuffer: MTLCommandBuffer) {}
+    open func onRender(encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {}
+    open func onOverlayRender(view: MTKView, commandBuffer: MTLCommandBuffer, frameContext: RendererFrameContext) {}
     open func onEvent(_ event: Event) {}
 }
 
@@ -32,20 +32,20 @@ public final class LayerStack {
         }
     }
 
-    public func updateAll() {
-        for layer in layers { layer.onUpdate() }
+    public func updateAll(frame: FrameContext) {
+        for layer in layers { layer.onUpdate(frame: frame) }
     }
 
     public func fixedUpdateAll() {
         for layer in layers { layer.onFixedUpdate() }
     }
 
-    public func renderAll(with encoder: MTLRenderCommandEncoder) {
-        for layer in layers { layer.onRender(encoder: encoder) }
+    public func renderAll(with encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {
+        for layer in layers { layer.onRender(encoder: encoder, frameContext: frameContext) }
     }
 
-    public func renderOverlays(view: MTKView, commandBuffer: MTLCommandBuffer) {
-        for layer in layers { layer.onOverlayRender(view: view, commandBuffer: commandBuffer) }
+    public func renderOverlays(view: MTKView, commandBuffer: MTLCommandBuffer, frameContext: RendererFrameContext) {
+        for layer in layers { layer.onOverlayRender(view: view, commandBuffer: commandBuffer, frameContext: frameContext) }
     }
 
     // Dispatch with early-out if handled

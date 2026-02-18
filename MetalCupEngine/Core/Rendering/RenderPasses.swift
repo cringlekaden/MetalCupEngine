@@ -72,7 +72,7 @@ struct FullscreenPass {
     var grid: MTLTexture? = nil
     var settings: RendererSettings?
 
-    func encode(into encoder: MTLRenderCommandEncoder, quad: MCMesh) {
+    func encode(into encoder: MTLRenderCommandEncoder, quad: MCMesh, frameContext: RendererFrameContext) {
         encoder.setRenderPipelineState(Graphics.RenderPipelineStates[pipeline])
         encoder.label = label
         encoder.pushDebugGroup(label)
@@ -96,11 +96,11 @@ struct FullscreenPass {
             encoder.setFragmentTexture(grid, index: PostProcessTextureIndex.grid)
         }
         if let settings {
-            if let buffer = RendererFrameContext.shared.uploadRendererSettings(settings) {
+            if let buffer = frameContext.uploadRendererSettings(settings) {
                 encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
             }
         }
-        quad.drawPrimitives(encoder)
+        quad.drawPrimitives(encoder, frameContext: frameContext)
         encoder.popDebugGroup()
     }
 }
@@ -117,7 +117,7 @@ final class DepthPrepassPass: RenderGraphPass {
         encoder.pushDebugGroup("Depth Prepass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(depth))
         RenderPassHelpers.withRenderPass(.depthPrepass) {
-            frame.delegate?.renderScene(into: encoder)
+            frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
         encoder.endEncoding()
@@ -142,7 +142,7 @@ final class ScenePass: RenderGraphPass {
         encoder.pushDebugGroup("Scene Pass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(baseColor))
         RenderPassHelpers.withRenderPass(.main) {
-            frame.delegate?.renderScene(into: encoder)
+            frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
         encoder.endEncoding()
@@ -170,7 +170,7 @@ final class PickingPass: RenderGraphPass {
         encoder.pushDebugGroup("Picking Pass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(pickId))
         RenderPassHelpers.withRenderPass(.picking) {
-            frame.delegate?.renderScene(into: encoder)
+            frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
         encoder.endEncoding()
@@ -206,10 +206,10 @@ final class GridOverlayPass: RenderGraphPass {
         encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: FragmentSamplerIndex.linearClamp)
         encoder.setFragmentTexture(depth, index: PostProcessTextureIndex.depth)
         encoder.setFragmentBytes(&params, length: GridParams.stride, index: FragmentBufferIndex.gridParams)
-        if let buffer = RendererFrameContext.shared.uploadRendererSettings(Renderer.settings) {
+        if let buffer = frame.frameContext.uploadRendererSettings(Renderer.settings) {
             encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
         }
-        quadMesh.drawPrimitives(encoder)
+        quadMesh.drawPrimitives(encoder, frameContext: frame.frameContext)
     }
 }
 
@@ -255,7 +255,7 @@ final class BloomExtractPass: RenderGraphPass {
             texture1: nil,
             settings: params
         )
-        pass.encode(into: encoder, quad: quadMesh)
+        pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext)
         encoder.endEncoding()
         Renderer.profiler.record(.bloomExtract, seconds: CACurrentMediaTime() - extractStart)
     }
@@ -311,7 +311,7 @@ final class BloomBlurPass: RenderGraphPass {
                     texture1: nil,
                     settings: params
                 )
-                passH.encode(into: encH, quad: quadMesh)
+                passH.encode(into: encH, quad: quadMesh, frameContext: frame.frameContext)
                 encH.endEncoding()
 
                 guard let encV = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: mip)) else { return }
@@ -324,7 +324,7 @@ final class BloomBlurPass: RenderGraphPass {
                     texture1: nil,
                     settings: params
                 )
-                passV.encode(into: encV, quad: quadMesh)
+                passV.encode(into: encV, quad: quadMesh, frameContext: frame.frameContext)
                 encV.endEncoding()
                 blurTotal += CACurrentMediaTime() - blurStart
             }
@@ -351,7 +351,7 @@ final class BloomBlurPass: RenderGraphPass {
                     texture1: nil,
                     settings: params
                 )
-                pass.encode(into: enc, quad: quadMesh)
+                pass.encode(into: enc, quad: quadMesh, frameContext: frame.frameContext)
                 enc.endEncoding()
                 downsampleTotal += CACurrentMediaTime() - downsampleStart
 
@@ -394,7 +394,7 @@ final class FinalCompositePass: RenderGraphPass {
             grid: grid,
             settings: Renderer.settings
         )
-        pass.encode(into: encoder, quad: quadMesh)
+        pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext)
         encoder.endEncoding()
         Renderer.profiler.record(.composite, seconds: CACurrentMediaTime() - compositeStart)
     }

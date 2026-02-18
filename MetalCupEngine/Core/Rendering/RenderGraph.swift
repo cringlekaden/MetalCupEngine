@@ -10,6 +10,7 @@ struct RenderGraphFrame {
     let commandBuffer: MTLCommandBuffer
     let resources: RenderResources
     let delegate: RendererDelegate?
+    let frameContext: RendererFrameContext
 }
 
 protocol RenderGraphPass {
