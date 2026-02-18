@@ -6,6 +6,7 @@ import MetalKit
 
 struct RenderGraphFrame {
     let view: MTKView
+    let sceneView: SceneView
     let commandBuffer: MTLCommandBuffer
     let resources: RenderResources
     let delegate: RendererDelegate?

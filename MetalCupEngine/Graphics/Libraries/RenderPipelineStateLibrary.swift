@@ -32,6 +32,20 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
     public func build() {
         if !library.isEmpty { return }
 
+        // Binding Contract (mesh pipelines):
+        // Vertex buffers:
+        //  - [[buffer(0)]] Vertex (pos/color/uv/normal/tangent/bitangent)
+        //  - [[buffer(1)]] SceneConstants (SceneConstants)
+        //  - [[buffer(2)]] ModelConstants (ModelConstants) for non-instanced
+        //  - [[buffer(3)]] InstanceData (InstanceData) for instanced
+        // Fragment buffers:
+        //  - [[buffer(1)]] Material (MetalCupMaterial)
+        //  - [[buffer(2)]] RendererSettings (RendererSettings)
+        //  - [[buffer(3)]] LightCount (int)
+        //  - [[buffer(4)]] LightData (LightData[])
+        // Textures/samplers:
+        //  - See Shared.metal FragmentTextureIndex / FragmentSamplerIndex
+
         library[.HDRBasic] = buildPipeline(label: "HDRBasic") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = Preferences.HDRPixelFormat
             descriptor.depthAttachmentPixelFormat = Preferences.defaultDepthPixelFormat
@@ -248,7 +262,7 @@ final class RenderPipelineState {
         do {
             renderPipelineState = try Engine.Device.makeRenderPipelineState(descriptor: renderPipelineDescriptor)
         } catch let error as NSError {
-            print("ERROR::CREATE::RENDER_PIPELINE_STATE::__::\(error)")
+            EngineLog.shared.logError("Failed to create render pipeline state: \(error)", category: .renderer)
         }
     }
 }

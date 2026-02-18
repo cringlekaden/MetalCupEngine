@@ -15,6 +15,17 @@ public class MCMesh {
     private var _simpleVertexBuffer: MTLBuffer! = nil
     private var _instanceCount: Int = 1
     private var _submeshes: [Submesh] = []
+
+    private struct BindingCache {
+        var fragmentTextures: [Int: ObjectIdentifier?] = [:]
+        var fragmentSamplers: [Int: ObjectIdentifier?] = [:]
+    }
+
+    private static var bindingCaches: [ObjectIdentifier: BindingCache] = [:]
+
+    static func resetBindingCache() {
+        bindingCaches.removeAll(keepingCapacity: true)
+    }
     
     init() {
         createMesh()
@@ -50,10 +61,10 @@ public class MCMesh {
         do {
             mdlMeshes = try MTKMesh.newMeshes(asset: asset, device: Engine.Device).modelIOMeshes
         } catch {
-            print("ERROR::LOADING_MESH::__\(name)__::\(error)")
+            EngineLog.shared.logError("Mesh load failed \(name): \(error)", category: .assets)
         }
         guard !mdlMeshes.isEmpty else {
-            print("ERROR::LOADING_MESH::__\(name)__::No model IO meshes found.")
+            EngineLog.shared.logError("Mesh load failed \(name): no ModelIO meshes found.", category: .assets)
             return
         }
         var mtkMeshes: [MTKMesh] = []
@@ -70,11 +81,11 @@ public class MCMesh {
                 let mtkMesh = try MTKMesh(mesh: mdlMesh, device: Engine.Device)
                 mtkMeshes.append(mtkMesh)
             } catch {
-                print("ERROR::LOADING_MESH::__\(name)__::\(error)")
+                EngineLog.shared.logError("Mesh load failed \(name): \(error)", category: .assets)
             }
         }
         guard let mtkMesh = mtkMeshes.first, let mdlMesh = mdlMeshes.first else {
-            print("ERROR::LOADING_MESH::__\(name)__::No Metal meshes created.")
+            EngineLog.shared.logError("Mesh load failed \(name): no Metal meshes created.", category: .assets)
             return
         }
         self._vertexBuffer = mtkMesh.vertexBuffers[0].buffer
@@ -201,22 +212,47 @@ public class MCMesh {
                                        mrMapHandle: AssetHandle?,
                                        aoMapHandle: AssetHandle?,
                                        emissiveMapHandle: AssetHandle?) {
-        renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.Linear], index: FragmentSamplerIndex.linear)
-        renderCommandEncoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
-        renderCommandEncoder.setFragmentTexture(albedoMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.albedo)
-        renderCommandEncoder.setFragmentTexture(normalMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.normal)
-        renderCommandEncoder.setFragmentTexture(metallicMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.metallic)
-        renderCommandEncoder.setFragmentTexture(roughnessMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.roughness)
-        renderCommandEncoder.setFragmentTexture(mrMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.metalRoughness)
-        renderCommandEncoder.setFragmentTexture(aoMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.ao)
-        renderCommandEncoder.setFragmentTexture(emissiveMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.emissive)
-        renderCommandEncoder.setFragmentTexture(nil, index: FragmentTextureIndex.clearcoat)
-        renderCommandEncoder.setFragmentTexture(nil, index: FragmentTextureIndex.clearcoatRoughness)
-        renderCommandEncoder.setFragmentTexture(nil, index: FragmentTextureIndex.sheenColor)
-        renderCommandEncoder.setFragmentTexture(nil, index: FragmentTextureIndex.sheenIntensity)
-        renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.irradianceCubemap), index: FragmentTextureIndex.irradiance)
-        renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.prefilteredCubemap), index: FragmentTextureIndex.prefiltered)
-        renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.brdfLut), index: FragmentTextureIndex.brdfLut)
+        setFragmentSamplerCached(renderCommandEncoder, sampler: Graphics.SamplerStates[.Linear], index: FragmentSamplerIndex.linear)
+        setFragmentSamplerCached(renderCommandEncoder, sampler: Graphics.SamplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
+        setFragmentTextureCached(renderCommandEncoder, texture: albedoMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.albedo)
+        setFragmentTextureCached(renderCommandEncoder, texture: normalMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.normal)
+        setFragmentTextureCached(renderCommandEncoder, texture: metallicMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.metallic)
+        setFragmentTextureCached(renderCommandEncoder, texture: roughnessMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.roughness)
+        setFragmentTextureCached(renderCommandEncoder, texture: mrMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.metalRoughness)
+        setFragmentTextureCached(renderCommandEncoder, texture: aoMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.ao)
+        setFragmentTextureCached(renderCommandEncoder, texture: emissiveMapHandle.flatMap { AssetManager.texture(handle: $0) }, index: FragmentTextureIndex.emissive)
+        setFragmentTextureCached(renderCommandEncoder, texture: nil, index: FragmentTextureIndex.clearcoat)
+        setFragmentTextureCached(renderCommandEncoder, texture: nil, index: FragmentTextureIndex.clearcoatRoughness)
+        setFragmentTextureCached(renderCommandEncoder, texture: nil, index: FragmentTextureIndex.sheenColor)
+        setFragmentTextureCached(renderCommandEncoder, texture: nil, index: FragmentTextureIndex.sheenIntensity)
+        let ibl = RendererFrameContext.shared.iblTextures()
+        setFragmentTextureCached(renderCommandEncoder, texture: ibl.irradiance, index: FragmentTextureIndex.irradiance)
+        setFragmentTextureCached(renderCommandEncoder, texture: ibl.prefiltered, index: FragmentTextureIndex.prefiltered)
+        setFragmentTextureCached(renderCommandEncoder, texture: ibl.brdfLut, index: FragmentTextureIndex.brdfLut)
+    }
+
+    private func setFragmentTextureCached(_ encoder: MTLRenderCommandEncoder, texture: MTLTexture?, index: Int) {
+        let key = ObjectIdentifier(encoder as AnyObject)
+        var cache = MCMesh.bindingCaches[key] ?? BindingCache()
+        let textureId = texture.map { ObjectIdentifier($0) }
+        if cache.fragmentTextures[index] == textureId {
+            return
+        }
+        cache.fragmentTextures[index] = textureId
+        MCMesh.bindingCaches[key] = cache
+        encoder.setFragmentTexture(texture, index: index)
+    }
+
+    private func setFragmentSamplerCached(_ encoder: MTLRenderCommandEncoder, sampler: MTLSamplerState?, index: Int) {
+        let key = ObjectIdentifier(encoder as AnyObject)
+        var cache = MCMesh.bindingCaches[key] ?? BindingCache()
+        let samplerId = sampler.map { ObjectIdentifier($0) }
+        if cache.fragmentSamplers[index] == samplerId {
+            return
+        }
+        cache.fragmentSamplers[index] = samplerId
+        MCMesh.bindingCaches[key] = cache
+        encoder.setFragmentSamplerState(sampler, index: index)
     }
 }
 
@@ -303,9 +339,10 @@ class Submesh {
         renderCommandEncoder.setFragmentTexture(sheenColorMapTexture, index: FragmentTextureIndex.sheenColor)
         let sheenIntensityMapTexture = useEmbeddedTextures ? _sheenIntensityMapTexture : nil
         renderCommandEncoder.setFragmentTexture(sheenIntensityMapTexture, index: FragmentTextureIndex.sheenIntensity)
-        renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.irradianceCubemap), index: FragmentTextureIndex.irradiance)
-        renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.prefilteredCubemap), index: FragmentTextureIndex.prefiltered)
-        renderCommandEncoder.setFragmentTexture(AssetManager.texture(handle: BuiltinAssets.brdfLut), index: FragmentTextureIndex.brdfLut)
+        let ibl = RendererFrameContext.shared.iblTextures()
+        renderCommandEncoder.setFragmentTexture(ibl.irradiance, index: FragmentTextureIndex.irradiance)
+        renderCommandEncoder.setFragmentTexture(ibl.prefiltered, index: FragmentTextureIndex.prefiltered)
+        renderCommandEncoder.setFragmentTexture(ibl.brdfLut, index: FragmentTextureIndex.brdfLut)
     }
     
     func applyMaterials(renderCommandEncoder: MTLRenderCommandEncoder, customMaterial: MetalCupMaterial?, useEmbeddedMaterial: Bool) {

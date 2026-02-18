@@ -827,7 +827,10 @@ public enum SceneSerializer {
         if document.schemaVersion == SceneSchema.currentVersion {
             return document
         }
-        print("WARN::SCENE::MIGRATE::Unsupported schema \(document.schemaVersion) -> \(SceneSchema.currentVersion)")
+        EngineLog.shared.logWarning(
+            "Scene migrate unsupported schema \(document.schemaVersion) -> \(SceneSchema.currentVersion)",
+            category: .serialization
+        )
         return document
     }
 }

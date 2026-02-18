@@ -8,4 +8,22 @@ public protocol RendererDelegate: AnyObject {
     func update()
     func renderScene(into encoder: MTLRenderCommandEncoder)
     func renderOverlays(view: MTKView, commandBuffer: MTLCommandBuffer)
+    func activeScene() -> EngineScene?
+    func buildSceneView() -> SceneView
+    func handlePickResult(_ result: PickResult)
+}
+
+public extension RendererDelegate {
+    func activeScene() -> EngineScene? {
+        nil
+    }
+
+    func buildSceneView() -> SceneView {
+        let viewport = (Renderer.ViewportSize.x > 1 && Renderer.ViewportSize.y > 1)
+            ? Renderer.ViewportSize
+            : Renderer.DrawableSize
+        return SceneView(viewportSize: viewport)
+    }
+
+    func handlePickResult(_ result: PickResult) {}
 }

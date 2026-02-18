@@ -35,7 +35,7 @@ public enum ResourceRegistry {
             return
         }
         guard let lib = buildLibraryFromResources(device: device) else {
-            print("RESOURCE_REGISTRY::No shader library built from resources.")
+            EngineLog.shared.logWarning("No shader library built from resources.", category: .renderer)
             return
         }
         defaultLibrary = lib
@@ -78,17 +78,8 @@ public enum ResourceRegistry {
             ]
         })
         let fm = FileManager.default
-        print("RESOURCE_REGISTRY::Resource root candidates:")
-        for root in candidateRoots {
-            print(" - \(root.path)")
-        }
-        print("RESOURCE_REGISTRY::Shader root candidates:")
-        for root in shaderRoots {
-            print(" - \(root.path)")
-        }
         let existingRoot = shaderRoots.first { fm.fileExists(atPath: $0.path) }
         guard let shaderRoot = existingRoot else { return nil }
-        print("RESOURCE_REGISTRY::Using shader root: \(shaderRoot.path)")
 
         guard let enumerator = fm.enumerator(at: shaderRoot, includingPropertiesForKeys: nil) else { return nil }
         var shaderFiles: [URL] = []
@@ -98,7 +89,6 @@ public enum ResourceRegistry {
             }
         }
         if shaderFiles.isEmpty { return nil }
-        print("RESOURCE_REGISTRY::Found \(shaderFiles.count) .metal files.")
 
         shaderFiles.sort { $0.path < $1.path }
         let fileLookup = buildFileLookup(shaderFiles: shaderFiles)
@@ -118,7 +108,7 @@ public enum ResourceRegistry {
             }
             return try device.makeLibrary(source: combinedSource, options: options)
         } catch {
-            print("RESOURCE_REGISTRY::Failed to compile shader library: \(error)")
+            EngineLog.shared.logError("Failed to compile shader library: \(error)", category: .renderer)
             return nil
         }
     }
@@ -202,7 +192,6 @@ public enum ResourceRegistry {
         let metallibs = items.filter { $0.pathExtension.lowercased() == "metallib" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         for libURL in metallibs {
             if let lib = try? device.makeLibrary(URL: libURL) {
-                print("RESOURCE_REGISTRY::Loaded metallib: \(libURL.path)")
                 return lib
             }
         }

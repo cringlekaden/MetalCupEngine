@@ -78,7 +78,7 @@ public final class AssetManager {
             cacheLock.unlock()
             return texture
         } catch {
-            print("ERROR::ASSET::TEXTURE::__\(url.lastPathComponent)__::\(error)")
+            EngineLog.shared.logError("Texture load failed \(url.lastPathComponent): \(error)", category: .assets)
             return nil
         }
     }
@@ -116,7 +116,7 @@ public final class AssetManager {
             materialCacheModified[handle] = lastModified
             cacheLock.unlock()
             let action = wasCached ? "RELOAD" : "LOAD"
-            print("INFO::ASSET::MATERIAL::\(action)::\(url.lastPathComponent)")
+            EngineLog.shared.logDebug("Material asset \(action): \(url.lastPathComponent)", category: .assets)
             return material
         }
         return nil

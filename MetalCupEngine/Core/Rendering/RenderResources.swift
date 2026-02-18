@@ -161,7 +161,7 @@ final class RenderResources {
 
     private func registerTexture(descriptor: MTLTextureDescriptor, handle: RenderResourceTexture, label: String) {
         guard let texture = Engine.Device.makeTexture(descriptor: descriptor) else {
-            assertionFailure("Failed to allocate render target: \(label)")
+            MC_CORE_ASSERT(false, "Failed to allocate render target: \(label)")
             return
         }
         texture.label = label

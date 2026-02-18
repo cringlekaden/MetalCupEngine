@@ -8,13 +8,11 @@
 import Foundation
 
 public final class PrefabSystem {
-    public static let shared = PrefabSystem()
-
     private var dirtyPrefabs = Set<AssetHandle>()
     private var prefabCache: [AssetHandle: PrefabDocument] = [:]
     private var loggedMissing = Set<AssetHandle>()
 
-    private init() {}
+    public init() {}
 
     public func markAllDirty(handles: [AssetHandle]) {
         dirtyPrefabs.formUnion(handles)
@@ -41,7 +39,7 @@ public final class PrefabSystem {
             guard let prefab = loadPrefab(handle: handle, database: database) else { continue }
             let updated = apply(prefab: prefab, prefabHandle: handle, to: scene)
             if updated > 0 {
-                print("PrefabApply: prefab=\(prefab.name) instances=\(updated) updated=\(updated)")
+                EngineLog.shared.logDebug("Prefab apply prefab=\(prefab.name) instances=\(updated)", category: .scene)
             }
         }
     }
@@ -59,7 +57,7 @@ public final class PrefabSystem {
             prefabCache[handle] = prefab
             return prefab
         } catch {
-            print("WARN::PREFAB::Load failed \(url.lastPathComponent): \(error)")
+            EngineLog.shared.logWarning("Prefab load failed \(url.lastPathComponent): \(error)", category: .assets)
             return nil
         }
     }
@@ -67,7 +65,7 @@ public final class PrefabSystem {
     private func logMissing(handle: AssetHandle) {
         if loggedMissing.contains(handle) { return }
         loggedMissing.insert(handle)
-        print("WARN::PREFAB::Missing asset for handle \(handle.rawValue.uuidString)")
+        EngineLog.shared.logWarning("Prefab missing asset for handle \(handle.rawValue.uuidString)", category: .assets)
     }
 
     private func apply(prefab: PrefabDocument, prefabHandle: AssetHandle, to scene: EngineScene) -> Int {

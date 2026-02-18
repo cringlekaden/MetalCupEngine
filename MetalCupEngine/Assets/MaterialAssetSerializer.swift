@@ -38,7 +38,7 @@ public enum MaterialAssetSerializer {
             let document = try decoder.decode(MaterialAssetDocument.self, from: data)
             return material(from: document, url: url, fallbackHandle: fallbackHandle)
         } catch {
-            print("WARN::MATERIAL::LOAD::__\(url.lastPathComponent)__::\(error)")
+            EngineLog.shared.logWarning("Material load failed \(url.lastPathComponent): \(error)", category: .assets)
             let fallbackHandle = fallbackHandle ?? AssetHandle()
             let name = url.deletingPathExtension().lastPathComponent
             return MaterialAsset.default(handle: fallbackHandle, name: name)
@@ -54,7 +54,7 @@ public enum MaterialAssetSerializer {
             try data.write(to: url, options: [.atomic])
             return true
         } catch {
-            print("WARN::MATERIAL::SAVE::__\(url.lastPathComponent)__::\(error)")
+            EngineLog.shared.logWarning("Material save failed \(url.lastPathComponent): \(error)", category: .assets)
             return false
         }
     }

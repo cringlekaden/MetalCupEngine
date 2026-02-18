@@ -56,8 +56,8 @@ struct RenderPassHelpers {
         Renderer.currentRenderPass = previous
     }
 
-    static func shouldRenderEditorOverlays() -> Bool {
-        return !SceneManager.isPlaying
+    static func shouldRenderEditorOverlays(_ sceneView: SceneView) -> Bool {
+        return sceneView.isEditorView
     }
 }
 
@@ -95,8 +95,10 @@ struct FullscreenPass {
         if let grid {
             encoder.setFragmentTexture(grid, index: PostProcessTextureIndex.grid)
         }
-        if var settings {
-            encoder.setFragmentBytes(&settings, length: RendererSettings.stride, index: FragmentBufferIndex.rendererSettings)
+        if let settings {
+            if let buffer = RendererFrameContext.shared.uploadRendererSettings(settings) {
+                encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
+            }
         }
         quad.drawPrimitives(encoder)
         encoder.popDebugGroup()
@@ -189,12 +191,13 @@ final class GridOverlayPass: RenderGraphPass {
             encoder.endEncoding()
         }
 
-        if Renderer.settings.gridEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays() {
+        if Renderer.settings.gridEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) {
             return
         }
         guard
             let depth = frame.resources.texture(.baseDepth),
-            let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
+            let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh),
+            var params = DebugDraw.gridParams()
         else { return }
 
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(grid))
@@ -202,10 +205,10 @@ final class GridOverlayPass: RenderGraphPass {
         encoder.setCullMode(.none)
         encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: FragmentSamplerIndex.linearClamp)
         encoder.setFragmentTexture(depth, index: PostProcessTextureIndex.depth)
-        var params = SceneManager.currentScene.gridParams()
         encoder.setFragmentBytes(&params, length: GridParams.stride, index: FragmentBufferIndex.gridParams)
-        var settings = Renderer.settings
-        encoder.setFragmentBytes(&settings, length: RendererSettings.stride, index: FragmentBufferIndex.rendererSettings)
+        if let buffer = RendererFrameContext.shared.uploadRendererSettings(Renderer.settings) {
+            encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
+        }
         quadMesh.drawPrimitives(encoder)
     }
 }
@@ -214,39 +217,7 @@ final class SelectionOutlinePass: RenderGraphPass {
     let name = "SelectionOutlinePass"
 
     func execute(frame: RenderGraphFrame) {
-        guard let outline = frame.resources.texture(.outlineMask) else { return }
-        let pass = RenderPassBuilder.color(texture: outline, clearColor: MTLClearColorMake(0, 0, 0, 0))
-        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
-        encoder.label = "Selection Outline"
-        encoder.pushDebugGroup("Selection Outline")
-        defer {
-            encoder.popDebugGroup()
-            encoder.endEncoding()
-        }
-
-        if Renderer.settings.outlineEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays() {
-            return
-        }
-        guard
-            let pickId = frame.resources.texture(.pickId),
-            let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
-        else { return }
-
-        let selectedUuid = SceneManager.selectedEntityUUID()
-        let selectedPickId = selectedUuid.map { SceneManager.currentScene.pickId(for: $0) } ?? 0
-        if selectedPickId == 0 { return }
-
-        RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(outline))
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.SelectionOutline])
-        encoder.setCullMode(.none)
-        encoder.setFragmentTexture(pickId, index: PostProcessTextureIndex.source)
-        var params = OutlineParams()
-        params.selectedId = selectedPickId
-        let thickness = max(1, min(4, Int(Renderer.settings.outlineThickness)))
-        params.thickness = UInt32(thickness)
-        params.texelSize = SIMD2<Float>(1.0 / Float(pickId.width), 1.0 / Float(pickId.height))
-        encoder.setFragmentBytes(&params, length: OutlineParams.stride, index: FragmentBufferIndex.outlineParams)
-        quadMesh.drawPrimitives(encoder)
+        OutlineSystem.encodeSelectionOutline(frame: frame)
     }
 }
 
@@ -255,7 +226,14 @@ final class BloomExtractPass: RenderGraphPass {
 
     func execute(frame: RenderGraphFrame) {
         let settings = Renderer.settings
-        if settings.bloomEnabled == 0 { return }
+        if settings.bloomEnabled == 0 {
+            if let ping = frame.resources.texture(.bloomPing),
+               let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: 0)) {
+                encoder.label = "Bloom Clear"
+                encoder.endEncoding()
+            }
+            return
+        }
         guard
             let sceneTex = frame.resources.texture(.baseColor),
             let ping = frame.resources.texture(.bloomPing),

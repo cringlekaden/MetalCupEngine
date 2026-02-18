@@ -231,6 +231,10 @@ public struct SkyLightComponent: Equatable {
     public var azimuthDegrees: Float
     public var elevationDegrees: Float
     public var hdriHandle: AssetHandle?
+    public var iblEnvironmentHandle: AssetHandle?
+    public var iblIrradianceHandle: AssetHandle?
+    public var iblPrefilteredHandle: AssetHandle?
+    public var iblBrdfHandle: AssetHandle?
     public var needsRegenerate: Bool
     public var realtimeUpdate: Bool
     public var lastRegenerateTime: Double
@@ -244,6 +248,10 @@ public struct SkyLightComponent: Equatable {
         azimuthDegrees: Float = 0.0,
         elevationDegrees: Float = 30.0,
         hdriHandle: AssetHandle? = nil,
+        iblEnvironmentHandle: AssetHandle? = nil,
+        iblIrradianceHandle: AssetHandle? = nil,
+        iblPrefilteredHandle: AssetHandle? = nil,
+        iblBrdfHandle: AssetHandle? = nil,
         needsRegenerate: Bool = true,
         realtimeUpdate: Bool = false,
         lastRegenerateTime: Double = 0.0
@@ -256,6 +264,10 @@ public struct SkyLightComponent: Equatable {
         self.azimuthDegrees = azimuthDegrees
         self.elevationDegrees = elevationDegrees
         self.hdriHandle = hdriHandle
+        self.iblEnvironmentHandle = iblEnvironmentHandle
+        self.iblIrradianceHandle = iblIrradianceHandle
+        self.iblPrefilteredHandle = iblPrefilteredHandle
+        self.iblBrdfHandle = iblBrdfHandle
         self.needsRegenerate = needsRegenerate
         self.realtimeUpdate = realtimeUpdate
         self.lastRegenerateTime = lastRegenerateTime

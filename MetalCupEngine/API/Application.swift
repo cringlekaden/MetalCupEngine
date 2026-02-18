@@ -9,6 +9,7 @@ import MetalKit
 /// The editor constructs this with an ApplicationSpecification.
 open class Application: NSObject, EventHandler {
     public let specification: ApplicationSpecification
+    public let engineContext: EngineContext
     private(set) var window: EngineWindow!
     private(set) var renderer: Renderer!
     public let layerStack = LayerStack()
@@ -17,6 +18,18 @@ open class Application: NSObject, EventHandler {
 
     public init(specification: ApplicationSpecification) {
         self.specification = specification
+        if Engine.Device == nil {
+            guard let device = MTLCreateSystemDefaultDevice() else {
+                fatalError("Failed to create MTLDevice")
+            }
+            Engine.initialize(device: device)
+        }
+        let queue = Engine.Device.makeCommandQueue() ?? Engine.CommandQueue
+        self.engineContext = EngineContext(
+            device: Engine.Device,
+            commandQueue: queue!,
+            defaultLibrary: Engine.DefaultLibrary
+        )
         super.init()
         bootstrap()
     }
@@ -28,12 +41,6 @@ open class Application: NSObject, EventHandler {
     open func didCreateWindow() {}
 
     private func bootstrap() {
-        if Engine.Device == nil {
-            guard let device = MTLCreateSystemDefaultDevice() else {
-                fatalError("Failed to create MTLDevice")
-            }
-            Engine.initialize(device: device)
-        }
         // Configure resource registry from spec
         ResourceRegistry.defaultLibrary = Engine.Device.makeDefaultLibrary()
         if ResourceRegistry.defaultLibrary == nil {
@@ -59,12 +66,30 @@ open class Application: NSObject, EventHandler {
         renderer = Renderer(window.mtkView)
         renderer.delegate = self
         window.mtkView.delegate = renderer
+
+        let appId = ObjectIdentifier(self)
+        let rendererId = ObjectIdentifier(renderer)
+        EngineLog.shared.logDebug("Application bootstrap app=\(appId) renderer=\(rendererId)", category: .core)
     }
 
     // MARK: - EventHandler
     public func dispatch(_ event: Event) {
         layerStack.sendEvent(event)
     }
+
+    // MARK: - RendererDelegate overrides
+    open func activeScene() -> EngineScene? {
+        nil
+    }
+
+    open func buildSceneView() -> SceneView {
+        let viewport = (Renderer.ViewportSize.x > 1 && Renderer.ViewportSize.y > 1)
+            ? Renderer.ViewportSize
+            : Renderer.DrawableSize
+        return SceneView(viewportSize: viewport)
+    }
+
+    open func handlePickResult(_ result: PickResult) {}
     
 }
 

@@ -41,11 +41,17 @@ public enum BuiltinAssets {
     }
 
     public static func registerIBLTextures(environmentSize: Int, irradianceSize: Int, prefilteredSize: Int, brdfLutSize: Int) {
+        func mipCount(for size: Int) -> Int {
+            guard size > 0 else { return 1 }
+            return Int(floor(log2(Double(size)))) + 1
+        }
+
         let environmentDescriptor = MTLTextureDescriptor.textureCubeDescriptor(
             pixelFormat: Preferences.HDRPixelFormat,
             size: environmentSize,
             mipmapped: true
         )
+        environmentDescriptor.mipmapLevelCount = mipCount(for: environmentSize)
         environmentDescriptor.usage = [.renderTarget, .shaderRead]
         environmentDescriptor.storageMode = .private
         if let texture = Engine.Device.makeTexture(descriptor: environmentDescriptor) {
@@ -70,6 +76,7 @@ public enum BuiltinAssets {
             size: prefilteredSize,
             mipmapped: true
         )
+        prefilteredDescriptor.mipmapLevelCount = mipCount(for: prefilteredSize)
         prefilteredDescriptor.usage = [.renderTarget, .shaderRead]
         prefilteredDescriptor.storageMode = .private
         if let texture = Engine.Device.makeTexture(descriptor: prefilteredDescriptor) {
@@ -89,16 +96,20 @@ public enum BuiltinAssets {
             texture.label = "IBL.BRDFLUT"
             AssetManager.registerRuntimeTexture(handle: brdfLut, texture: texture)
         }
+
     }
 
     public static func registerFallbackIBLTextures() {
-        if let env = makeSolidCubemap(color: SIMD4<Float>(0, 0, 0, 1), label: "Fallback Environment") {
+        if AssetManager.texture(handle: environmentCubemap) == nil,
+           let env = makeSolidCubemap(color: SIMD4<Float>(0, 0, 0, 1), label: "Fallback Environment") {
             AssetManager.registerRuntimeTexture(handle: environmentCubemap, texture: env)
         }
-        if let irradiance = makeSolidCubemap(color: SIMD4<Float>(0.5, 0.5, 0.5, 1), label: "Fallback Irradiance") {
+        if AssetManager.texture(handle: irradianceCubemap) == nil,
+           let irradiance = makeSolidCubemap(color: SIMD4<Float>(0.5, 0.5, 0.5, 1), label: "Fallback Irradiance") {
             AssetManager.registerRuntimeTexture(handle: irradianceCubemap, texture: irradiance)
         }
-        if let prefiltered = makeSolidCubemap(color: SIMD4<Float>(0, 0, 0, 1), label: "Fallback Prefiltered") {
+        if AssetManager.texture(handle: prefilteredCubemap) == nil,
+           let prefiltered = makeSolidCubemap(color: SIMD4<Float>(0, 0, 0, 1), label: "Fallback Prefiltered") {
             AssetManager.registerRuntimeTexture(handle: prefilteredCubemap, texture: prefiltered)
         }
     }
