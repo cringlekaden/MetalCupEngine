@@ -2,29 +2,30 @@
 /// Defines the Graphics types and helpers for the engine.
 /// Created by Kaden Cringle.
 
+import MetalKit
+
 public final class Graphics {
-    
-    static var _shaderLibrary: ShaderLibrary!
-    public static var Shaders: ShaderLibrary { return _shaderLibrary }
-    static var _vertexDescriptorLibrary: VertexDescriptorLibrary!
-    public static var VertexDescriptors: VertexDescriptorLibrary { return _vertexDescriptorLibrary }
-    static var _renderPipelineStateLibrary: RenderPipelineStateLibrary!
-    public static var RenderPipelineStates: RenderPipelineStateLibrary { return _renderPipelineStateLibrary }
-    static var _depthStencilStateLibrary: DepthStencilStateLibrary!
-    public static var DepthStencilStates: DepthStencilStateLibrary { return _depthStencilStateLibrary }
-    static var _samplerStateLibrary: SamplerStateLibrary!
-    public static var SamplerStates: SamplerStateLibrary { return _samplerStateLibrary }
-    
-    public static func initialize() {
-        self._shaderLibrary = ShaderLibrary()
-        self._shaderLibrary.registerDefaults()
-        self._vertexDescriptorLibrary = VertexDescriptorLibrary()
-        self._renderPipelineStateLibrary = RenderPipelineStateLibrary()
-        self._depthStencilStateLibrary = DepthStencilStateLibrary()
-        self._samplerStateLibrary = SamplerStateLibrary()
+    public let shaders: ShaderLibrary
+    public let vertexDescriptors: VertexDescriptorLibrary
+    public let renderPipelineStates: RenderPipelineStateLibrary
+    public let depthStencilStates: DepthStencilStateLibrary
+    public let samplerStates: SamplerStateLibrary
+
+    public init(resourceRegistry: ResourceRegistry, device: MTLDevice, preferences: Preferences) {
+        self.shaders = ShaderLibrary(resourceRegistry: resourceRegistry, device: device, fallbackLibrary: resourceRegistry.defaultLibrary)
+        self.vertexDescriptors = VertexDescriptorLibrary()
+        self.renderPipelineStates = RenderPipelineStateLibrary(
+            shaders: shaders,
+            vertexDescriptors: vertexDescriptors,
+            preferences: preferences,
+            device: device
+        )
+        self.depthStencilStates = DepthStencilStateLibrary(device: device)
+        self.samplerStates = SamplerStateLibrary(device: device)
+        self.shaders.registerDefaults()
     }
-    
-    public static func build() {
-        _renderPipelineStateLibrary.build()
+
+    public func build() {
+        renderPipelineStates.build()
     }
 }

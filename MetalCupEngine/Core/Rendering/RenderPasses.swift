@@ -49,11 +49,13 @@ struct RenderPassHelpers {
         SIMD2<Float>(Float(texture.width), Float(texture.height))
     }
 
-    static func withRenderPass(_ pass: RenderPassType, _ body: () -> Void) {
-        let previous = Renderer.currentRenderPass
-        Renderer.currentRenderPass = pass
+    static func withRenderPass(_ pass: RenderPassType, renderer: Renderer, frameContext: RendererFrameContext, _ body: () -> Void) {
+        let previous = frameContext.currentRenderPass()
+        renderer.currentRenderPass = pass
+        frameContext.setCurrentRenderPass(pass)
         body()
-        Renderer.currentRenderPass = previous
+        renderer.currentRenderPass = previous
+        frameContext.setCurrentRenderPass(previous)
     }
 
     static func shouldRenderEditorOverlays(_ sceneView: SceneView) -> Bool {
@@ -64,44 +66,57 @@ struct RenderPassHelpers {
 struct FullscreenPass {
     var pipeline: RenderPipelineStateType
     var label: String
-    var sampler: SamplerStateType?
+    var sampler: SamplerStateType
+    var useSampler: Bool
     var texture0: MTLTexture?
+    var useTexture0: Bool
     var texture1: MTLTexture?
-    var outlineMask: MTLTexture? = nil
-    var depth: MTLTexture? = nil
-    var grid: MTLTexture? = nil
+    var useTexture1: Bool
+    var outlineMask: MTLTexture?
+    var useOutlineMask: Bool
+    var depth: MTLTexture?
+    var useDepth: Bool
+    var grid: MTLTexture?
+    var useGrid: Bool
     var settings: RendererSettings?
 
-    func encode(into encoder: MTLRenderCommandEncoder, quad: MCMesh, frameContext: RendererFrameContext) {
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[pipeline])
+    func encode(into encoder: MTLRenderCommandEncoder, quad: MCMesh, frameContext: RendererFrameContext, graphics: Graphics) {
+        encoder.setRenderPipelineState(graphics.renderPipelineStates[pipeline])
         encoder.label = label
         encoder.pushDebugGroup(label)
         encoder.setCullMode(.none)
-        if let sampler {
-            encoder.setFragmentSamplerState(Graphics.SamplerStates[sampler], index: FragmentSamplerIndex.linearClamp)
+        if useSampler {
+            encoder.setFragmentSamplerState(graphics.samplerStates[sampler], index: FragmentSamplerIndex.linearClamp)
         }
-        if let texture0 {
-            encoder.setFragmentTexture(texture0, index: PostProcessTextureIndex.source)
+        let fallback = frameContext.engineContext().fallbackTextures
+        if useTexture0 {
+            encoder.setFragmentTexture(texture0 ?? fallback.blackRGBA, index: PostProcessTextureIndex.source)
         }
-        if let texture1 {
-            encoder.setFragmentTexture(texture1, index: PostProcessTextureIndex.bloom)
+        if useTexture1 {
+            encoder.setFragmentTexture(texture1 ?? fallback.blackRGBA, index: PostProcessTextureIndex.bloom)
         }
-        if let outlineMask {
-            encoder.setFragmentTexture(outlineMask, index: PostProcessTextureIndex.outlineMask)
+        if useOutlineMask {
+            encoder.setFragmentTexture(outlineMask ?? fallback.blackRGBA, index: PostProcessTextureIndex.outlineMask)
         }
-        if let depth {
-            encoder.setFragmentTexture(depth, index: PostProcessTextureIndex.depth)
+        if useDepth {
+            encoder.setFragmentTexture(depth ?? fallback.depth1x1, index: PostProcessTextureIndex.depth)
         }
-        if let grid {
-            encoder.setFragmentTexture(grid, index: PostProcessTextureIndex.grid)
+        if useGrid {
+            encoder.setFragmentTexture(grid ?? fallback.blackRGBA, index: PostProcessTextureIndex.grid)
         }
-        if let settings {
-            if let buffer = frameContext.uploadRendererSettings(settings) {
-                encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
-            }
-        }
+        let resolvedSettings = settings ?? frameContext.rendererSettings()
+        let buffer = frameContext.uploadRendererSettings(resolvedSettings)
+        encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
         quad.drawPrimitives(encoder, frameContext: frameContext)
         encoder.popDebugGroup()
+    }
+}
+
+final class ShadowPass: RenderGraphPass {
+    let name = "ShadowPass"
+
+    func execute(frame: RenderGraphFrame) {
+        frame.renderer.shadowRenderer.render(frame: frame)
     }
 }
 
@@ -109,14 +124,14 @@ final class DepthPrepassPass: RenderGraphPass {
     let name = "DepthPrepassPass"
 
     func execute(frame: RenderGraphFrame) {
-        guard Renderer.useDepthPrepass else { return }
+        guard frame.renderer.useDepthPrepass else { return }
         guard let depth = frame.resources.texture(.baseDepth) else { return }
         let pass = RenderPassBuilder.depth(texture: depth)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "Depth Prepass"
         encoder.pushDebugGroup("Depth Prepass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(depth))
-        RenderPassHelpers.withRenderPass(.depthPrepass) {
+        RenderPassHelpers.withRenderPass(.depthPrepass, renderer: frame.renderer, frameContext: frame.frameContext) {
             frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
@@ -134,19 +149,19 @@ final class ScenePass: RenderGraphPass {
             let baseDepth = frame.resources.texture(.baseDepth)
         else { return }
 
-        let depthLoad: MTLLoadAction = Renderer.useDepthPrepass ? .load : .clear
+        let depthLoad: MTLLoadAction = frame.renderer.useDepthPrepass ? .load : .clear
         let pass = RenderPassBuilder.colorDepth(color: baseColor, depth: baseDepth, depthLoadAction: depthLoad)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.HDRBasic])
+        encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates[.HDRBasic])
         encoder.label = "Scene Pass"
         encoder.pushDebugGroup("Scene Pass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(baseColor))
-        RenderPassHelpers.withRenderPass(.main) {
+        RenderPassHelpers.withRenderPass(.main, renderer: frame.renderer, frameContext: frame.frameContext) {
             frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
         encoder.endEncoding()
-        Renderer.profiler.record(.scene, seconds: CACurrentMediaTime() - sceneStart)
+        frame.profiler.record(.scene, seconds: CACurrentMediaTime() - sceneStart)
     }
 }
 
@@ -169,7 +184,7 @@ final class PickingPass: RenderGraphPass {
         encoder.label = "Picking Pass"
         encoder.pushDebugGroup("Picking Pass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(pickId))
-        RenderPassHelpers.withRenderPass(.picking) {
+        RenderPassHelpers.withRenderPass(.picking, renderer: frame.renderer, frameContext: frame.frameContext) {
             frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
@@ -191,24 +206,23 @@ final class GridOverlayPass: RenderGraphPass {
             encoder.endEncoding()
         }
 
-        if Renderer.settings.gridEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) {
+        if frame.renderer.settings.gridEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) {
             return
         }
         guard
-            let depth = frame.resources.texture(.baseDepth),
-            let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh),
-            var params = DebugDraw.gridParams()
+            let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh),
+            var params = frame.engineContext.debugDraw.gridParams()
         else { return }
 
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(grid))
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.GridOverlay])
+        encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates[.GridOverlay])
         encoder.setCullMode(.none)
-        encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: FragmentSamplerIndex.linearClamp)
-        encoder.setFragmentTexture(depth, index: PostProcessTextureIndex.depth)
+        let depthTexture = frame.resources.texture(.baseDepth) ?? frame.engineContext.fallbackTextures.depth1x1
+        encoder.setFragmentSamplerState(frame.engineContext.graphics.samplerStates[.LinearClampToZero], index: FragmentSamplerIndex.linearClamp)
+        encoder.setFragmentTexture(depthTexture, index: PostProcessTextureIndex.depth)
         encoder.setFragmentBytes(&params, length: GridParams.stride, index: FragmentBufferIndex.gridParams)
-        if let buffer = frame.frameContext.uploadRendererSettings(Renderer.settings) {
-            encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
-        }
+        let buffer = frame.frameContext.uploadRendererSettings(frame.renderer.settings)
+        encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
         quadMesh.drawPrimitives(encoder, frameContext: frame.frameContext)
     }
 }
@@ -225,7 +239,7 @@ final class BloomExtractPass: RenderGraphPass {
     let name = "BloomExtractPass"
 
     func execute(frame: RenderGraphFrame) {
-        let settings = Renderer.settings
+        let settings = frame.renderer.settings
         if settings.bloomEnabled == 0 {
             if let ping = frame.resources.texture(.bloomPing),
                let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: 0)) {
@@ -237,7 +251,7 @@ final class BloomExtractPass: RenderGraphPass {
         guard
             let sceneTex = frame.resources.texture(.baseColor),
             let ping = frame.resources.texture(.bloomPing),
-            let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
+            let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
         else { return }
 
         let extractStart = CACurrentMediaTime()
@@ -251,13 +265,22 @@ final class BloomExtractPass: RenderGraphPass {
             pipeline: .BloomExtract,
             label: "Bloom Extract",
             sampler: .LinearClampToZero,
+            useSampler: true,
             texture0: sceneTex,
+            useTexture0: true,
             texture1: nil,
+            useTexture1: false,
+            outlineMask: nil,
+            useOutlineMask: false,
+            depth: nil,
+            useDepth: false,
+            grid: nil,
+            useGrid: false,
             settings: params
         )
-        pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext)
+        pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
         encoder.endEncoding()
-        Renderer.profiler.record(.bloomExtract, seconds: CACurrentMediaTime() - extractStart)
+        frame.profiler.record(.bloomExtract, seconds: CACurrentMediaTime() - extractStart)
     }
 
     private func mipSize(for texture: MTLTexture, mip: Int) -> SIMD2<Float> {
@@ -271,12 +294,12 @@ final class BloomBlurPass: RenderGraphPass {
     let name = "BloomBlurPass"
 
     func execute(frame: RenderGraphFrame) {
-        let settings = Renderer.settings
+        let settings = frame.renderer.settings
         if settings.bloomEnabled == 0 { return }
         guard
             let ping = frame.resources.texture(.bloomPing),
             let pong = frame.resources.texture(.bloomPong),
-            let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
+            let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
         else { return }
 
         let maxBloomMips = max(1, Int(settings.bloomMaxMips))
@@ -307,11 +330,20 @@ final class BloomBlurPass: RenderGraphPass {
                     pipeline: .BloomBlurH,
                     label: "Bloom Blur H \(mip) \(i)",
                     sampler: .LinearClampToZero,
+                    useSampler: true,
                     texture0: ping,
+                    useTexture0: true,
                     texture1: nil,
+                    useTexture1: false,
+                    outlineMask: nil,
+                    useOutlineMask: false,
+                    depth: nil,
+                    useDepth: false,
+                    grid: nil,
+                    useGrid: false,
                     settings: params
                 )
-                passH.encode(into: encH, quad: quadMesh, frameContext: frame.frameContext)
+                passH.encode(into: encH, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
                 encH.endEncoding()
 
                 guard let encV = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: mip)) else { return }
@@ -320,11 +352,20 @@ final class BloomBlurPass: RenderGraphPass {
                     pipeline: .BloomBlurV,
                     label: "Bloom Blur V \(mip) \(i)",
                     sampler: .LinearClampToZero,
+                    useSampler: true,
                     texture0: pong,
+                    useTexture0: true,
                     texture1: nil,
+                    useTexture1: false,
+                    outlineMask: nil,
+                    useOutlineMask: false,
+                    depth: nil,
+                    useDepth: false,
+                    grid: nil,
+                    useGrid: false,
                     settings: params
                 )
-                passV.encode(into: encV, quad: quadMesh, frameContext: frame.frameContext)
+                passV.encode(into: encV, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
                 encV.endEncoding()
                 blurTotal += CACurrentMediaTime() - blurStart
             }
@@ -347,11 +388,20 @@ final class BloomBlurPass: RenderGraphPass {
                     pipeline: .BloomDownsample,
                     label: "Bloom Downsample \(mip)",
                     sampler: .LinearClampToZero,
+                    useSampler: true,
                     texture0: ping,
+                    useTexture0: true,
                     texture1: nil,
+                    useTexture1: false,
+                    outlineMask: nil,
+                    useOutlineMask: false,
+                    depth: nil,
+                    useDepth: false,
+                    grid: nil,
+                    useGrid: false,
                     settings: params
                 )
-                pass.encode(into: enc, quad: quadMesh, frameContext: frame.frameContext)
+                pass.encode(into: enc, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
                 enc.endEncoding()
                 downsampleTotal += CACurrentMediaTime() - downsampleStart
 
@@ -360,10 +410,10 @@ final class BloomBlurPass: RenderGraphPass {
         }
 
         if downsampleTotal > 0 {
-            Renderer.profiler.record(.bloomDownsample, seconds: downsampleTotal)
+            frame.profiler.record(.bloomDownsample, seconds: downsampleTotal)
         }
         if blurTotal > 0 {
-            Renderer.profiler.record(.bloomBlur, seconds: blurTotal)
+            frame.profiler.record(.bloomBlur, seconds: blurTotal)
         }
     }
 }
@@ -377,7 +427,7 @@ final class FinalCompositePass: RenderGraphPass {
             let bloom = frame.resources.texture(.bloomPing),
             let outline = frame.resources.texture(.outlineMask),
             let grid = frame.resources.texture(.gridColor),
-            let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh),
+            let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh),
             let finalColor = frame.resources.texture(.finalColor)
         else { return }
 
@@ -388,14 +438,21 @@ final class FinalCompositePass: RenderGraphPass {
             pipeline: .Final,
             label: "Final Composite",
             sampler: .LinearClampToZero,
+            useSampler: true,
             texture0: baseColor,
+            useTexture0: true,
             texture1: bloom,
+            useTexture1: true,
             outlineMask: outline,
+            useOutlineMask: true,
+            depth: nil,
+            useDepth: false,
             grid: grid,
-            settings: Renderer.settings
+            useGrid: true,
+            settings: frame.renderer.settings
         )
-        pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext)
+        pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
         encoder.endEncoding()
-        Renderer.profiler.record(.composite, seconds: CACurrentMediaTime() - compositeStart)
+        frame.profiler.record(.composite, seconds: CACurrentMediaTime() - compositeStart)
     }
 }

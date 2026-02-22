@@ -17,8 +17,8 @@ public enum SceneRenderer {
     }
 
     @discardableResult
-    public static func render(scene: EngineScene, view: SceneView, context: RenderContext) -> RenderOutputs {
-        let storage = RendererFrameContextStorage()
+    public static func render(scene: EngineScene, view: SceneView, context: RenderContext, engineContext: EngineContext) -> RenderOutputs {
+        let storage = RendererFrameContextStorage(engineContext: engineContext)
         let frameContext = storage.beginFrame()
         return render(scene: scene, view: view, context: context, frameContext: frameContext)
     }
@@ -26,13 +26,16 @@ public enum SceneRenderer {
     static func renderScene(into encoder: MTLRenderCommandEncoder, scene: EngineScene, frameContext: RendererFrameContext) {
         encoder.pushDebugGroup("Rendering Scene \(scene.name)...")
         bindSceneConstants(encoder, scene: scene, frameContext: frameContext)
-        switch Renderer.currentRenderPass {
+        switch frameContext.currentRenderPass() {
         case .main:
             syncIBLTextures(scene: scene, frameContext: frameContext)
-            bindRendererSettings(encoder, settings: Renderer.settings, frameContext: frameContext)
+            bindRendererSettings(encoder, settings: frameContext.rendererSettings(), frameContext: frameContext)
+            bindShadowResources(encoder, frameContext: frameContext)
             scene.getLightManager().setLightData(encoder, frameContext: frameContext)
             renderSky(encoder, scene: scene, frameContext: frameContext)
             renderMeshes(encoder, scene: scene, pass: .main, frameContext: frameContext)
+        case .shadow:
+            renderMeshes(encoder, scene: scene, pass: .shadow, frameContext: frameContext)
         case .picking:
             renderMeshes(encoder, scene: scene, pass: .picking, frameContext: frameContext)
         case .depthPrepass:
@@ -49,8 +52,8 @@ public enum SceneRenderer {
         guard let transform = scene.ecs.get(TransformComponent.self, for: cameraEntity),
               let camera = scene.ecs.get(CameraComponent.self, for: cameraEntity),
               viewportSize.x > 1, viewportSize.y > 1 else { return }
-        let previousPass = Renderer.currentRenderPass
-        let previousUsePrepass = Renderer.useDepthPrepass
+        let previousPass = frameContext.currentRenderPass()
+        let previousUsePrepass = frameContext.useDepthPrepass()
         let aspect = max(0.01, viewportSize.x / viewportSize.y)
         let sceneConstants = scene.getSceneConstants()
         var previewConstants = sceneConstants
@@ -61,12 +64,12 @@ public enum SceneRenderer {
         previewConstants.skyViewMatrix[3][2] = 0
         previewConstants.projectionMatrix = projectionMatrix(from: camera, aspectRatio: aspect)
         previewConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, sceneConstants.cameraPositionAndIBL.w)
-        guard let previewConstantsBuffer = frameContext.makeSceneConstantsBuffer(
+        let previewConstantsBuffer = frameContext.makeSceneConstantsBuffer(
             previewConstants,
             label: "SceneConstants.Preview"
-        ) else { return }
-        Renderer.currentRenderPass = .main
-        Renderer.useDepthPrepass = false
+        )
+        frameContext.setCurrentRenderPass(.main)
+        frameContext.setUseDepthPrepass(false)
         encoder.setViewport(MTLViewport(originX: 0,
                                         originY: 0,
                                         width: Double(viewportSize.x),
@@ -74,27 +77,13 @@ public enum SceneRenderer {
                                         znear: 0,
                                         zfar: 1))
         syncIBLTextures(scene: scene, frameContext: frameContext)
-        bindRendererSettings(encoder, settings: Renderer.settings, frameContext: frameContext)
+        bindRendererSettings(encoder, settings: frameContext.rendererSettings(), frameContext: frameContext)
+        bindShadowResources(encoder, frameContext: frameContext)
         scene.getLightManager().setLightData(encoder, frameContext: frameContext)
         renderSky(encoder, scene: scene, frameContext: frameContext, sceneConstantsBuffer: previewConstantsBuffer)
         renderMeshes(encoder, scene: scene, pass: .main, frameContext: frameContext, sceneConstantsBuffer: previewConstantsBuffer)
-        Renderer.useDepthPrepass = previousUsePrepass
-        Renderer.currentRenderPass = previousPass
-    }
-
-    static func renderPreview(encoder: MTLRenderCommandEncoder,
-                              scene: EngineScene,
-                              cameraEntity: Entity,
-                              viewportSize: SIMD2<Float>) {
-        let storage = RendererFrameContextStorage()
-        let frameContext = storage.beginFrame()
-        renderPreview(
-            encoder: encoder,
-            scene: scene,
-            cameraEntity: cameraEntity,
-            viewportSize: viewportSize,
-            frameContext: frameContext
-        )
+        frameContext.setUseDepthPrepass(previousUsePrepass)
+        frameContext.setCurrentRenderPass(previousPass)
     }
 
     private static func renderSky(_ encoder: MTLRenderCommandEncoder,
@@ -106,39 +95,51 @@ public enum SceneRenderer {
             if renderedSky { return }
             if !sky.enabled { return }
             renderedSky = true
-            guard let mesh = AssetManager.mesh(handle: BuiltinAssets.skyboxMesh) else { return }
+            let engineContext = frameContext.engineContext()
+            guard let mesh = engineContext.assets.mesh(handle: BuiltinAssets.skyboxMesh) else { return }
             bindSceneConstants(encoder, scene: scene, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
-            encoder.setTriangleFillMode(Preferences.isWireframeEnabled ? .lines : .fill)
-            encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.Skybox])
-            encoder.setDepthStencilState(Graphics.DepthStencilStates[.LessEqualNoWrite])
+            encoder.setTriangleFillMode(engineContext.preferences.isWireframeEnabled ? .lines : .fill)
+            encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.Skybox])
+            encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.LessEqualNoWrite])
             encoder.setCullMode(.front)
             encoder.setFrontFacing(.clockwise)
             var modelConstants = ModelConstants()
             modelConstants.modelMatrix = matrix_identity_float4x4
             encoder.setVertexBytes(&modelConstants, length: ModelConstants.stride, index: VertexBufferIndex.modelConstants)
             let envTexture = frameContext.iblTextures().environment
-                ?? AssetManager.texture(handle: BuiltinAssets.environmentCubemap)
+                ?? engineContext.assets.texture(handle: BuiltinAssets.environmentCubemap)
+                ?? engineContext.fallbackTextures.blackCubemap
+            encoder.setFragmentSamplerState(engineContext.graphics.samplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
             encoder.setFragmentTexture(envTexture, index: FragmentTextureIndex.skybox)
             mesh.drawPrimitives(encoder, frameContext: frameContext)
         }
     }
 
     private static func syncIBLTextures(scene: EngineScene, frameContext: RendererFrameContext) {
+        let engineContext = frameContext.engineContext()
+        let fallback = engineContext.fallbackTextures
         let sky = scene.ecs.activeSkyLight()?.1
         let envHandle = sky?.iblEnvironmentHandle ?? BuiltinAssets.environmentCubemap
         let irrHandle = sky?.iblIrradianceHandle ?? BuiltinAssets.irradianceCubemap
         let preHandle = sky?.iblPrefilteredHandle ?? BuiltinAssets.prefilteredCubemap
         let brdfHandle = sky?.iblBrdfHandle ?? BuiltinAssets.brdfLut
-        let env = AssetManager.texture(handle: envHandle)
-        let irr = AssetManager.texture(handle: irrHandle)
-        let pre = AssetManager.texture(handle: preHandle)
-        let brdf = AssetManager.texture(handle: brdfHandle)
+        let env = engineContext.assets.texture(handle: envHandle) ?? fallback.blackCubemap
+        let irr = engineContext.assets.texture(handle: irrHandle) ?? fallback.blackCubemap
+        let pre = engineContext.assets.texture(handle: preHandle) ?? fallback.blackCubemap
+        let brdf = engineContext.assets.texture(handle: brdfHandle) ?? fallback.brdfLut
+        let needsRebuild = sky?.needsRebuild ?? true
+        let hasValidIBL = (sky?.enabled ?? false)
+            && !needsRebuild
+            && !fallback.isFallbackTexture(irr)
+            && !fallback.isFallbackTexture(pre)
+            && !fallback.isFallbackTexture(brdf)
         frameContext.updateIBLTextures(
             environment: env,
             irradiance: irr,
             prefiltered: pre,
             brdfLut: brdf
         )
+        frameContext.setIBLReady(hasValidIBL)
     }
 
     private static func renderMeshes(_ encoder: MTLRenderCommandEncoder,
@@ -155,10 +156,22 @@ public enum SceneRenderer {
             if instanceCount == 0 { continue }
             MC_ASSERT(batch.instanceRange.upperBound <= batchResult.instances.count, "Batch instance range out of bounds.")
             let instanceOffset = batch.instanceRange.lowerBound * instanceStride
-            applyPerDrawState(encoder, pass: pass, cullMode: batch.bindings.cullMode)
+            applyPerDrawState(encoder, pass: pass, cullMode: batch.bindings.cullMode, frameContext: frameContext)
             switch pass {
             case .depthPrepass:
                 encodeDepthPrepass(
+                    encoder,
+                    scene: scene,
+                    batch: batch,
+                    batchResult: batchResult,
+                    instanceBuffer: instanceBuffer,
+                    instanceOffset: instanceOffset,
+                    instanceCount: instanceCount,
+                    sceneConstantsBuffer: sceneConstantsBuffer,
+                    frameContext: frameContext
+                )
+            case .shadow:
+                encodeShadowPass(
                     encoder,
                     scene: scene,
                     batch: batch,
@@ -196,20 +209,60 @@ public enum SceneRenderer {
         }
     }
 
-    private static func applyPerDrawState(_ encoder: MTLRenderCommandEncoder, pass: RenderPassType, cullMode: MTLCullMode) {
-        encoder.setTriangleFillMode(Preferences.isWireframeEnabled ? .lines : .fill)
-        let usePrepass = Renderer.useDepthPrepass && pass == .main
-        encoder.setDepthStencilState(Graphics.DepthStencilStates[usePrepass ? .LessEqualNoWrite : .Less])
-        encoder.setCullMode(cullMode)
-        encoder.setFrontFacing(.counterClockwise)
-        if pass == .depthPrepass {
-            encoder.setDepthBias(0.0005, slopeScale: 1.0, clamp: 0.0)
+    private static func applyPerDrawState(_ encoder: MTLRenderCommandEncoder,
+                                          pass: RenderPassType,
+                                          cullMode: MTLCullMode,
+                                          frameContext: RendererFrameContext) {
+        let engineContext = frameContext.engineContext()
+        encoder.setTriangleFillMode(engineContext.preferences.isWireframeEnabled ? .lines : .fill)
+        let usePrepass = frameContext.useDepthPrepass() && pass == .main
+        encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[usePrepass ? .LessEqualNoWrite : .Less])
+        if pass == .shadow {
+            encoder.setCullMode(.none)
         } else {
+            encoder.setCullMode(cullMode)
+        }
+        encoder.setFrontFacing(.counterClockwise)
+        switch pass {
+        case .depthPrepass:
+            // Restore original prepass bias; smaller values cause widespread clipping.
+            encoder.setDepthBias(0.0005, slopeScale: 1.0, clamp: 0.0)
+        case .shadow:
+            // Shadow bias is handled in shader to avoid double-biasing.
+            encoder.setDepthBias(0.0, slopeScale: 0.0, clamp: 0.0)
+        default:
             encoder.setDepthBias(0.0, slopeScale: 0.0, clamp: 0.0)
         }
     }
 
     private static func encodeDepthPrepass(
+        _ encoder: MTLRenderCommandEncoder,
+        scene: EngineScene,
+        batch: RenderBatch,
+        batchResult: RenderBatchResult,
+        instanceBuffer: MTLBuffer,
+        instanceOffset: Int,
+        instanceCount: Int,
+        sceneConstantsBuffer: MTLBuffer?,
+        frameContext: RendererFrameContext
+    ) {
+        encodeMeshBatch(
+            encoder,
+            scene: scene,
+            batch: batch,
+            batchResult: batchResult,
+            instanceBuffer: instanceBuffer,
+            instanceOffset: instanceOffset,
+            instanceCount: instanceCount,
+            instancedPipeline: .DepthPrepassInstanced,
+            singlePipeline: .DepthPrepass,
+            bindings: nil,
+            sceneConstantsBuffer: sceneConstantsBuffer,
+            frameContext: frameContext
+        )
+    }
+
+    private static func encodeShadowPass(
         _ encoder: MTLRenderCommandEncoder,
         scene: EngineScene,
         batch: RenderBatch,
@@ -246,7 +299,8 @@ public enum SceneRenderer {
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.PickID])
+        let engineContext = frameContext.engineContext()
+        encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.PickID])
         bindSceneConstants(encoder, scene: scene, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
         bindInstanceBuffer(encoder, buffer: instanceBuffer, offset: instanceOffset)
         batch.mesh.setInstanceCount(instanceCount)
@@ -294,8 +348,9 @@ public enum SceneRenderer {
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
+        let engineContext = frameContext.engineContext()
         if instanceCount > 1 {
-            encoder.setRenderPipelineState(Graphics.RenderPipelineStates[instancedPipeline])
+            encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[instancedPipeline])
             bindSceneConstants(encoder, scene: scene, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
             bindInstanceBuffer(encoder, buffer: instanceBuffer, offset: instanceOffset)
             assertInstanceBindings(instanceBuffer: instanceBuffer, instanceOffset: instanceOffset, instanceCount: instanceCount)
@@ -303,7 +358,7 @@ public enum SceneRenderer {
             drawMesh(encoder, mesh: batch.mesh, bindings: bindings, frameContext: frameContext)
             return
         }
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[singlePipeline])
+        encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[singlePipeline])
         let instanceIndex = batch.instanceRange.lowerBound
         guard instanceIndex < batchResult.instances.count else { return }
         bindSceneConstants(encoder, scene: scene, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
@@ -337,8 +392,11 @@ public enum SceneRenderer {
             encoder.setVertexBuffer(overrideBuffer, offset: 0, index: VertexBufferIndex.sceneConstants)
             return
         }
-        let constants = scene.getSceneConstants()
-        guard let buffer = frameContext.uploadSceneConstants(constants) else { return }
+        var constants = scene.getSceneConstants()
+        if !frameContext.iblReady() {
+            constants.cameraPositionAndIBL.w = 0.0
+        }
+        let buffer = frameContext.uploadSceneConstants(constants)
         MC_ASSERT(buffer.length >= SceneConstants.stride, "SceneConstants buffer too small.")
         encoder.setVertexBuffer(buffer, offset: 0, index: VertexBufferIndex.sceneConstants)
     }
@@ -354,8 +412,39 @@ public enum SceneRenderer {
     }
 
     private static func bindRendererSettings(_ encoder: MTLRenderCommandEncoder, settings: RendererSettings, frameContext: RendererFrameContext) {
-        guard let buffer = frameContext.uploadRendererSettings(settings) else { return }
+        var resolvedSettings = settings
+        if !frameContext.iblReady() {
+            resolvedSettings.iblEnabled = 0
+            resolvedSettings.iblIntensity = 0.0
+        }
+        let buffer = frameContext.uploadRendererSettings(resolvedSettings)
+#if DEBUG
+        MC_ASSERT(RendererSettings.stride == RendererSettings.expectedMetalStride, "RendererSettings stride mismatch. Keep Swift and Metal layouts in sync.")
+        MC_ASSERT(buffer.length >= RendererSettings.expectedMetalStride, "RendererSettings buffer too small.")
+#endif
         encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
+    }
+
+    private static func bindShadowResources(_ encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {
+        let settings = frameContext.rendererSettings()
+        let shadowBuffer = frameContext.shadowConstantsBuffer()
+        encoder.setFragmentBuffer(shadowBuffer, offset: 0, index: FragmentBufferIndex.shadowConstants)
+        let fallback = frameContext.engineContext().fallbackTextures
+        let shadowTexture = frameContext.shadowMapTexture() ?? fallback.shadowMap
+        encoder.setFragmentTexture(shadowTexture, index: FragmentTextureIndex.shadowMap)
+        encoder.setFragmentTexture(shadowTexture, index: FragmentTextureIndex.shadowMapSample)
+        encoder.setFragmentSamplerState(frameContext.engineContext().graphics.samplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
+        encoder.setFragmentSamplerState(frameContext.engineContext().graphics.samplerStates[.ShadowCompare], index: FragmentSamplerIndex.shadowCompare)
+        encoder.setFragmentSamplerState(frameContext.engineContext().graphics.samplerStates[.ShadowDepth], index: FragmentSamplerIndex.shadowDepth)
+
+    }
+
+
+    static func renderShadowCasters(into encoder: MTLRenderCommandEncoder,
+                                    scene: EngineScene,
+                                    frameContext: RendererFrameContext,
+                                    sceneConstantsBuffer: MTLBuffer?) {
+        renderMeshes(encoder, scene: scene, pass: .shadow, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
     }
 
 
@@ -428,19 +517,21 @@ public enum SceneRenderer {
         return result
     }
 
-    private static func buildRenderItems(scene: EngineScene) -> [RenderItem] {
+    private static func buildRenderItems(scene: EngineScene,
+                                         frameContext: RendererFrameContext,
+                                         engineContext: EngineContext) -> [RenderItem] {
         let items = scene.ecs.viewTransformMeshRendererArray()
         var renderItems: [RenderItem] = []
         renderItems.reserveCapacity(items.count)
 
         for (entity, transform, meshRenderer) in items {
             guard let meshHandle = meshRenderer.meshHandle,
-                  let mesh = AssetManager.mesh(handle: meshHandle) else { continue }
+                  let mesh = engineContext.assets.mesh(handle: meshHandle) else { continue }
             let layer = scene.ecs.get(LayerComponent.self, for: entity)?.index ?? LayerCatalog.defaultLayerIndex
-            if !Renderer.layerFilterMask.contains(layerIndex: layer) {
+            if !frameContext.layerFilterMask().contains(layerIndex: layer) {
                 continue
             }
-            let bindings = resolveMaterialBindings(scene: scene, entity: entity, meshRenderer: meshRenderer)
+            let bindings = resolveMaterialBindings(scene: scene, entity: entity, meshRenderer: meshRenderer, engineContext: engineContext)
             renderItems.append(RenderItem(
                 entity: entity,
                 meshHandle: meshHandle,
@@ -454,10 +545,11 @@ public enum SceneRenderer {
     }
 
     private static func buildRenderBatches(scene: EngineScene, frameContext: RendererFrameContext) -> RenderBatchResult {
+        let engineContext = frameContext.engineContext()
         var builders: [RenderBatchKey: RenderBatchBuilder] = [:]
         var uniqueMeshes = Set<AssetHandle>()
-        let items = buildRenderItems(scene: scene)
-        PickingSystem.resetMapping()
+        let items = buildRenderItems(scene: scene, frameContext: frameContext, engineContext: engineContext)
+        engineContext.pickingSystem.resetMapping()
 
         for item in items {
             let bindings = item.bindings
@@ -469,7 +561,7 @@ public enum SceneRenderer {
                 cullModeKey: bindings.cullMode == .none ? 0 : 1
             )
             var builder = builders[key] ?? RenderBatchBuilder(mesh: item.mesh, bindings: bindings, instances: [])
-            let pickId = PickingSystem.assignPickId(for: item.entity)
+            let pickId = engineContext.pickingSystem.assignPickId(for: item.entity)
             var instance = InstanceData()
             instance.modelMatrix = modelMatrix(for: item.transform)
             instance.entityID = pickId
@@ -510,7 +602,10 @@ public enum SceneRenderer {
         return RenderBatchResult(instances: instances, batches: batches, instanceBuffer: instanceBuffer)
     }
 
-    private static func resolveMaterialBindings(scene: EngineScene, entity: Entity, meshRenderer: MeshRendererComponent) -> MaterialBindings {
+    private static func resolveMaterialBindings(scene: EngineScene,
+                                                entity: Entity,
+                                                meshRenderer: MeshRendererComponent,
+                                                engineContext: EngineContext) -> MaterialBindings {
         let materialHandle = meshRenderer.materialHandle ?? scene.ecs.get(MaterialComponent.self, for: entity)?.materialHandle
         var materialOverride = meshRenderer.material
         var albedoMapHandle = meshRenderer.albedoMapHandle
@@ -523,8 +618,8 @@ public enum SceneRenderer {
         var cullMode: MTLCullMode = .back
 
         if let materialHandle,
-           let materialAsset = AssetManager.material(handle: materialHandle) {
-            materialOverride = materialAsset.buildMetalMaterial(database: Engine.assetDatabase)
+           let materialAsset = engineContext.assets.material(handle: materialHandle) {
+            materialOverride = materialAsset.buildMetalMaterial(database: engineContext.assetDatabase)
             albedoMapHandle = materialAsset.textures.baseColor
             normalMapHandle = materialAsset.textures.normal
             metallicMapHandle = materialAsset.textures.metallic
@@ -540,7 +635,7 @@ public enum SceneRenderer {
             cullMode = .none
         }
         if let normalHandle = normalMapHandle,
-           let metadata = Engine.assetDatabase?.metadata(for: normalHandle) {
+           let metadata = engineContext.assetDatabase?.metadata(for: normalHandle) {
             if AssetManager.shouldFlipNormalY(path: metadata.sourcePath) {
                 var material = materialOverride ?? MetalCupMaterial()
                 material.flags |= MetalCupMaterialFlags.normalFlipY.rawValue
@@ -592,6 +687,10 @@ public enum SceneRenderer {
     }
 
     private static func modelMatrix(for transform: TransformComponent) -> matrix_float4x4 {
+#if DEBUG
+        MC_ASSERT(isFinite(transform.position) && isFinite(transform.rotation) && isFinite(transform.scale),
+                  "Transform contains non-finite values (NaN/inf).")
+#endif
         var matrix = matrix_identity_float4x4
         matrix.translate(direction: transform.position)
         matrix.rotate(angle: transform.rotation.x, axis: xAxis)
@@ -599,6 +698,10 @@ public enum SceneRenderer {
         matrix.rotate(angle: transform.rotation.z, axis: zAxis)
         matrix.scale(axis: transform.scale)
         return matrix
+    }
+
+    private static func isFinite(_ value: SIMD3<Float>) -> Bool {
+        value.x.isFinite && value.y.isFinite && value.z.isFinite
     }
 
     public static func cameraMatrices(scene: EngineScene) -> (view: matrix_float4x4, projection: matrix_float4x4) {

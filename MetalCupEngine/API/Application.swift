@@ -18,17 +18,30 @@ open class Application: NSObject, EventHandler {
 
     public init(specification: ApplicationSpecification) {
         self.specification = specification
-        if Engine.Device == nil {
-            guard let device = MTLCreateSystemDefaultDevice() else {
-                fatalError("Failed to create MTLDevice")
-            }
-            Engine.initialize(device: device)
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            fatalError("Failed to create MTLDevice")
         }
-        let queue = Engine.Device.makeCommandQueue() ?? Engine.CommandQueue
+        let queue = device.makeCommandQueue()
+        let defaultLibrary = device.makeDefaultLibrary()
+        guard let commandQueue = queue else {
+            fatalError("Failed to create MTLCommandQueue")
+        }
+        let resources = ResourceRegistry()
+        if let folder = specification.resourcesFolderName,
+           let url = Bundle.main.url(forResource: folder, withExtension: nil) {
+            resources.resourcesRootURL = url.standardizedFileURL
+        } else if let bundleRoot = Bundle.main.resourceURL {
+            resources.resourcesRootURL = bundleRoot.standardizedFileURL
+        }
+        if let assetsRoot = specification.assetsRootURL {
+            resources.shaderRootURLs = [assetsRoot.appendingPathComponent("Shaders", isDirectory: true)]
+        }
+        resources.defaultLibrary = defaultLibrary
         self.engineContext = EngineContext(
-            device: Engine.Device,
-            commandQueue: queue!,
-            defaultLibrary: Engine.DefaultLibrary
+            device: device,
+            commandQueue: commandQueue,
+            defaultLibrary: defaultLibrary,
+            resources: resources
         )
         super.init()
         bootstrap()
@@ -42,31 +55,37 @@ open class Application: NSObject, EventHandler {
 
     private func bootstrap() {
         // Configure resource registry from spec
-        ResourceRegistry.defaultLibrary = Engine.Device.makeDefaultLibrary()
-        if ResourceRegistry.defaultLibrary == nil {
-            // Fallback to Engine.DefaultLibrary if available
-            ResourceRegistry.defaultLibrary = Engine.DefaultLibrary
+        if engineContext.resources.defaultLibrary == nil {
+            engineContext.resources.defaultLibrary = engineContext.device.makeDefaultLibrary()
+        }
+        if engineContext.resources.defaultLibrary == nil {
+            engineContext.resources.defaultLibrary = engineContext.defaultLibrary
         }
 
-        BuiltinAssets.registerMeshes()
+        BuiltinAssets.registerMeshes(
+            assetManager: engineContext.assets,
+            device: engineContext.device,
+            graphics: engineContext.graphics
+        )
 
         willCreateWindow()
-        if ResourceRegistry.defaultLibrary == nil {
-            ResourceRegistry.buildDefaultLibraryIfNeeded(device: Engine.Device)
+        if engineContext.resources.defaultLibrary == nil {
+            engineContext.resources.buildDefaultLibraryIfNeeded(device: engineContext.device)
         }
-        guard ResourceRegistry.defaultLibrary != nil else {
+        guard engineContext.resources.defaultLibrary != nil else {
             fatalError("No default MTLLibrary available. Ensure .metal files are included in the app or engine target.")
         }
         window = EngineWindow()
         window.eventHandler = self
-        window.create(with: specification, device: Engine.Device)
+        window.create(with: specification, device: engineContext.device, preferences: engineContext.preferences)
         didCreateWindow()
 
         // Hook renderer to the MTKView
-        renderer = Renderer(window.mtkView)
+        renderer = Renderer(window.mtkView, engineContext: engineContext)
         renderer.inputAccumulator = window.inputAccumulator
         renderer.delegate = self
         window.mtkView.delegate = renderer
+        engineContext.renderer = renderer
 
         let appId = ObjectIdentifier(self)
         let rendererId = ObjectIdentifier(renderer)
@@ -83,10 +102,10 @@ open class Application: NSObject, EventHandler {
         nil
     }
 
-    open func buildSceneView() -> SceneView {
-        let viewport = (Renderer.ViewportSize.x > 1 && Renderer.ViewportSize.y > 1)
-            ? Renderer.ViewportSize
-            : Renderer.DrawableSize
+    open func buildSceneView(renderer: Renderer) -> SceneView {
+        let viewport = (renderer.viewportSize.x > 1 && renderer.viewportSize.y > 1)
+            ? renderer.viewportSize
+            : renderer.drawableSize
         return SceneView(viewportSize: viewport)
     }
 

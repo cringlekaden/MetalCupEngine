@@ -162,10 +162,12 @@ public enum LightType {
 public struct LightComponent {
     public var type: LightType
     public var data: LightData
+    /// Direction the light rays travel (from the light toward the scene).
     public var direction: SIMD3<Float>
     public var range: Float
     public var innerConeCos: Float
     public var outerConeCos: Float
+    public var castsShadows: Bool
 
     public init(
         type: LightType = .point,
@@ -173,7 +175,8 @@ public struct LightComponent {
         direction: SIMD3<Float> = SIMD3<Float>(0, -1, 0),
         range: Float = 0.0,
         innerConeCos: Float = 0.95,
-        outerConeCos: Float = 0.9
+        outerConeCos: Float = 0.9,
+        castsShadows: Bool = false
     ) {
         self.type = type
         self.data = data
@@ -181,6 +184,7 @@ public struct LightComponent {
         self.range = range
         self.innerConeCos = innerConeCos
         self.outerConeCos = outerConeCos
+        self.castsShadows = castsShadows
     }
 }
 
@@ -230,14 +234,37 @@ public struct SkyLightComponent: Equatable {
     public var turbidity: Float
     public var azimuthDegrees: Float
     public var elevationDegrees: Float
+    public var sunSizeDegrees: Float
+    public var zenithTint: SIMD3<Float>
+    public var horizonTint: SIMD3<Float>
+    public var gradientStrength: Float
+    public var hazeDensity: Float
+    public var hazeFalloff: Float
+    public var hazeHeight: Float
+    public var ozoneStrength: Float
+    public var ozoneTint: SIMD3<Float>
+    public var sunHaloSize: Float
+    public var sunHaloIntensity: Float
+    public var sunHaloSoftness: Float
+    public var cloudsEnabled: Bool
+    public var cloudsCoverage: Float
+    public var cloudsSoftness: Float
+    public var cloudsScale: Float
+    public var cloudsSpeed: Float
+    public var cloudsWindDirection: SIMD2<Float>
+    public var cloudsHeight: Float
+    public var cloudsThickness: Float
+    public var cloudsBrightness: Float
+    public var cloudsSunInfluence: Float
     public var hdriHandle: AssetHandle?
     public var iblEnvironmentHandle: AssetHandle?
     public var iblIrradianceHandle: AssetHandle?
     public var iblPrefilteredHandle: AssetHandle?
     public var iblBrdfHandle: AssetHandle?
-    public var needsRegenerate: Bool
+    public var needsRebuild: Bool
+    public var rebuildRequested: Bool
     public var realtimeUpdate: Bool
-    public var lastRegenerateTime: Double
+    public var lastRebuildTime: Double
 
     public init(
         mode: SkyMode = .hdri,
@@ -247,14 +274,37 @@ public struct SkyLightComponent: Equatable {
         turbidity: Float = 2.0,
         azimuthDegrees: Float = 0.0,
         elevationDegrees: Float = 30.0,
+        sunSizeDegrees: Float = 0.535,
+        zenithTint: SIMD3<Float> = SIMD3<Float>(0.24, 0.45, 0.95),
+        horizonTint: SIMD3<Float> = SIMD3<Float>(0.95, 0.75, 0.55),
+        gradientStrength: Float = 1.0,
+        hazeDensity: Float = 0.35,
+        hazeFalloff: Float = 2.2,
+        hazeHeight: Float = 0.0,
+        ozoneStrength: Float = 0.35,
+        ozoneTint: SIMD3<Float> = SIMD3<Float>(0.55, 0.7, 1.0),
+        sunHaloSize: Float = 2.5,
+        sunHaloIntensity: Float = 0.5,
+        sunHaloSoftness: Float = 1.2,
+        cloudsEnabled: Bool = false,
+        cloudsCoverage: Float = 0.35,
+        cloudsSoftness: Float = 0.6,
+        cloudsScale: Float = 1.0,
+        cloudsSpeed: Float = 0.02,
+        cloudsWindDirection: SIMD2<Float> = SIMD2<Float>(1.0, 0.0),
+        cloudsHeight: Float = 0.25,
+        cloudsThickness: Float = 0.35,
+        cloudsBrightness: Float = 1.0,
+        cloudsSunInfluence: Float = 1.0,
         hdriHandle: AssetHandle? = nil,
         iblEnvironmentHandle: AssetHandle? = nil,
         iblIrradianceHandle: AssetHandle? = nil,
         iblPrefilteredHandle: AssetHandle? = nil,
         iblBrdfHandle: AssetHandle? = nil,
-        needsRegenerate: Bool = true,
-        realtimeUpdate: Bool = false,
-        lastRegenerateTime: Double = 0.0
+        needsRebuild: Bool = true,
+        rebuildRequested: Bool = false,
+        realtimeUpdate: Bool = true,
+        lastRebuildTime: Double = 0.0
     ) {
         self.mode = mode
         self.enabled = enabled
@@ -263,14 +313,37 @@ public struct SkyLightComponent: Equatable {
         self.turbidity = turbidity
         self.azimuthDegrees = azimuthDegrees
         self.elevationDegrees = elevationDegrees
+        self.sunSizeDegrees = sunSizeDegrees
+        self.zenithTint = zenithTint
+        self.horizonTint = horizonTint
+        self.gradientStrength = gradientStrength
+        self.hazeDensity = hazeDensity
+        self.hazeFalloff = hazeFalloff
+        self.hazeHeight = hazeHeight
+        self.ozoneStrength = ozoneStrength
+        self.ozoneTint = ozoneTint
+        self.sunHaloSize = sunHaloSize
+        self.sunHaloIntensity = sunHaloIntensity
+        self.sunHaloSoftness = sunHaloSoftness
+        self.cloudsEnabled = cloudsEnabled
+        self.cloudsCoverage = cloudsCoverage
+        self.cloudsSoftness = cloudsSoftness
+        self.cloudsScale = cloudsScale
+        self.cloudsSpeed = cloudsSpeed
+        self.cloudsWindDirection = cloudsWindDirection
+        self.cloudsHeight = cloudsHeight
+        self.cloudsThickness = cloudsThickness
+        self.cloudsBrightness = cloudsBrightness
+        self.cloudsSunInfluence = cloudsSunInfluence
         self.hdriHandle = hdriHandle
         self.iblEnvironmentHandle = iblEnvironmentHandle
         self.iblIrradianceHandle = iblIrradianceHandle
         self.iblPrefilteredHandle = iblPrefilteredHandle
         self.iblBrdfHandle = iblBrdfHandle
-        self.needsRegenerate = needsRegenerate
+        self.needsRebuild = needsRebuild
+        self.rebuildRequested = rebuildRequested
         self.realtimeUpdate = realtimeUpdate
-        self.lastRegenerateTime = lastRegenerateTime
+        self.lastRebuildTime = lastRebuildTime
     }
 }
 

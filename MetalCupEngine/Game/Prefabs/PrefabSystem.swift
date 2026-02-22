@@ -34,7 +34,7 @@ public final class PrefabSystem {
     }
 
     public func applyPrefabs(handles: Set<AssetHandle>, to scene: EngineScene) {
-        guard let database = Engine.assetDatabase else { return }
+        guard let database = scene.engineContext?.assetDatabase else { return }
         for handle in handles {
             guard let prefab = loadPrefab(handle: handle, database: database) else { continue }
             let updated = apply(prefab: prefab, prefabHandle: handle, to: scene)
@@ -193,7 +193,8 @@ public final class PrefabSystem {
                     direction: light.direction.toSIMD(),
                     range: light.range,
                     innerConeCos: light.innerConeCos,
-                    outerConeCos: light.outerConeCos
+                    outerConeCos: light.outerConeCos,
+                    castsShadows: light.castsShadows
                 ), to: entity)
             } else {
                 ecs.remove(LightComponent.self, from: entity)
@@ -234,10 +235,33 @@ public final class PrefabSystem {
                     turbidity: skyLight.turbidity,
                     azimuthDegrees: skyLight.azimuthDegrees,
                     elevationDegrees: skyLight.elevationDegrees,
+                    sunSizeDegrees: skyLight.sunSizeDegrees,
+                    zenithTint: skyLight.zenithTint.toSIMD(),
+                    horizonTint: skyLight.horizonTint.toSIMD(),
+                    gradientStrength: skyLight.gradientStrength,
+                    hazeDensity: skyLight.hazeDensity,
+                    hazeFalloff: skyLight.hazeFalloff,
+                    hazeHeight: skyLight.hazeHeight,
+                    ozoneStrength: skyLight.ozoneStrength,
+                    ozoneTint: skyLight.ozoneTint.toSIMD(),
+                    sunHaloSize: skyLight.sunHaloSize,
+                    sunHaloIntensity: skyLight.sunHaloIntensity,
+                    sunHaloSoftness: skyLight.sunHaloSoftness,
+                    cloudsEnabled: skyLight.cloudsEnabled,
+                    cloudsCoverage: skyLight.cloudsCoverage,
+                    cloudsSoftness: skyLight.cloudsSoftness,
+                    cloudsScale: skyLight.cloudsScale,
+                    cloudsSpeed: skyLight.cloudsSpeed,
+                    cloudsWindDirection: SIMD2<Float>(skyLight.cloudsWindX, skyLight.cloudsWindY),
+                    cloudsHeight: skyLight.cloudsHeight,
+                    cloudsThickness: skyLight.cloudsThickness,
+                    cloudsBrightness: skyLight.cloudsBrightness,
+                    cloudsSunInfluence: skyLight.cloudsSunInfluence,
                     hdriHandle: skyLight.hdriHandle,
-                    needsRegenerate: true,
+                    needsRebuild: true,
+                    rebuildRequested: false,
                     realtimeUpdate: skyLight.realtimeUpdate,
-                    lastRegenerateTime: 0.0
+                    lastRebuildTime: 0.0
                 ), to: entity)
             } else {
                 ecs.remove(SkyLightComponent.self, from: entity)

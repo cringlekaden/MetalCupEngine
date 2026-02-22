@@ -22,6 +22,7 @@ enum ShaderBindings {
         static let skyIntensity = 0
         static let outlineParams = 5
         static let gridParams = 6
+        static let shadowConstants = 7
     }
 
     enum FragmentTexture {
@@ -40,11 +41,15 @@ enum ShaderBindings {
         static let sheenColor = 12
         static let sheenIntensity = 13
         static let skybox = 14
+        static let shadowMap = 15
+        static let shadowMapSample = 16
     }
 
     enum FragmentSampler {
         static let linear = 0
         static let linearClamp = 1
+        static let shadowCompare = 2
+        static let shadowDepth = 3
     }
 
     enum PostProcessTexture {

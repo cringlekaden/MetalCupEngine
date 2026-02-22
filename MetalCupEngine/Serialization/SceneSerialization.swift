@@ -214,6 +214,7 @@ public struct LightComponentDTO: Codable {
     public var range: Float
     public var innerConeCos: Float
     public var outerConeCos: Float
+    public var castsShadows: Bool
 
     public init(
         schemaVersion: Int = 1,
@@ -222,7 +223,8 @@ public struct LightComponentDTO: Codable {
         direction: Vector3DTO,
         range: Float,
         innerConeCos: Float,
-        outerConeCos: Float
+        outerConeCos: Float,
+        castsShadows: Bool = false
     ) {
         self.schemaVersion = schemaVersion
         self.type = type
@@ -231,6 +233,42 @@ public struct LightComponentDTO: Codable {
         self.range = range
         self.innerConeCos = innerConeCos
         self.outerConeCos = outerConeCos
+        self.castsShadows = castsShadows
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        type = try container.decodeIfPresent(LightTypeDTO.self, forKey: .type) ?? .point
+        data = try container.decodeIfPresent(LightDataDTO.self, forKey: .data) ?? LightDataDTO(from: LightData())
+        direction = try container.decodeIfPresent(Vector3DTO.self, forKey: .direction) ?? Vector3DTO(.zero)
+        range = try container.decodeIfPresent(Float.self, forKey: .range) ?? 0.0
+        innerConeCos = try container.decodeIfPresent(Float.self, forKey: .innerConeCos) ?? 0.95
+        outerConeCos = try container.decodeIfPresent(Float.self, forKey: .outerConeCos) ?? 0.9
+        castsShadows = try container.decodeIfPresent(Bool.self, forKey: .castsShadows) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(type, forKey: .type)
+        try container.encode(data, forKey: .data)
+        try container.encode(direction, forKey: .direction)
+        try container.encode(range, forKey: .range)
+        try container.encode(innerConeCos, forKey: .innerConeCos)
+        try container.encode(outerConeCos, forKey: .outerConeCos)
+        try container.encode(castsShadows, forKey: .castsShadows)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case type
+        case data
+        case direction
+        case range
+        case innerConeCos
+        case outerConeCos
+        case castsShadows
     }
 }
 
@@ -348,6 +386,29 @@ public struct SkyLightComponentDTO: Codable {
     public var turbidity: Float
     public var azimuthDegrees: Float
     public var elevationDegrees: Float
+    public var sunSizeDegrees: Float
+    public var zenithTint: Vector3DTO
+    public var horizonTint: Vector3DTO
+    public var gradientStrength: Float
+    public var hazeDensity: Float
+    public var hazeFalloff: Float
+    public var hazeHeight: Float
+    public var ozoneStrength: Float
+    public var ozoneTint: Vector3DTO
+    public var sunHaloSize: Float
+    public var sunHaloIntensity: Float
+    public var sunHaloSoftness: Float
+    public var cloudsEnabled: Bool
+    public var cloudsCoverage: Float
+    public var cloudsSoftness: Float
+    public var cloudsScale: Float
+    public var cloudsSpeed: Float
+    public var cloudsWindX: Float
+    public var cloudsWindY: Float
+    public var cloudsHeight: Float
+    public var cloudsThickness: Float
+    public var cloudsBrightness: Float
+    public var cloudsSunInfluence: Float
     public var hdriHandle: AssetHandle?
     public var realtimeUpdate: Bool
 
@@ -360,6 +421,29 @@ public struct SkyLightComponentDTO: Codable {
         turbidity: Float,
         azimuthDegrees: Float,
         elevationDegrees: Float,
+        sunSizeDegrees: Float,
+        zenithTint: Vector3DTO,
+        horizonTint: Vector3DTO,
+        gradientStrength: Float,
+        hazeDensity: Float,
+        hazeFalloff: Float,
+        hazeHeight: Float,
+        ozoneStrength: Float,
+        ozoneTint: Vector3DTO,
+        sunHaloSize: Float,
+        sunHaloIntensity: Float,
+        sunHaloSoftness: Float,
+        cloudsEnabled: Bool,
+        cloudsCoverage: Float,
+        cloudsSoftness: Float,
+        cloudsScale: Float,
+        cloudsSpeed: Float,
+        cloudsWindX: Float,
+        cloudsWindY: Float,
+        cloudsHeight: Float,
+        cloudsThickness: Float,
+        cloudsBrightness: Float,
+        cloudsSunInfluence: Float,
         hdriHandle: AssetHandle?,
         realtimeUpdate: Bool
     ) {
@@ -371,8 +455,142 @@ public struct SkyLightComponentDTO: Codable {
         self.turbidity = turbidity
         self.azimuthDegrees = azimuthDegrees
         self.elevationDegrees = elevationDegrees
+        self.sunSizeDegrees = sunSizeDegrees
+        self.zenithTint = zenithTint
+        self.horizonTint = horizonTint
+        self.gradientStrength = gradientStrength
+        self.hazeDensity = hazeDensity
+        self.hazeFalloff = hazeFalloff
+        self.hazeHeight = hazeHeight
+        self.ozoneStrength = ozoneStrength
+        self.ozoneTint = ozoneTint
+        self.sunHaloSize = sunHaloSize
+        self.sunHaloIntensity = sunHaloIntensity
+        self.sunHaloSoftness = sunHaloSoftness
+        self.cloudsEnabled = cloudsEnabled
+        self.cloudsCoverage = cloudsCoverage
+        self.cloudsSoftness = cloudsSoftness
+        self.cloudsScale = cloudsScale
+        self.cloudsSpeed = cloudsSpeed
+        self.cloudsWindX = cloudsWindX
+        self.cloudsWindY = cloudsWindY
+        self.cloudsHeight = cloudsHeight
+        self.cloudsThickness = cloudsThickness
+        self.cloudsBrightness = cloudsBrightness
+        self.cloudsSunInfluence = cloudsSunInfluence
         self.hdriHandle = hdriHandle
         self.realtimeUpdate = realtimeUpdate
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = SkyLightComponent()
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        mode = try container.decodeIfPresent(UInt32.self, forKey: .mode) ?? defaults.mode.rawValue
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled
+        intensity = try container.decodeIfPresent(Float.self, forKey: .intensity) ?? defaults.intensity
+        skyTint = try container.decodeIfPresent(Vector3DTO.self, forKey: .skyTint) ?? Vector3DTO(defaults.skyTint)
+        turbidity = try container.decodeIfPresent(Float.self, forKey: .turbidity) ?? defaults.turbidity
+        azimuthDegrees = try container.decodeIfPresent(Float.self, forKey: .azimuthDegrees) ?? defaults.azimuthDegrees
+        elevationDegrees = try container.decodeIfPresent(Float.self, forKey: .elevationDegrees) ?? defaults.elevationDegrees
+        sunSizeDegrees = try container.decodeIfPresent(Float.self, forKey: .sunSizeDegrees) ?? defaults.sunSizeDegrees
+        zenithTint = try container.decodeIfPresent(Vector3DTO.self, forKey: .zenithTint) ?? Vector3DTO(defaults.zenithTint)
+        horizonTint = try container.decodeIfPresent(Vector3DTO.self, forKey: .horizonTint) ?? Vector3DTO(defaults.horizonTint)
+        gradientStrength = try container.decodeIfPresent(Float.self, forKey: .gradientStrength) ?? defaults.gradientStrength
+        hazeDensity = try container.decodeIfPresent(Float.self, forKey: .hazeDensity) ?? defaults.hazeDensity
+        hazeFalloff = try container.decodeIfPresent(Float.self, forKey: .hazeFalloff) ?? defaults.hazeFalloff
+        hazeHeight = try container.decodeIfPresent(Float.self, forKey: .hazeHeight) ?? defaults.hazeHeight
+        ozoneStrength = try container.decodeIfPresent(Float.self, forKey: .ozoneStrength) ?? defaults.ozoneStrength
+        ozoneTint = try container.decodeIfPresent(Vector3DTO.self, forKey: .ozoneTint) ?? Vector3DTO(defaults.ozoneTint)
+        sunHaloSize = try container.decodeIfPresent(Float.self, forKey: .sunHaloSize) ?? defaults.sunHaloSize
+        sunHaloIntensity = try container.decodeIfPresent(Float.self, forKey: .sunHaloIntensity) ?? defaults.sunHaloIntensity
+        sunHaloSoftness = try container.decodeIfPresent(Float.self, forKey: .sunHaloSoftness) ?? defaults.sunHaloSoftness
+        cloudsEnabled = try container.decodeIfPresent(Bool.self, forKey: .cloudsEnabled) ?? defaults.cloudsEnabled
+        cloudsCoverage = try container.decodeIfPresent(Float.self, forKey: .cloudsCoverage) ?? defaults.cloudsCoverage
+        cloudsSoftness = try container.decodeIfPresent(Float.self, forKey: .cloudsSoftness) ?? defaults.cloudsSoftness
+        cloudsScale = try container.decodeIfPresent(Float.self, forKey: .cloudsScale) ?? defaults.cloudsScale
+        cloudsSpeed = try container.decodeIfPresent(Float.self, forKey: .cloudsSpeed) ?? defaults.cloudsSpeed
+        cloudsWindX = try container.decodeIfPresent(Float.self, forKey: .cloudsWindX) ?? defaults.cloudsWindDirection.x
+        cloudsWindY = try container.decodeIfPresent(Float.self, forKey: .cloudsWindY) ?? defaults.cloudsWindDirection.y
+        cloudsHeight = try container.decodeIfPresent(Float.self, forKey: .cloudsHeight) ?? defaults.cloudsHeight
+        cloudsThickness = try container.decodeIfPresent(Float.self, forKey: .cloudsThickness) ?? defaults.cloudsThickness
+        cloudsBrightness = try container.decodeIfPresent(Float.self, forKey: .cloudsBrightness) ?? defaults.cloudsBrightness
+        cloudsSunInfluence = try container.decodeIfPresent(Float.self, forKey: .cloudsSunInfluence) ?? defaults.cloudsSunInfluence
+        hdriHandle = try container.decodeIfPresent(AssetHandle.self, forKey: .hdriHandle)
+        realtimeUpdate = try container.decodeIfPresent(Bool.self, forKey: .realtimeUpdate) ?? defaults.realtimeUpdate
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(intensity, forKey: .intensity)
+        try container.encode(skyTint, forKey: .skyTint)
+        try container.encode(turbidity, forKey: .turbidity)
+        try container.encode(azimuthDegrees, forKey: .azimuthDegrees)
+        try container.encode(elevationDegrees, forKey: .elevationDegrees)
+        try container.encode(sunSizeDegrees, forKey: .sunSizeDegrees)
+        try container.encode(zenithTint, forKey: .zenithTint)
+        try container.encode(horizonTint, forKey: .horizonTint)
+        try container.encode(gradientStrength, forKey: .gradientStrength)
+        try container.encode(hazeDensity, forKey: .hazeDensity)
+        try container.encode(hazeFalloff, forKey: .hazeFalloff)
+        try container.encode(hazeHeight, forKey: .hazeHeight)
+        try container.encode(ozoneStrength, forKey: .ozoneStrength)
+        try container.encode(ozoneTint, forKey: .ozoneTint)
+        try container.encode(sunHaloSize, forKey: .sunHaloSize)
+        try container.encode(sunHaloIntensity, forKey: .sunHaloIntensity)
+        try container.encode(sunHaloSoftness, forKey: .sunHaloSoftness)
+        try container.encode(cloudsEnabled, forKey: .cloudsEnabled)
+        try container.encode(cloudsCoverage, forKey: .cloudsCoverage)
+        try container.encode(cloudsSoftness, forKey: .cloudsSoftness)
+        try container.encode(cloudsScale, forKey: .cloudsScale)
+        try container.encode(cloudsSpeed, forKey: .cloudsSpeed)
+        try container.encode(cloudsWindX, forKey: .cloudsWindX)
+        try container.encode(cloudsWindY, forKey: .cloudsWindY)
+        try container.encode(cloudsHeight, forKey: .cloudsHeight)
+        try container.encode(cloudsThickness, forKey: .cloudsThickness)
+        try container.encode(cloudsBrightness, forKey: .cloudsBrightness)
+        try container.encode(cloudsSunInfluence, forKey: .cloudsSunInfluence)
+        try container.encode(hdriHandle, forKey: .hdriHandle)
+        try container.encode(realtimeUpdate, forKey: .realtimeUpdate)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case mode
+        case enabled
+        case intensity
+        case skyTint
+        case turbidity
+        case azimuthDegrees
+        case elevationDegrees
+        case sunSizeDegrees
+        case zenithTint
+        case horizonTint
+        case gradientStrength
+        case hazeDensity
+        case hazeFalloff
+        case hazeHeight
+        case ozoneStrength
+        case ozoneTint
+        case sunHaloSize
+        case sunHaloIntensity
+        case sunHaloSoftness
+        case cloudsEnabled
+        case cloudsCoverage
+        case cloudsSoftness
+        case cloudsScale
+        case cloudsSpeed
+        case cloudsWindX
+        case cloudsWindY
+        case cloudsHeight
+        case cloudsThickness
+        case cloudsBrightness
+        case cloudsSunInfluence
+        case hdriHandle
+        case realtimeUpdate
     }
 }
 
@@ -393,10 +611,10 @@ public struct RendererSettingsDTO: Codable {
     public var iblIntensity: Float
     public var iblResolutionOverride: UInt32
     public var perfFlags: UInt32
-    public var normalFlipYGlobal: UInt32
     public var iblFireflyClamp: Float
     public var iblFireflyClampEnabled: UInt32
     public var iblSampleMultiplier: Float
+    public var skyboxMipBias: Float
     public var iblSpecularLodExponent: Float
     public var iblSpecularLodBias: Float
     public var iblSpecularGrazingLodBias: Float
@@ -414,6 +632,7 @@ public struct RendererSettingsDTO: Codable {
     public var gridOpacity: Float
     public var gridFadeDistance: Float
     public var gridMajorLineEvery: Float
+    public var shadows: ShadowsSettingsDTO
 
     public init(schemaVersion: Int = 1, settings: RendererSettings) {
         self.schemaVersion = schemaVersion
@@ -432,10 +651,10 @@ public struct RendererSettingsDTO: Codable {
         self.iblIntensity = settings.iblIntensity
         self.iblResolutionOverride = settings.iblResolutionOverride
         self.perfFlags = settings.perfFlags
-        self.normalFlipYGlobal = settings.normalFlipYGlobal
         self.iblFireflyClamp = settings.iblFireflyClamp
         self.iblFireflyClampEnabled = settings.iblFireflyClampEnabled
         self.iblSampleMultiplier = settings.iblSampleMultiplier
+        self.skyboxMipBias = settings.skyboxMipBias
         self.iblSpecularLodExponent = settings.iblSpecularLodExponent
         self.iblSpecularLodBias = settings.iblSpecularLodBias
         self.iblSpecularGrazingLodBias = settings.iblSpecularGrazingLodBias
@@ -453,6 +672,7 @@ public struct RendererSettingsDTO: Codable {
         self.gridOpacity = settings.gridOpacity
         self.gridFadeDistance = settings.gridFadeDistance
         self.gridMajorLineEvery = settings.gridMajorLineEvery
+        self.shadows = ShadowsSettingsDTO(settings: settings.shadows)
     }
 
     public init(from decoder: Decoder) throws {
@@ -474,10 +694,10 @@ public struct RendererSettingsDTO: Codable {
         iblIntensity = try container.decodeIfPresent(Float.self, forKey: .iblIntensity) ?? defaults.iblIntensity
         iblResolutionOverride = try container.decodeIfPresent(UInt32.self, forKey: .iblResolutionOverride) ?? defaults.iblResolutionOverride
         perfFlags = try container.decodeIfPresent(UInt32.self, forKey: .perfFlags) ?? defaults.perfFlags
-        normalFlipYGlobal = try container.decodeIfPresent(UInt32.self, forKey: .normalFlipYGlobal) ?? defaults.normalFlipYGlobal
         iblFireflyClamp = try container.decodeIfPresent(Float.self, forKey: .iblFireflyClamp) ?? defaults.iblFireflyClamp
         iblFireflyClampEnabled = try container.decodeIfPresent(UInt32.self, forKey: .iblFireflyClampEnabled) ?? defaults.iblFireflyClampEnabled
         iblSampleMultiplier = try container.decodeIfPresent(Float.self, forKey: .iblSampleMultiplier) ?? defaults.iblSampleMultiplier
+        skyboxMipBias = try container.decodeIfPresent(Float.self, forKey: .skyboxMipBias) ?? defaults.skyboxMipBias
         iblSpecularLodExponent = try container.decodeIfPresent(Float.self, forKey: .iblSpecularLodExponent) ?? defaults.iblSpecularLodExponent
         iblSpecularLodBias = try container.decodeIfPresent(Float.self, forKey: .iblSpecularLodBias) ?? defaults.iblSpecularLodBias
         iblSpecularGrazingLodBias = try container.decodeIfPresent(Float.self, forKey: .iblSpecularGrazingLodBias) ?? defaults.iblSpecularGrazingLodBias
@@ -495,6 +715,7 @@ public struct RendererSettingsDTO: Codable {
         gridOpacity = try container.decodeIfPresent(Float.self, forKey: .gridOpacity) ?? defaults.gridOpacity
         gridFadeDistance = try container.decodeIfPresent(Float.self, forKey: .gridFadeDistance) ?? defaults.gridFadeDistance
         gridMajorLineEvery = try container.decodeIfPresent(Float.self, forKey: .gridMajorLineEvery) ?? defaults.gridMajorLineEvery
+        shadows = try container.decodeIfPresent(ShadowsSettingsDTO.self, forKey: .shadows) ?? ShadowsSettingsDTO(settings: defaults.shadows)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -515,10 +736,10 @@ public struct RendererSettingsDTO: Codable {
         try container.encode(iblIntensity, forKey: .iblIntensity)
         try container.encode(iblResolutionOverride, forKey: .iblResolutionOverride)
         try container.encode(perfFlags, forKey: .perfFlags)
-        try container.encode(normalFlipYGlobal, forKey: .normalFlipYGlobal)
         try container.encode(iblFireflyClamp, forKey: .iblFireflyClamp)
         try container.encode(iblFireflyClampEnabled, forKey: .iblFireflyClampEnabled)
         try container.encode(iblSampleMultiplier, forKey: .iblSampleMultiplier)
+        try container.encode(skyboxMipBias, forKey: .skyboxMipBias)
         try container.encode(iblSpecularLodExponent, forKey: .iblSpecularLodExponent)
         try container.encode(iblSpecularLodBias, forKey: .iblSpecularLodBias)
         try container.encode(iblSpecularGrazingLodBias, forKey: .iblSpecularGrazingLodBias)
@@ -536,6 +757,7 @@ public struct RendererSettingsDTO: Codable {
         try container.encode(gridOpacity, forKey: .gridOpacity)
         try container.encode(gridFadeDistance, forKey: .gridFadeDistance)
         try container.encode(gridMajorLineEvery, forKey: .gridMajorLineEvery)
+        try container.encode(shadows, forKey: .shadows)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -555,10 +777,10 @@ public struct RendererSettingsDTO: Codable {
         case iblIntensity
         case iblResolutionOverride
         case perfFlags
-        case normalFlipYGlobal
         case iblFireflyClamp
         case iblFireflyClampEnabled
         case iblSampleMultiplier
+        case skyboxMipBias
         case iblSpecularLodExponent
         case iblSpecularLodBias
         case iblSpecularGrazingLodBias
@@ -576,6 +798,7 @@ public struct RendererSettingsDTO: Codable {
         case gridOpacity
         case gridFadeDistance
         case gridMajorLineEvery
+        case shadows
     }
 
     public func makeRendererSettings() -> RendererSettings {
@@ -595,10 +818,10 @@ public struct RendererSettingsDTO: Codable {
         settings.iblIntensity = iblIntensity
         settings.iblResolutionOverride = iblResolutionOverride
         settings.perfFlags = perfFlags
-        settings.normalFlipYGlobal = normalFlipYGlobal
         settings.iblFireflyClamp = iblFireflyClamp
         settings.iblFireflyClampEnabled = iblFireflyClampEnabled
         settings.iblSampleMultiplier = iblSampleMultiplier
+        settings.skyboxMipBias = skyboxMipBias
         settings.iblSpecularLodExponent = iblSpecularLodExponent
         settings.iblSpecularLodBias = iblSpecularLodBias
         settings.iblSpecularGrazingLodBias = iblSpecularGrazingLodBias
@@ -616,7 +839,117 @@ public struct RendererSettingsDTO: Codable {
         settings.gridOpacity = gridOpacity
         settings.gridFadeDistance = gridFadeDistance
         settings.gridMajorLineEvery = gridMajorLineEvery
+        settings.shadows = shadows.toShadowsSettings()
         return settings
+    }
+}
+
+public struct ShadowsSettingsDTO: Codable {
+    public var enabled: UInt32
+    public var directionalEnabled: UInt32
+    public var shadowMapResolution: UInt32
+    public var cascadeCount: UInt32
+    public var cascadeSplitLambda: Float
+    public var depthBias: Float
+    public var normalBias: Float
+    public var pcfRadius: Float
+    public var filterMode: UInt32
+    public var maxShadowDistance: Float
+    public var fadeOutDistance: Float
+    public var pcssLightWorldSize: Float
+    public var pcssMinFilterRadiusTexels: Float
+    public var pcssMaxFilterRadiusTexels: Float
+    public var pcssBlockerSearchRadiusTexels: Float
+    public var pcssBlockerSamples: UInt32
+    public var pcssPCFSamples: UInt32
+    public var pcssNoiseEnabled: UInt32
+
+    public init(settings: ShadowsSettings) {
+        enabled = settings.enabled
+        directionalEnabled = settings.directionalEnabled
+        shadowMapResolution = settings.shadowMapResolution
+        cascadeCount = settings.cascadeCount
+        cascadeSplitLambda = settings.cascadeSplitLambda
+        depthBias = settings.depthBias
+        normalBias = settings.normalBias
+        pcfRadius = settings.pcfRadius
+        filterMode = settings.filterMode
+        maxShadowDistance = settings.maxShadowDistance
+        fadeOutDistance = settings.fadeOutDistance
+        pcssLightWorldSize = settings.pcssLightWorldSize
+        pcssMinFilterRadiusTexels = settings.pcssMinFilterRadiusTexels
+        pcssMaxFilterRadiusTexels = settings.pcssMaxFilterRadiusTexels
+        pcssBlockerSearchRadiusTexels = settings.pcssBlockerSearchRadiusTexels
+        pcssBlockerSamples = settings.pcssBlockerSamples
+        pcssPCFSamples = settings.pcssPCFSamples
+        pcssNoiseEnabled = settings.pcssNoiseEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = ShadowsSettings()
+        enabled = try container.decodeIfPresent(UInt32.self, forKey: .enabled) ?? defaults.enabled
+        directionalEnabled = try container.decodeIfPresent(UInt32.self, forKey: .directionalEnabled) ?? defaults.directionalEnabled
+        shadowMapResolution = try container.decodeIfPresent(UInt32.self, forKey: .shadowMapResolution) ?? defaults.shadowMapResolution
+        cascadeCount = try container.decodeIfPresent(UInt32.self, forKey: .cascadeCount) ?? defaults.cascadeCount
+        cascadeSplitLambda = try container.decodeIfPresent(Float.self, forKey: .cascadeSplitLambda) ?? defaults.cascadeSplitLambda
+        depthBias = try container.decodeIfPresent(Float.self, forKey: .depthBias) ?? defaults.depthBias
+        normalBias = try container.decodeIfPresent(Float.self, forKey: .normalBias) ?? defaults.normalBias
+        pcfRadius = try container.decodeIfPresent(Float.self, forKey: .pcfRadius) ?? defaults.pcfRadius
+        filterMode = try container.decodeIfPresent(UInt32.self, forKey: .filterMode) ?? defaults.filterMode
+        maxShadowDistance = try container.decodeIfPresent(Float.self, forKey: .maxShadowDistance) ?? defaults.maxShadowDistance
+        fadeOutDistance = try container.decodeIfPresent(Float.self, forKey: .fadeOutDistance) ?? defaults.fadeOutDistance
+        pcssLightWorldSize = try container.decodeIfPresent(Float.self, forKey: .pcssLightWorldSize) ?? defaults.pcssLightWorldSize
+        pcssMinFilterRadiusTexels = try container.decodeIfPresent(Float.self, forKey: .pcssMinFilterRadiusTexels) ?? defaults.pcssMinFilterRadiusTexels
+        pcssMaxFilterRadiusTexels = try container.decodeIfPresent(Float.self, forKey: .pcssMaxFilterRadiusTexels) ?? defaults.pcssMaxFilterRadiusTexels
+        pcssBlockerSearchRadiusTexels = try container.decodeIfPresent(Float.self, forKey: .pcssBlockerSearchRadiusTexels) ?? defaults.pcssBlockerSearchRadiusTexels
+        pcssBlockerSamples = try container.decodeIfPresent(UInt32.self, forKey: .pcssBlockerSamples) ?? defaults.pcssBlockerSamples
+        pcssPCFSamples = try container.decodeIfPresent(UInt32.self, forKey: .pcssPCFSamples) ?? defaults.pcssPCFSamples
+        pcssNoiseEnabled = try container.decodeIfPresent(UInt32.self, forKey: .pcssNoiseEnabled) ?? defaults.pcssNoiseEnabled
+    }
+
+    public func toShadowsSettings() -> ShadowsSettings {
+        var settings = ShadowsSettings()
+        settings.enabled = enabled
+        settings.directionalEnabled = directionalEnabled
+        settings.shadowMapResolution = shadowMapResolution
+        settings.cascadeCount = cascadeCount
+        settings.cascadeSplitLambda = cascadeSplitLambda
+        settings.depthBias = depthBias
+        settings.normalBias = normalBias
+        settings.pcfRadius = pcfRadius
+        settings.filterMode = filterMode
+        settings.maxShadowDistance = maxShadowDistance
+        settings.fadeOutDistance = fadeOutDistance
+        settings.pcssLightWorldSize = pcssLightWorldSize
+        settings.pcssMinFilterRadiusTexels = pcssMinFilterRadiusTexels
+        settings.pcssMaxFilterRadiusTexels = pcssMaxFilterRadiusTexels
+        settings.pcssBlockerSearchRadiusTexels = pcssBlockerSearchRadiusTexels
+        settings.pcssBlockerSamples = pcssBlockerSamples
+        settings.pcssPCFSamples = pcssPCFSamples
+        settings.pcssNoiseEnabled = pcssNoiseEnabled
+        return settings
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case directionalEnabled
+        case shadowMapResolution
+        case cascadeCount
+        case cascadeSplitLambda
+        case depthBias
+        case normalBias
+        case pcfRadius
+        case filterMode
+        case maxShadowDistance
+        case fadeOutDistance
+        case pcssLightWorldSize
+        case pcssMinFilterRadiusTexels
+        case pcssMaxFilterRadiusTexels
+        case pcssBlockerSearchRadiusTexels
+        case pcssBlockerSamples
+        case pcssPCFSamples
+        case pcssNoiseEnabled
     }
 }
 
@@ -809,7 +1142,8 @@ public struct MaterialDTO: Codable {
 
 public enum SceneSerializer {
     public static func save(scene: EngineScene, to url: URL) throws {
-        let document = scene.toDocument(rendererSettingsOverride: RendererSettingsDTO(settings: Renderer.settings))
+        let settings = scene.engineContext?.rendererSettings ?? RendererSettings()
+        let document = scene.toDocument(rendererSettingsOverride: RendererSettingsDTO(settings: settings))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(document)

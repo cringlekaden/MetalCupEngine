@@ -14,19 +14,21 @@ public struct PickingRequest {
     }
 }
 
-public enum PickingSystem {
-    private static var pendingRequest: PickingRequest?
-    private static var pickIdToEntity: [UInt32: Entity] = [:]
-    private static var entityIdToPickId: [UUID: UInt32] = [:]
-    private static var nextPickId: UInt32 = 1
+public final class PickingSystem {
+    private var pendingRequest: PickingRequest?
+    private var pickIdToEntity: [UInt32: Entity] = [:]
+    private var entityIdToPickId: [UUID: UInt32] = [:]
+    private var nextPickId: UInt32 = 1
 
-    public static func resetMapping() {
+    public init() {}
+
+    public func resetMapping() {
         pickIdToEntity.removeAll(keepingCapacity: true)
         entityIdToPickId.removeAll(keepingCapacity: true)
         nextPickId = 1
     }
 
-    public static func assignPickId(for entity: Entity) -> UInt32 {
+    public func assignPickId(for entity: Entity) -> UInt32 {
         if let existing = entityIdToPickId[entity.id] {
             return existing
         }
@@ -37,25 +39,25 @@ public enum PickingSystem {
         return id
     }
 
-    public static func entity(for pickId: UInt32) -> Entity? {
+    public func entity(for pickId: UInt32) -> Entity? {
         pickIdToEntity[pickId]
     }
 
-    public static func pickId(for entityId: UUID) -> UInt32 {
+    public func pickId(for entityId: UUID) -> UInt32 {
         entityIdToPickId[entityId] ?? 0
     }
 
-    public static func requestPick(pixel: SIMD2<Int>, mask: LayerMask) {
+    public func requestPick(pixel: SIMD2<Int>, mask: LayerMask) {
         pendingRequest = PickingRequest(pixel: pixel, mask: mask)
     }
 
-    public static func consumeRequest() -> PickingRequest? {
+    public func consumeRequest() -> PickingRequest? {
         let request = pendingRequest
         pendingRequest = nil
         return request
     }
 
-    public static func enqueueReadback(
+    public func enqueueReadback(
         request: PickingRequest,
         pickTexture: MTLTexture,
         readbackBuffer: MTLBuffer,

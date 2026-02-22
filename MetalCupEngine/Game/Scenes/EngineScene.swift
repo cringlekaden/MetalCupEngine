@@ -9,6 +9,7 @@ public class EngineScene {
     public let ecs: SceneECS
     public let runtime = SceneRuntime()
     public var prefabSystem: PrefabSystem?
+    public weak var engineContext: EngineContext?
 
     public let id: UUID
     public private(set) var name: String
@@ -19,7 +20,7 @@ public class EngineScene {
     private var _cachedBatchFrameToken: UInt64 = UInt64.max
     private var lastFrameContext: FrameContext?
 
-    private static var debugFrameCounter: UInt64 = 0
+    private var debugFrameCounter: UInt64 = 0
 
     public var environmentMapHandle: AssetHandle?
 
@@ -27,34 +28,37 @@ public class EngineScene {
                 name: String,
                 environmentMapHandle: AssetHandle?,
                 prefabSystem: PrefabSystem? = nil,
+                engineContext: EngineContext? = nil,
                 shouldBuildScene: Bool = true) {
         self.id = id
         self.name = name
         self.environmentMapHandle = environmentMapHandle
         self.ecs = SceneECS()
         self.prefabSystem = prefabSystem
+        self.engineContext = engineContext
         if shouldBuildScene {
             buildScene()
         }
     }
 
     public func onUpdate(frame: FrameContext, isPlaying: Bool = true, isPaused: Bool = false) {
-        EngineScene.debugFrameCounter &+= 1
+        debugFrameCounter &+= 1
         lastFrameContext = frame
         // Update order: camera -> scene constants -> sky system -> scene update -> light sync.
         ensureCameraEntity()
         updateCamera(isPlaying: isPlaying, frame: frame)
         _sceneConstants.totalGameTime = frame.time.totalTime
+        let assetManager = engineContext?.assets
         let hasEnvironment: Bool = {
             guard let (_, sky) = ecs.activeSkyLight(), sky.enabled else { return false }
             switch sky.mode {
             case .hdri:
-                return sky.hdriHandle.flatMap { AssetManager.texture(handle: $0) } != nil
+                return sky.hdriHandle.flatMap { assetManager?.texture(handle: $0) } != nil
             case .procedural:
                 return true
             }
         }()
-        let settings = Renderer.settings
+        let settings = engineContext?.rendererSettings ?? RendererSettings()
         let skyIntensity = ecs.activeSkyLight()?.1.intensity ?? 1.0
         let iblIntensity = (hasEnvironment && settings.iblEnabled != 0) ? settings.iblIntensity * skyIntensity : 0.0
         _sceneConstants.cameraPositionAndIBL.w = iblIntensity
@@ -89,7 +93,10 @@ public class EngineScene {
 
     @discardableResult
     public func render(view: SceneView, context: RenderContext) -> RenderOutputs {
-        let storage = RendererFrameContextStorage()
+        guard let engineContext else {
+            return RenderOutputs(color: context.colorTarget, depth: context.depthTarget, pickingId: context.idTarget)
+        }
+        let storage = RendererFrameContextStorage(engineContext: engineContext)
         let frameContext = storage.beginFrame()
         return render(view: view, context: context, frameContext: frameContext)
     }
@@ -105,7 +112,8 @@ public class EngineScene {
     }
 
     public func renderPreview(encoder: MTLRenderCommandEncoder, cameraEntity: Entity, viewportSize: SIMD2<Float>) {
-        let storage = RendererFrameContextStorage()
+        guard let engineContext else { return }
+        let storage = RendererFrameContextStorage(engineContext: engineContext)
         let frameContext = storage.beginFrame()
         renderPreview(encoder: encoder, cameraEntity: cameraEntity, viewportSize: viewportSize, frameContext: frameContext)
     }
@@ -202,7 +210,8 @@ public class EngineScene {
                                 direction: Vector3DTO(component.direction),
                                 range: component.range,
                                 innerConeCos: component.innerConeCos,
-                                outerConeCos: component.outerConeCos
+                                outerConeCos: component.outerConeCos,
+                                castsShadows: component.castsShadows
                             )
                         }
                         : nil,
@@ -225,6 +234,29 @@ public class EngineScene {
                                 turbidity: component.turbidity,
                                 azimuthDegrees: component.azimuthDegrees,
                                 elevationDegrees: component.elevationDegrees,
+                                sunSizeDegrees: component.sunSizeDegrees,
+                                zenithTint: Vector3DTO(component.zenithTint),
+                                horizonTint: Vector3DTO(component.horizonTint),
+                                gradientStrength: component.gradientStrength,
+                                hazeDensity: component.hazeDensity,
+                                hazeFalloff: component.hazeFalloff,
+                                hazeHeight: component.hazeHeight,
+                                ozoneStrength: component.ozoneStrength,
+                                ozoneTint: Vector3DTO(component.ozoneTint),
+                                sunHaloSize: component.sunHaloSize,
+                                sunHaloIntensity: component.sunHaloIntensity,
+                                sunHaloSoftness: component.sunHaloSoftness,
+                                cloudsEnabled: component.cloudsEnabled,
+                                cloudsCoverage: component.cloudsCoverage,
+                                cloudsSoftness: component.cloudsSoftness,
+                                cloudsScale: component.cloudsScale,
+                                cloudsSpeed: component.cloudsSpeed,
+                                cloudsWindX: component.cloudsWindDirection.x,
+                                cloudsWindY: component.cloudsWindDirection.y,
+                                cloudsHeight: component.cloudsHeight,
+                                cloudsThickness: component.cloudsThickness,
+                                cloudsBrightness: component.cloudsBrightness,
+                                cloudsSunInfluence: component.cloudsSunInfluence,
                                 hdriHandle: component.hdriHandle,
                                 realtimeUpdate: component.realtimeUpdate
                             )
@@ -266,7 +298,8 @@ public class EngineScene {
                         direction: Vector3DTO(component.direction),
                         range: component.range,
                         innerConeCos: component.innerConeCos,
-                        outerConeCos: component.outerConeCos
+                        outerConeCos: component.outerConeCos,
+                        castsShadows: component.castsShadows
                     )
                 },
                 lightOrbit: ecs.get(LightOrbitComponent.self, for: entity).map { component in
@@ -287,6 +320,29 @@ public class EngineScene {
                         turbidity: component.turbidity,
                         azimuthDegrees: component.azimuthDegrees,
                         elevationDegrees: component.elevationDegrees,
+                        sunSizeDegrees: component.sunSizeDegrees,
+                        zenithTint: Vector3DTO(component.zenithTint),
+                        horizonTint: Vector3DTO(component.horizonTint),
+                        gradientStrength: component.gradientStrength,
+                        hazeDensity: component.hazeDensity,
+                        hazeFalloff: component.hazeFalloff,
+                        hazeHeight: component.hazeHeight,
+                        ozoneStrength: component.ozoneStrength,
+                        ozoneTint: Vector3DTO(component.ozoneTint),
+                        sunHaloSize: component.sunHaloSize,
+                        sunHaloIntensity: component.sunHaloIntensity,
+                        sunHaloSoftness: component.sunHaloSoftness,
+                        cloudsEnabled: component.cloudsEnabled,
+                        cloudsCoverage: component.cloudsCoverage,
+                        cloudsSoftness: component.cloudsSoftness,
+                        cloudsScale: component.cloudsScale,
+                        cloudsSpeed: component.cloudsSpeed,
+                        cloudsWindX: component.cloudsWindDirection.x,
+                        cloudsWindY: component.cloudsWindDirection.y,
+                        cloudsHeight: component.cloudsHeight,
+                        cloudsThickness: component.cloudsThickness,
+                        cloudsBrightness: component.cloudsBrightness,
+                        cloudsSunInfluence: component.cloudsSunInfluence,
                         hdriHandle: component.hdriHandle,
                         realtimeUpdate: component.realtimeUpdate
                     )
@@ -359,9 +415,13 @@ public class EngineScene {
                         direction: light.direction.toSIMD(),
                         range: light.range,
                         innerConeCos: light.innerConeCos,
-                        outerConeCos: light.outerConeCos
+                        outerConeCos: light.outerConeCos,
+                        castsShadows: light.castsShadows
                     )
                     ecs.add(component, to: entity)
+#if DEBUG
+                    MC_ASSERT(component.castsShadows == light.castsShadows, "Light castsShadows mismatch after load.")
+#endif
                 }
                 if let lightOrbit = entityDoc.components.lightOrbit {
                     ecs.add(lightOrbit.toComponent(), to: entity)
@@ -381,10 +441,33 @@ public class EngineScene {
                         turbidity: skyLight.turbidity,
                         azimuthDegrees: skyLight.azimuthDegrees,
                         elevationDegrees: skyLight.elevationDegrees,
-                        hdriHandle: skyLight.hdriHandle,
-                        needsRegenerate: true,
+                    sunSizeDegrees: skyLight.sunSizeDegrees,
+                    zenithTint: skyLight.zenithTint.toSIMD(),
+                    horizonTint: skyLight.horizonTint.toSIMD(),
+                    gradientStrength: skyLight.gradientStrength,
+                    hazeDensity: skyLight.hazeDensity,
+                    hazeFalloff: skyLight.hazeFalloff,
+                    hazeHeight: skyLight.hazeHeight,
+                    ozoneStrength: skyLight.ozoneStrength,
+                    ozoneTint: skyLight.ozoneTint.toSIMD(),
+                    sunHaloSize: skyLight.sunHaloSize,
+                    sunHaloIntensity: skyLight.sunHaloIntensity,
+                    sunHaloSoftness: skyLight.sunHaloSoftness,
+                    cloudsEnabled: skyLight.cloudsEnabled,
+                    cloudsCoverage: skyLight.cloudsCoverage,
+                    cloudsSoftness: skyLight.cloudsSoftness,
+                    cloudsScale: skyLight.cloudsScale,
+                    cloudsSpeed: skyLight.cloudsSpeed,
+                    cloudsWindDirection: SIMD2<Float>(skyLight.cloudsWindX, skyLight.cloudsWindY),
+                    cloudsHeight: skyLight.cloudsHeight,
+                    cloudsThickness: skyLight.cloudsThickness,
+                    cloudsBrightness: skyLight.cloudsBrightness,
+                    cloudsSunInfluence: skyLight.cloudsSunInfluence,
+                    hdriHandle: skyLight.hdriHandle,
+                        needsRebuild: true,
+                        rebuildRequested: false,
                         realtimeUpdate: skyLight.realtimeUpdate,
-                        lastRegenerateTime: 0.0
+                        lastRebuildTime: 0.0
                     )
                     ecs.add(component, to: entity)
                 }
@@ -428,7 +511,8 @@ public class EngineScene {
                     direction: light.direction.toSIMD(),
                     range: light.range,
                     innerConeCos: light.innerConeCos,
-                    outerConeCos: light.outerConeCos
+                    outerConeCos: light.outerConeCos,
+                    castsShadows: light.castsShadows
                 )
                 ecs.add(component, to: entity)
             }
@@ -450,10 +534,33 @@ public class EngineScene {
                     turbidity: skyLight.turbidity,
                     azimuthDegrees: skyLight.azimuthDegrees,
                     elevationDegrees: skyLight.elevationDegrees,
+                    sunSizeDegrees: skyLight.sunSizeDegrees,
+                    zenithTint: skyLight.zenithTint.toSIMD(),
+                    horizonTint: skyLight.horizonTint.toSIMD(),
+                    gradientStrength: skyLight.gradientStrength,
+                    hazeDensity: skyLight.hazeDensity,
+                    hazeFalloff: skyLight.hazeFalloff,
+                    hazeHeight: skyLight.hazeHeight,
+                    ozoneStrength: skyLight.ozoneStrength,
+                    ozoneTint: skyLight.ozoneTint.toSIMD(),
+                    sunHaloSize: skyLight.sunHaloSize,
+                    sunHaloIntensity: skyLight.sunHaloIntensity,
+                    sunHaloSoftness: skyLight.sunHaloSoftness,
+                    cloudsEnabled: skyLight.cloudsEnabled,
+                    cloudsCoverage: skyLight.cloudsCoverage,
+                    cloudsSoftness: skyLight.cloudsSoftness,
+                    cloudsScale: skyLight.cloudsScale,
+                    cloudsSpeed: skyLight.cloudsSpeed,
+                    cloudsWindDirection: SIMD2<Float>(skyLight.cloudsWindX, skyLight.cloudsWindY),
+                    cloudsHeight: skyLight.cloudsHeight,
+                    cloudsThickness: skyLight.cloudsThickness,
+                    cloudsBrightness: skyLight.cloudsBrightness,
+                    cloudsSunInfluence: skyLight.cloudsSunInfluence,
                     hdriHandle: skyLight.hdriHandle,
-                    needsRegenerate: true,
+                    needsRebuild: true,
+                    rebuildRequested: false,
                     realtimeUpdate: skyLight.realtimeUpdate,
-                    lastRegenerateTime: 0.0
+                    lastRebuildTime: 0.0
                 )
                 ecs.add(component, to: entity)
             }
@@ -554,10 +661,33 @@ public class EngineScene {
                     turbidity: skyLight.turbidity,
                     azimuthDegrees: skyLight.azimuthDegrees,
                     elevationDegrees: skyLight.elevationDegrees,
+                    sunSizeDegrees: skyLight.sunSizeDegrees,
+                    zenithTint: skyLight.zenithTint.toSIMD(),
+                    horizonTint: skyLight.horizonTint.toSIMD(),
+                    gradientStrength: skyLight.gradientStrength,
+                    hazeDensity: skyLight.hazeDensity,
+                    hazeFalloff: skyLight.hazeFalloff,
+                    hazeHeight: skyLight.hazeHeight,
+                    ozoneStrength: skyLight.ozoneStrength,
+                    ozoneTint: skyLight.ozoneTint.toSIMD(),
+                    sunHaloSize: skyLight.sunHaloSize,
+                    sunHaloIntensity: skyLight.sunHaloIntensity,
+                    sunHaloSoftness: skyLight.sunHaloSoftness,
+                    cloudsEnabled: skyLight.cloudsEnabled,
+                    cloudsCoverage: skyLight.cloudsCoverage,
+                    cloudsSoftness: skyLight.cloudsSoftness,
+                    cloudsScale: skyLight.cloudsScale,
+                    cloudsSpeed: skyLight.cloudsSpeed,
+                    cloudsWindDirection: SIMD2<Float>(skyLight.cloudsWindX, skyLight.cloudsWindY),
+                    cloudsHeight: skyLight.cloudsHeight,
+                    cloudsThickness: skyLight.cloudsThickness,
+                    cloudsBrightness: skyLight.cloudsBrightness,
+                    cloudsSunInfluence: skyLight.cloudsSunInfluence,
                     hdriHandle: skyLight.hdriHandle,
-                    needsRegenerate: true,
+                    needsRebuild: true,
+                    rebuildRequested: false,
                     realtimeUpdate: skyLight.realtimeUpdate,
-                    lastRegenerateTime: 0.0
+                    lastRebuildTime: 0.0
                 )
                 ecs.add(component, to: entity)
             }
@@ -586,7 +716,13 @@ public class EngineScene {
             _editorCameraController.update(transform: &active.transform, frame: frame)
             ecs.add(active.transform, to: active.entity)
         }
-        applyCameraConstants(transform: active.transform, camera: active.camera, aspectRatio: Renderer.AspectRatio)
+        let viewportSize = frame.input.viewportSize
+        let aspectRatio: Float = {
+            let width = max(1.0, viewportSize.x)
+            let height = max(1.0, viewportSize.y)
+            return height == 0 ? 1.0 : width / height
+        }()
+        applyCameraConstants(transform: active.transform, camera: active.camera, aspectRatio: aspectRatio)
     }
 
     private func resolveActiveCamera(isPlaying: Bool) -> (entity: Entity, transform: TransformComponent, camera: CameraComponent, shouldUpdateEditorCamera: Bool)? {

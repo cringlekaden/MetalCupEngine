@@ -14,14 +14,14 @@ public enum OutlineSystem {
         clearEncoder.label = "Selection Outline Clear"
         clearEncoder.endEncoding()
 
-        if Renderer.settings.outlineEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) {
+        if frame.renderer.settings.outlineEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) {
             return
         }
         guard let pickId = frame.resources.texture(.pickId) else { return }
-        guard let quadMesh = AssetManager.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
+        guard let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
         guard let selectedId = frame.sceneView.selectedEntityIds.first else { return }
 
-        let selectedPickId = PickingSystem.pickId(for: selectedId)
+        let selectedPickId = frame.engineContext.pickingSystem.pickId(for: selectedId)
         if selectedPickId == 0 { return }
 
         let pass = RenderPassBuilder.color(texture: outline, clearColor: MTLClearColorMake(0, 0, 0, 0))
@@ -34,14 +34,13 @@ public enum OutlineSystem {
         }
 
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(outline))
-        encoder.setRenderPipelineState(Graphics.RenderPipelineStates[.SelectionOutline])
+        encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates[.SelectionOutline])
         encoder.setCullMode(.none)
-        encoder.setFragmentSamplerState(Graphics.SamplerStates[.LinearClampToZero], index: FragmentSamplerIndex.linearClamp)
         encoder.setFragmentTexture(pickId, index: PostProcessTextureIndex.source)
 
         var params = OutlineParams()
         params.selectedId = selectedPickId
-        let thickness = max(1, min(4, Int(Renderer.settings.outlineThickness)))
+        let thickness = max(1, min(4, Int(frame.renderer.settings.outlineThickness)))
         params.thickness = UInt32(thickness)
         params.texelSize = SIMD2<Float>(1.0 / Float(pickId.width), 1.0 / Float(pickId.height))
         encoder.setFragmentBytes(&params, length: OutlineParams.stride, index: FragmentBufferIndex.outlineParams)

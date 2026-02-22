@@ -5,18 +5,23 @@
 import Foundation
 import MetalKit
 
-public enum ResourceRegistry {
+public final class ResourceRegistry {
     // The MTLLibrary that contains compiled shader functions (usually from the app target)
-    public static var defaultLibrary: MTLLibrary?
+    public var defaultLibrary: MTLLibrary?
 
     // Root URL for app resources (e.g., /Assets/Resources/). If nil, fall back to Bundle.main.
-    public static var resourcesRootURL: URL?
+    public var resourcesRootURL: URL?
 
     // Optional shader roots (highest priority) for runtime compilation.
-    public static var shaderRootURLs: [URL] = []
+    public var shaderRootURLs: [URL] = []
+
+    public private(set) var lastShaderCompileError: String? = nil
+    private var didAttemptRuntimeCompile: Bool = false
+
+    public init() {}
 
     // Resolve a resource URL by name and extension. Looks under resourcesRootURL first, then Bundle.main.
-    public static func url(forResource name: String, withExtension ext: String?) -> URL? {
+    public func url(forResource name: String, withExtension ext: String?) -> URL? {
         if let root = resourcesRootURL {
             let url = ext != nil ? root.appendingPathComponent("\(name).\(ext!)") : root.appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: url.path) {
@@ -26,12 +31,11 @@ public enum ResourceRegistry {
         return Bundle.main.url(forResource: name, withExtension: ext)
     }
 
-    private static var didAttemptRuntimeCompile: Bool = false
-
-    public static func buildDefaultLibraryIfNeeded(device: MTLDevice, force: Bool = false) {
+    public func buildDefaultLibraryIfNeeded(device: MTLDevice, force: Bool = false) {
         if defaultLibrary != nil && !force { return }
         if let lib = loadLibraryFromBundle(device: device) {
             defaultLibrary = lib
+            lastShaderCompileError = nil
             return
         }
         guard let lib = buildLibraryFromResources(device: device) else {
@@ -43,10 +47,11 @@ public enum ResourceRegistry {
             return
         }
         defaultLibrary = lib
+        lastShaderCompileError = nil
     }
 
-    public static func resolveFunction(_ name: String, device: MTLDevice) -> MTLFunction? {
-        let primary = defaultLibrary ?? Engine.DefaultLibrary
+    public func resolveFunction(_ name: String, device: MTLDevice, fallbackLibrary: MTLLibrary?) -> MTLFunction? {
+        let primary = defaultLibrary ?? fallbackLibrary
         if let fn = primary?.makeFunction(name: name) {
             return fn
         }
@@ -56,11 +61,11 @@ public enum ResourceRegistry {
             buildDefaultLibraryIfNeeded(device: device, force: true)
         }
 
-        let fallback = defaultLibrary ?? Engine.DefaultLibrary
+        let fallback = defaultLibrary ?? fallbackLibrary
         return fallback?.makeFunction(name: name)
     }
 
-    private static func buildLibraryFromResources(device: MTLDevice) -> MTLLibrary? {
+    private func buildLibraryFromResources(device: MTLDevice) -> MTLLibrary? {
         var candidateRoots: [URL] = []
         if let root = resourcesRootURL {
             candidateRoots.append(root)
@@ -112,8 +117,10 @@ public enum ResourceRegistry {
             }
             return try device.makeLibrary(source: combinedSource, options: options)
         } catch {
+            let errorMessage = "Failed to compile shader library: \(error)"
+            lastShaderCompileError = errorMessage
             EngineLoggerContext.log(
-                "Failed to compile shader library: \(error)",
+                errorMessage,
                 level: .error,
                 category: .renderer
             )
@@ -121,7 +128,7 @@ public enum ResourceRegistry {
         }
     }
 
-    private static func buildFileLookup(shaderFiles: [URL]) -> [String: URL] {
+    private func buildFileLookup(shaderFiles: [URL]) -> [String: URL] {
         var lookup: [String: URL] = [:]
         for url in shaderFiles {
             lookup[url.lastPathComponent] = url
@@ -129,7 +136,7 @@ public enum ResourceRegistry {
         return lookup
     }
 
-    private static func expandIncludes(url: URL, fileLookup: [String: URL], includedFiles: inout Set<String>) -> String {
+    private func expandIncludes(url: URL, fileLookup: [String: URL], includedFiles: inout Set<String>) -> String {
         if includedFiles.contains(url.path) { return "" }
         includedFiles.insert(url.path)
 
@@ -152,7 +159,7 @@ public enum ResourceRegistry {
         return output
     }
 
-    private static func parseInclude(from line: String) -> String? {
+    private func parseInclude(from line: String) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("#include") else { return nil }
         guard let quoteStart = trimmed.firstIndex(of: "\""),
@@ -163,7 +170,7 @@ public enum ResourceRegistry {
         return name.isEmpty ? nil : String(name)
     }
 
-    private static func loadLibraryFromBundle(device: MTLDevice) -> MTLLibrary? {
+    private func loadLibraryFromBundle(device: MTLDevice) -> MTLLibrary? {
         let fm = FileManager.default
         for root in shaderRootURLs {
             if let lib = loadLibrary(from: root, device: device) {
@@ -192,7 +199,7 @@ public enum ResourceRegistry {
         return nil
     }
 
-    private static func loadLibrary(from directory: URL, device: MTLDevice) -> MTLLibrary? {
+    private func loadLibrary(from directory: URL, device: MTLDevice) -> MTLLibrary? {
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
             return nil

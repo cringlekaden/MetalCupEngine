@@ -11,11 +11,11 @@ public enum ClearColor {
     static let Black = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
 }
 
-class Preferences {
-    public static var clearColor : MTLClearColor = ClearColor.White
-    public static var HDRPixelFormat: MTLPixelFormat = .rgba16Float
-    public static var sRGBPixelFormat: MTLPixelFormat = .bgra8Unorm_srgb
-    public static var defaultColorPixelFormat: MTLPixelFormat = .bgra8Unorm
-    public static var defaultDepthPixelFormat: MTLPixelFormat = .depth32Float
-    public static var isWireframeEnabled: Bool = false
+public final class Preferences {
+    public var clearColor: MTLClearColor = ClearColor.White
+    public var HDRPixelFormat: MTLPixelFormat = .rgba16Float
+    public var sRGBPixelFormat: MTLPixelFormat = .bgra8Unorm_srgb
+    public var defaultColorPixelFormat: MTLPixelFormat = .bgra8Unorm
+    public var defaultDepthPixelFormat: MTLPixelFormat = .depth32Float
+    public var isWireframeEnabled: Bool = false
 }

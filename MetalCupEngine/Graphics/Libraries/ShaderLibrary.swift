@@ -34,11 +34,25 @@ public enum ShaderType {
 }
 
 public class ShaderLibrary: Library<ShaderType, MTLFunction> {
-    
     private var _library: [ShaderType: Shader] = [:]
-    
+    private let resourceRegistry: ResourceRegistry
+    private let device: MTLDevice
+    private let fallbackLibrary: MTLLibrary?
+
+    public init(resourceRegistry: ResourceRegistry, device: MTLDevice, fallbackLibrary: MTLLibrary?) {
+        self.resourceRegistry = resourceRegistry
+        self.device = device
+        self.fallbackLibrary = fallbackLibrary
+    }
+
     public func register(_ type: ShaderType, name: String, functionName: String) {
-        _library[type] = Shader(name: name, functionName: functionName)
+        _library[type] = Shader(
+            name: name,
+            functionName: functionName,
+            resourceRegistry: resourceRegistry,
+            device: device,
+            fallbackLibrary: fallbackLibrary
+        )
     }
 
     public func registerDefaults() {
@@ -68,7 +82,7 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.GridFragment, name: "Grid Fragment", functionName: "fragment_grid")
         register(.OutlineFragment, name: "Outline Fragment", functionName: "fragment_outline_mask")
     }
-    
+
     override subscript(_ type: ShaderType)->MTLFunction {
         guard let fn = _library[type]?.function else {
             fatalError("ShaderLibrary: shader for \(type) not registered. Register shaders before building pipeline states.")
@@ -78,12 +92,14 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
 }
 
 public class Shader {
-    
     var function: MTLFunction!
-    
-    init(name: String, functionName: String) {
-        let fn = ResourceRegistry.resolveFunction(functionName, device: Engine.Device)
+
+    init(name: String, functionName: String, resourceRegistry: ResourceRegistry, device: MTLDevice, fallbackLibrary: MTLLibrary?) {
+        let fn = resourceRegistry.resolveFunction(functionName, device: device, fallbackLibrary: fallbackLibrary)
         guard let resolved = fn else {
+            if let compileError = resourceRegistry.lastShaderCompileError {
+                fatalError("Shader '\(functionName)' not found. Metal compile error: \(compileError)")
+            }
             fatalError("Shader '\(functionName)' not found. Ensure the .metal file is compiled into the app target or runtime shader library.")
         }
         self.function = resolved

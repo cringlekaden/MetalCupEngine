@@ -14,10 +14,7 @@ public class LightManager {
     
     func setLightData(_ renderCommandEncoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {
         let buffers = frameContext.uploadLightData(_lightData)
-        guard let countBuffer = buffers.countBuffer else { return }
-        renderCommandEncoder.setFragmentBuffer(countBuffer, offset: 0, index: FragmentBufferIndex.lightCount)
-        if let dataBuffer = buffers.dataBuffer {
-            renderCommandEncoder.setFragmentBuffer(dataBuffer, offset: 0, index: FragmentBufferIndex.lightData)
-        }
+        renderCommandEncoder.setFragmentBuffer(buffers.countBuffer, offset: 0, index: FragmentBufferIndex.lightCount)
+        renderCommandEncoder.setFragmentBuffer(buffers.dataBuffer, offset: 0, index: FragmentBufferIndex.lightData)
     }
 }

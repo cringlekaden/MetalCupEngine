@@ -34,10 +34,15 @@ extension float4x4 {
     init(perspectiveFov fovY: Float, aspect: Float, nearZ: Float, farZ: Float) {
         let yScale = 1 / tan(fovY * 0.5)
         let xScale = yScale / aspect
-        let zRange = farZ - nearZ
-        let zScale = -(farZ + nearZ) / zRange
-        let wzScale = -2 * farZ * nearZ / zRange
-        self.init(columns: (SIMD4<Float>(xScale, 0, 0, 0), SIMD4<Float>(0, yScale, 0, 0), SIMD4<Float>(0, 0, zScale, -1), SIMD4<Float>(0, 0, wzScale, 0)))
+        let zRange = nearZ - farZ
+        let zScale = farZ / zRange
+        let wzScale = (nearZ * farZ) / zRange
+        self.init(columns: (
+            SIMD4<Float>(xScale, 0, 0, 0),
+            SIMD4<Float>(0, yScale, 0, 0),
+            SIMD4<Float>(0, 0, zScale, -1),
+            SIMD4<Float>(0, 0, wzScale, 0)
+        ))
     }
     
     init(lookAt eye: SIMD3<Float>, center: SIMD3<Float>, up: SIMD3<Float>) {
@@ -106,8 +111,8 @@ extension matrix_float4x4 {
         let t: Float = tan(fov / 2)
         let x: Float = 1 / (aspectRatio * t)
         let y: Float = 1 / t
-        let z: Float = -((far + near) / (far - near))
-        let w: Float = -((2 * far * near) / (far - near))
+        let z: Float = far / (near - far)
+        let w: Float = (near * far) / (near - far)
         var result = matrix_identity_float4x4
         result.columns = (
             .init(x,0,0,0),
@@ -121,13 +126,34 @@ extension matrix_float4x4 {
     static func orthographic(left: Float, right: Float, bottom: Float, top: Float, near: Float, far: Float) -> matrix_float4x4 {
         let rl = right - left
         let tb = top - bottom
-        let fn = far - near
+
+        var nearDist: Float
+        var farDist: Float
+
+        // Accept either positive near/far distances or view-space Z values (RH forward -Z).
+        if near <= 0.0 || far <= 0.0 {
+            let maxZ = max(near, far)
+            let minZ = min(near, far)
+            nearDist = max(0.001, -maxZ)
+            farDist = max(nearDist + 0.001, -minZ)
+        } else {
+            nearDist = near
+            farDist = far
+            if nearDist == farDist {
+                farDist += 0.001
+            }
+            if nearDist > farDist {
+                swap(&nearDist, &farDist)
+            }
+        }
+
+        let fn = nearDist - farDist
         var result = matrix_identity_float4x4
         result.columns = (
             .init(2.0 / rl, 0, 0, 0),
             .init(0, 2.0 / tb, 0, 0),
-            .init(0, 0, -2.0 / fn, 0),
-            .init(-(right + left) / rl, -(top + bottom) / tb, -(far + near) / fn, 1.0)
+            .init(0, 0, 1.0 / fn, 0),
+            .init(-(right + left) / rl, -(top + bottom) / tb, nearDist / fn, 1.0)
         )
         return result
     }

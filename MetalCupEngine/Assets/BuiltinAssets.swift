@@ -13,6 +13,7 @@ public enum BuiltinAssets {
     public static let skyboxMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000004")
     public static let fullscreenQuadMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000005")
     public static let planeMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000006")
+    public static let editorPlaneMesh = AssetHandle(string: "00000000-0000-0000-0000-000000000007")
 
     // Renderer targets
     public static let baseColorRender = AssetHandle(string: "00000000-0000-0000-0000-000000000101")
@@ -31,57 +32,58 @@ public enum BuiltinAssets {
     public static let prefilteredCubemap = AssetHandle(string: "00000000-0000-0000-0000-000000000203")
     public static let brdfLut = AssetHandle(string: "00000000-0000-0000-0000-000000000204")
 
-    public static func registerMeshes() {
-        AssetManager.registerRuntimeMesh(handle: noneMesh, mesh: NoMesh())
-        AssetManager.registerRuntimeMesh(handle: cubeMesh, mesh: CubeMesh())
-        AssetManager.registerRuntimeMesh(handle: cubemapMesh, mesh: CubemapMesh())
-        AssetManager.registerRuntimeMesh(handle: skyboxMesh, mesh: CubemapMesh())
-        AssetManager.registerRuntimeMesh(handle: fullscreenQuadMesh, mesh: FullscreenQuadMesh())
-        AssetManager.registerRuntimeMesh(handle: planeMesh, mesh: PlaneMesh())
+    public static func registerMeshes(assetManager: AssetManager, device: MTLDevice, graphics: Graphics) {
+        assetManager.registerRuntimeMesh(handle: noneMesh, mesh: NoMesh(device: device, graphics: graphics, assetManager: assetManager))
+        assetManager.registerRuntimeMesh(handle: cubeMesh, mesh: CubeMesh(device: device, graphics: graphics, assetManager: assetManager))
+        assetManager.registerRuntimeMesh(handle: cubemapMesh, mesh: CubemapMesh(device: device, graphics: graphics, assetManager: assetManager))
+        assetManager.registerRuntimeMesh(handle: skyboxMesh, mesh: CubemapMesh(device: device, graphics: graphics, assetManager: assetManager))
+        assetManager.registerRuntimeMesh(handle: fullscreenQuadMesh, mesh: FullscreenQuadMesh(device: device, graphics: graphics, assetManager: assetManager))
+        assetManager.registerRuntimeMesh(handle: planeMesh, mesh: PlaneMesh(device: device, graphics: graphics, assetManager: assetManager))
+        assetManager.registerRuntimeMesh(handle: editorPlaneMesh, mesh: EditorPlaneMesh(device: device, graphics: graphics, assetManager: assetManager))
     }
 
-    public static func registerIBLTextures(environmentSize: Int, irradianceSize: Int, prefilteredSize: Int, brdfLutSize: Int) {
+    public static func registerIBLTextures(assetManager: AssetManager, preferences: Preferences, device: MTLDevice, environmentSize: Int, irradianceSize: Int, prefilteredSize: Int, brdfLutSize: Int) {
         func mipCount(for size: Int) -> Int {
             guard size > 0 else { return 1 }
             return Int(floor(log2(Double(size)))) + 1
         }
 
         let environmentDescriptor = MTLTextureDescriptor.textureCubeDescriptor(
-            pixelFormat: Preferences.HDRPixelFormat,
+            pixelFormat: preferences.HDRPixelFormat,
             size: environmentSize,
             mipmapped: true
         )
         environmentDescriptor.mipmapLevelCount = mipCount(for: environmentSize)
         environmentDescriptor.usage = [.renderTarget, .shaderRead]
         environmentDescriptor.storageMode = .private
-        if let texture = Engine.Device.makeTexture(descriptor: environmentDescriptor) {
+        if let texture = device.makeTexture(descriptor: environmentDescriptor) {
             texture.label = "IBL.EnvironmentCubemap"
-            AssetManager.registerRuntimeTexture(handle: environmentCubemap, texture: texture)
+            assetManager.registerRuntimeTexture(handle: environmentCubemap, texture: texture)
         }
 
         let irradianceDescriptor = MTLTextureDescriptor.textureCubeDescriptor(
-            pixelFormat: Preferences.HDRPixelFormat,
+            pixelFormat: preferences.HDRPixelFormat,
             size: irradianceSize,
             mipmapped: false
         )
         irradianceDescriptor.usage = [.renderTarget, .shaderRead]
         irradianceDescriptor.storageMode = .private
-        if let texture = Engine.Device.makeTexture(descriptor: irradianceDescriptor) {
+        if let texture = device.makeTexture(descriptor: irradianceDescriptor) {
             texture.label = "IBL.IrradianceCubemap"
-            AssetManager.registerRuntimeTexture(handle: irradianceCubemap, texture: texture)
+            assetManager.registerRuntimeTexture(handle: irradianceCubemap, texture: texture)
         }
 
         let prefilteredDescriptor = MTLTextureDescriptor.textureCubeDescriptor(
-            pixelFormat: Preferences.HDRPixelFormat,
+            pixelFormat: preferences.HDRPixelFormat,
             size: prefilteredSize,
             mipmapped: true
         )
         prefilteredDescriptor.mipmapLevelCount = mipCount(for: prefilteredSize)
         prefilteredDescriptor.usage = [.renderTarget, .shaderRead]
         prefilteredDescriptor.storageMode = .private
-        if let texture = Engine.Device.makeTexture(descriptor: prefilteredDescriptor) {
+        if let texture = device.makeTexture(descriptor: prefilteredDescriptor) {
             texture.label = "IBL.PrefilteredCubemap"
-            AssetManager.registerRuntimeTexture(handle: prefilteredCubemap, texture: texture)
+            assetManager.registerRuntimeTexture(handle: prefilteredCubemap, texture: texture)
         }
 
         let brdfLUTDescriptor = MTLTextureDescriptor()
@@ -92,37 +94,37 @@ public enum BuiltinAssets {
         brdfLUTDescriptor.mipmapLevelCount = 1
         brdfLUTDescriptor.usage = [.renderTarget, .shaderRead]
         brdfLUTDescriptor.storageMode = .private
-        if let texture = Engine.Device.makeTexture(descriptor: brdfLUTDescriptor) {
+        if let texture = device.makeTexture(descriptor: brdfLUTDescriptor) {
             texture.label = "IBL.BRDFLUT"
-            AssetManager.registerRuntimeTexture(handle: brdfLut, texture: texture)
+            assetManager.registerRuntimeTexture(handle: brdfLut, texture: texture)
         }
 
     }
 
-    public static func registerFallbackIBLTextures() {
-        if AssetManager.texture(handle: environmentCubemap) == nil,
-           let env = makeSolidCubemap(color: SIMD4<Float>(0, 0, 0, 1), label: "Fallback Environment") {
-            AssetManager.registerRuntimeTexture(handle: environmentCubemap, texture: env)
+    public static func registerFallbackIBLTextures(assetManager: AssetManager, preferences: Preferences, device: MTLDevice) {
+        if assetManager.texture(handle: environmentCubemap) == nil,
+           let env = makeSolidCubemap(device: device, preferences: preferences, color: SIMD4<Float>(0, 0, 0, 1), label: "Fallback Environment") {
+            assetManager.registerRuntimeTexture(handle: environmentCubemap, texture: env)
         }
-        if AssetManager.texture(handle: irradianceCubemap) == nil,
-           let irradiance = makeSolidCubemap(color: SIMD4<Float>(0.5, 0.5, 0.5, 1), label: "Fallback Irradiance") {
-            AssetManager.registerRuntimeTexture(handle: irradianceCubemap, texture: irradiance)
+        if assetManager.texture(handle: irradianceCubemap) == nil,
+           let irradiance = makeSolidCubemap(device: device, preferences: preferences, color: SIMD4<Float>(0.5, 0.5, 0.5, 1), label: "Fallback Irradiance") {
+            assetManager.registerRuntimeTexture(handle: irradianceCubemap, texture: irradiance)
         }
-        if AssetManager.texture(handle: prefilteredCubemap) == nil,
-           let prefiltered = makeSolidCubemap(color: SIMD4<Float>(0, 0, 0, 1), label: "Fallback Prefiltered") {
-            AssetManager.registerRuntimeTexture(handle: prefilteredCubemap, texture: prefiltered)
+        if assetManager.texture(handle: prefilteredCubemap) == nil,
+           let prefiltered = makeSolidCubemap(device: device, preferences: preferences, color: SIMD4<Float>(0, 0, 0, 1), label: "Fallback Prefiltered") {
+            assetManager.registerRuntimeTexture(handle: prefilteredCubemap, texture: prefiltered)
         }
     }
 
-    private static func makeSolidCubemap(color: SIMD4<Float>, label: String) -> MTLTexture? {
+    private static func makeSolidCubemap(device: MTLDevice, preferences: Preferences, color: SIMD4<Float>, label: String) -> MTLTexture? {
         let descriptor = MTLTextureDescriptor.textureCubeDescriptor(
-            pixelFormat: Preferences.HDRPixelFormat,
+            pixelFormat: preferences.HDRPixelFormat,
             size: 1,
             mipmapped: false
         )
         descriptor.usage = [.shaderRead]
         descriptor.storageMode = .shared
-        guard let texture = Engine.Device.makeTexture(descriptor: descriptor) else { return nil }
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
         texture.label = label
 
         let pixel: [Float16] = [

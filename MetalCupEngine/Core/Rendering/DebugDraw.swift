@@ -2,22 +2,24 @@
 /// Provides a submission queue for debug rendering.
 /// Created by Kaden Cringle.
 
-public enum DebugDraw {
-    private static var submittedGridParams: GridParams?
+public final class DebugDraw {
+    private var submittedGridParams: GridParams?
 
-    public static func beginFrame() {
+    public init() {}
+
+    public func beginFrame() {
         submittedGridParams = nil
     }
 
-    public static func endFrame() {
+    public func endFrame() {
         // Intentionally empty: submission queue persists until next beginFrame.
     }
 
-    public static func submitGridXZ(_ params: GridParams) {
+    public func submitGridXZ(_ params: GridParams) {
         submittedGridParams = params
     }
 
-    static func gridParams() -> GridParams? {
+    func gridParams() -> GridParams? {
         submittedGridParams
     }
 }

@@ -7,16 +7,25 @@ import MetalKit
 
 /// Engine-side runtime cache for GPU assets resolved via an AssetDatabase.
 public final class AssetManager {
-    private static var textureCache: [AssetHandle: MTLTexture] = [:]
-    private static var meshCache: [AssetHandle: MCMesh] = [:]
-    private static var materialCache: [AssetHandle: MaterialAsset] = [:]
-    private static var materialCacheModified: [AssetHandle: TimeInterval] = [:]
-    private static var runtimeTextureHandles = Set<AssetHandle>()
-    private static var runtimeMeshHandles = Set<AssetHandle>()
-    private static let cacheLock = NSLock()
+    private var textureCache: [AssetHandle: MTLTexture] = [:]
+    private var meshCache: [AssetHandle: MCMesh] = [:]
+    private var materialCache: [AssetHandle: MaterialAsset] = [:]
+    private var materialCacheModified: [AssetHandle: TimeInterval] = [:]
+    private var runtimeTextureHandles = Set<AssetHandle>()
+    private var runtimeMeshHandles = Set<AssetHandle>()
+    private let cacheLock = NSLock()
 
-    public static func handle(forSourcePath sourcePath: String) -> AssetHandle? {
-        guard let database = Engine.assetDatabase else { return nil }
+    public weak var assetDatabase: AssetDatabase?
+    private let device: MTLDevice
+    private let graphics: Graphics
+
+    public init(device: MTLDevice, graphics: Graphics) {
+        self.device = device
+        self.graphics = graphics
+    }
+
+    public func handle(forSourcePath sourcePath: String) -> AssetHandle? {
+        guard let database = assetDatabase else { return nil }
         if let direct = database.metadata(forSourcePath: sourcePath)?.handle {
             return direct
         }
@@ -42,14 +51,14 @@ public final class AssetManager {
         return nil
     }
 
-    public static func texture(handle: AssetHandle) -> MTLTexture? {
+    public func texture(handle: AssetHandle) -> MTLTexture? {
         cacheLock.lock()
         let cached = textureCache[handle]
         cacheLock.unlock()
         if let cached { return cached }
-        guard let database = Engine.assetDatabase,
+        guard let database = assetDatabase,
               let url = database.assetURL(for: handle) else { return nil }
-        let loader = MTKTextureLoader(device: Engine.Device)
+        let loader = MTKTextureLoader(device: device)
         let metadata = database.metadata(for: handle)
         var options: [MTKTextureLoader.Option: Any] = [
             .origin: MTKTextureLoader.Origin.topLeft
@@ -87,21 +96,21 @@ public final class AssetManager {
         }
     }
 
-    public static func mesh(handle: AssetHandle) -> MCMesh? {
+    public func mesh(handle: AssetHandle) -> MCMesh? {
         cacheLock.lock()
         let cached = meshCache[handle]
         cacheLock.unlock()
         if let cached { return cached }
-        guard let url = Engine.assetDatabase?.assetURL(for: handle) else { return nil }
-        let mesh = MCMesh(assetURL: url)
+        guard let url = assetDatabase?.assetURL(for: handle) else { return nil }
+        let mesh = MCMesh(assetURL: url, device: device, graphics: graphics, assetManager: self)
         cacheLock.lock()
         meshCache[handle] = mesh
         cacheLock.unlock()
         return mesh
     }
 
-    public static func material(handle: AssetHandle) -> MaterialAsset? {
-        guard let database = Engine.assetDatabase,
+    public func material(handle: AssetHandle) -> MaterialAsset? {
+        guard let database = assetDatabase,
               let url = database.assetURL(for: handle) else { return nil }
         let lastModified = database.metadata(for: handle)?.lastModified ?? 0
         cacheLock.lock()
@@ -113,7 +122,7 @@ public final class AssetManager {
             return cached
         }
 
-            if let material = MaterialSerializer.load(from: url, fallbackHandle: handle) {
+        if let material = MaterialSerializer.load(from: url, fallbackHandle: handle) {
             cacheLock.lock()
             let wasCached = materialCache[handle] != nil
             materialCache[handle] = material
@@ -130,21 +139,21 @@ public final class AssetManager {
         return nil
     }
 
-    public static func registerRuntimeTexture(handle: AssetHandle, texture: MTLTexture) {
+    public func registerRuntimeTexture(handle: AssetHandle, texture: MTLTexture) {
         cacheLock.lock()
         textureCache[handle] = texture
         runtimeTextureHandles.insert(handle)
         cacheLock.unlock()
     }
 
-    public static func registerRuntimeMesh(handle: AssetHandle, mesh: MCMesh) {
+    public func registerRuntimeMesh(handle: AssetHandle, mesh: MCMesh) {
         cacheLock.lock()
         meshCache[handle] = mesh
         runtimeMeshHandles.insert(handle)
         cacheLock.unlock()
     }
 
-    public static func preload(from database: AssetDatabase) {
+    public func preload(from database: AssetDatabase) {
         for metadata in database.allMetadata() {
             switch metadata.type {
             case .texture, .environment:
@@ -159,7 +168,7 @@ public final class AssetManager {
         }
     }
 
-    public static func clearCache() {
+    public func clearCache() {
         cacheLock.lock()
         textureCache = textureCache.filter { runtimeTextureHandles.contains($0.key) }
         meshCache = meshCache.filter { runtimeMeshHandles.contains($0.key) }
@@ -188,6 +197,18 @@ public final class AssetManager {
         return true
     }
 
+    public static func shouldFlipNormalY(path: String) -> Bool {
+        let name = URL(fileURLWithPath: path).lastPathComponent.lowercased()
+        return name.contains("normal-ogl")
+            || name.contains("normal_ogl")
+            || name.contains("normal-gl")
+            || name.contains("normal_gl")
+            || name.contains("nor_gl")
+            || name.contains("nor-ogl")
+            || name.contains("normal-opengl")
+            || name.contains("normal_opengl")
+    }
+
     public static func shouldGenerateMipmaps(path: String) -> Bool {
         let name = path.lowercased()
         if isColorTexture(path: name) {
@@ -199,22 +220,15 @@ public final class AssetManager {
             || name.contains("metallic") {
             return true
         }
-        return false
+        return true
     }
 
-    public static func shouldFlipNormalY(path: String) -> Bool {
-        let name = path.lowercased()
-        return name.contains("normal-ogl") || name.contains("_ogl") || name.contains("opengl") || name.contains("nor_gl")
-    }
-
-    private static func ensureMipmaps(_ texture: MTLTexture) {
-        guard texture.mipmapLevelCount > 1 else { return }
-        guard let commandBuffer = Engine.CommandQueue.makeCommandBuffer() else { return }
-        commandBuffer.label = "Generate Mipmaps"
-        if let blit = commandBuffer.makeBlitCommandEncoder() {
-            blit.generateMipmaps(for: texture)
-            blit.endEncoding()
-            commandBuffer.commit()
-        }
+    private func ensureMipmaps(_ texture: MTLTexture) {
+        guard let commandQueue = device.makeCommandQueue() else { return }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        blit.generateMipmaps(for: texture)
+        blit.endEncoding()
+        commandBuffer.commit()
     }
 }

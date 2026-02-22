@@ -19,10 +19,44 @@ public enum IBLQualityPreset: UInt32 {
     case custom = 4
 }
 
+public enum ShadowFilterMode: UInt32 {
+    case hard = 0
+    case pcf = 1
+    case pcssExperimental = 2
+}
+
+public struct ShadowsSettings {
+    public var enabled: UInt32 = 0
+    public var directionalEnabled: UInt32 = 1
+    public var shadowMapResolution: UInt32 = 2048
+    public var cascadeCount: UInt32 = 3
+    public var cascadeSplitLambda: Float = 0.65
+    public var depthBias: Float = 0.0005
+    public var normalBias: Float = 0.01
+    public var pcfRadius: Float = 1.5
+    public var filterMode: UInt32 = ShadowFilterMode.pcf.rawValue
+    public var maxShadowDistance: Float = 100.0
+    public var fadeOutDistance: Float = 10.0
+    public var pcssLightWorldSize: Float = 1.0
+    public var pcssMinFilterRadiusTexels: Float = 1.0
+    public var pcssMaxFilterRadiusTexels: Float = 8.0
+    public var pcssBlockerSearchRadiusTexels: Float = 4.0
+    public var pcssBlockerSamples: UInt32 = 12
+    public var pcssPCFSamples: UInt32 = 16
+    public var pcssNoiseEnabled: UInt32 = 1
+    public var pcssPadding: UInt32 = 0
+
+    public init() {}
+}
+
 public typealias BloomUniforms = RendererSettings
 public typealias RendererUniforms = RendererSettings
 
 public struct RendererSettings: sizeable {
+    public static let expectedMetalStride: Int = 304
+
+    public init() {}
+
     public var bloomThreshold: Float = 1.2
     public var bloomKnee: Float = 0.2
     public var bloomIntensity: Float = 0.15
@@ -45,11 +79,11 @@ public struct RendererSettings: sizeable {
 
 
     public var perfFlags: UInt32 = 0
-    public var normalFlipYGlobal: UInt32 = 1
 
     public var iblFireflyClamp: Float = 100.0
     public var iblFireflyClampEnabled: UInt32 = 1
     public var iblSampleMultiplier: Float = 1.0
+    public var skyboxMipBias: Float = 0.0
     public var iblSpecularLodExponent: Float = 1.5
     public var iblSpecularLodBias: Float = 0.0
     public var iblSpecularGrazingLodBias: Float = 0.35
@@ -70,7 +104,10 @@ public struct RendererSettings: sizeable {
     public var gridOpacity: Float = 0.85
     public var gridFadeDistance: Float = 120.0
     public var gridMajorLineEvery: Float = 10.0
-    public var padding: SIMD2<Float> = .zero
+    public var uvDebug: SIMD2<UInt32> = .zero
+    public var shadows: ShadowsSettings = ShadowsSettings()
+    public var padding0: SIMD4<Float> = .zero
+    public var padding1: SIMD4<Float> = .zero
 }
 
 public struct RendererPerfFlags: OptionSet {
@@ -88,6 +125,8 @@ public struct RendererPerfFlags: OptionSet {
 public extension RendererSettings {
     var isBloomEnabled: Bool { bloomEnabled != 0 }
     var isIBLEnabled: Bool { iblEnabled != 0 }
+    var isShadowsEnabled: Bool { shadows.enabled != 0 }
+    var isDirectionalShadowsEnabled: Bool { shadows.directionalEnabled != 0 }
 
     mutating func setPerfFlag(_ flag: RendererPerfFlags, enabled: Bool) {
         if enabled {
@@ -102,125 +141,6 @@ public extension RendererSettings {
     }
 }
 
-@objcMembers public final class RendererSettingsProxy: NSObject {
-    public static let shared = RendererSettingsProxy()
-
-    public var bloomEnabled: Bool {
-        get { Renderer.settings.bloomEnabled != 0 }
-        set { Renderer.settings.bloomEnabled = newValue ? 1 : 0 }
-    }
-
-    public var bloomThreshold: Float {
-        get { Renderer.settings.bloomThreshold }
-        set { Renderer.settings.bloomThreshold = newValue }
-    }
-
-    public var bloomKnee: Float {
-        get { Renderer.settings.bloomKnee }
-        set { Renderer.settings.bloomKnee = newValue }
-    }
-
-    public var bloomIntensity: Float {
-        get { Renderer.settings.bloomIntensity }
-        set { Renderer.settings.bloomIntensity = newValue }
-    }
-
-    public var bloomUpsampleScale: Float {
-        get { Renderer.settings.bloomUpsampleScale }
-        set { Renderer.settings.bloomUpsampleScale = newValue }
-    }
-
-    public var bloomDirtIntensity: Float {
-        get { Renderer.settings.bloomDirtIntensity }
-        set { Renderer.settings.bloomDirtIntensity = newValue }
-    }
-
-    public var blurPasses: Int {
-        get { Int(Renderer.settings.blurPasses) }
-        set { Renderer.settings.blurPasses = UInt32(max(0, newValue)) }
-    }
-
-    public var bloomMaxMips: Int {
-        get { Int(Renderer.settings.bloomMaxMips) }
-        set { Renderer.settings.bloomMaxMips = UInt32(max(1, newValue)) }
-    }
-
-    public var tonemap: Int {
-        get { Int(Renderer.settings.tonemap) }
-        set { Renderer.settings.tonemap = UInt32(newValue) }
-    }
-
-    public var exposure: Float {
-        get { Renderer.settings.exposure }
-        set { Renderer.settings.exposure = newValue }
-    }
-
-    public var gamma: Float {
-        get { Renderer.settings.gamma }
-        set { Renderer.settings.gamma = newValue }
-    }
-
-    public var iblEnabled: Bool {
-        get { Renderer.settings.iblEnabled != 0 }
-        set { Renderer.settings.iblEnabled = newValue ? 1 : 0 }
-    }
-
-    public var iblIntensity: Float {
-        get { Renderer.settings.iblIntensity }
-        set { Renderer.settings.iblIntensity = newValue }
-    }
-
-    public var iblQualityPreset: Int {
-        get { Int(Renderer.settings.iblQualityPreset) }
-        set { Renderer.settings.iblQualityPreset = UInt32(newValue) }
-    }
-
-    public var halfResBloom: Bool {
-        get { (Renderer.settings.perfFlags & RendererPerfFlags.halfResBloom.rawValue) != 0 }
-        set {
-            var settings = Renderer.settings
-            settings.setPerfFlag(.halfResBloom, enabled: newValue)
-            Renderer.settings = settings
-        }
-    }
-
-    public var disableSpecularAA: Bool {
-        get { (Renderer.settings.perfFlags & RendererPerfFlags.disableSpecularAA.rawValue) != 0 }
-        set {
-            var settings = Renderer.settings
-            settings.setPerfFlag(.disableSpecularAA, enabled: newValue)
-            Renderer.settings = settings
-        }
-    }
-
-    public var disableClearcoat: Bool {
-        get { (Renderer.settings.perfFlags & RendererPerfFlags.disableClearcoat.rawValue) != 0 }
-        set {
-            var settings = Renderer.settings
-            settings.setPerfFlag(.disableClearcoat, enabled: newValue)
-            Renderer.settings = settings
-        }
-    }
-
-    public var disableSheen: Bool {
-        get { (Renderer.settings.perfFlags & RendererPerfFlags.disableSheen.rawValue) != 0 }
-        set {
-            var settings = Renderer.settings
-            settings.setPerfFlag(.disableSheen, enabled: newValue)
-            Renderer.settings = settings
-        }
-    }
-
-    public var skipSpecIBLHighRoughness: Bool {
-        get { (Renderer.settings.perfFlags & RendererPerfFlags.skipSpecIBLHighRoughness.rawValue) != 0 }
-        set {
-            var settings = Renderer.settings
-            settings.setPerfFlag(.skipSpecIBLHighRoughness, enabled: newValue)
-            Renderer.settings = settings
-        }
-    }
-
-}
 
 public final class RendererProfiler {
     public enum Scope: String, CaseIterable {
@@ -282,21 +202,4 @@ public final class RendererProfiler {
         }
         return Float(result)
     }
-}
-
-@objcMembers public final class RendererStatsProxy: NSObject {
-    public static let shared = RendererStatsProxy()
-
-    public var frameMs: Float { Renderer.profiler.averageMs(.frame) }
-    public var updateMs: Float { Renderer.profiler.averageMs(.update) }
-    public var sceneMs: Float { Renderer.profiler.averageMs(.scene) }
-    public var renderMs: Float { Renderer.profiler.averageMs(.render) }
-    public var bloomMs: Float { Renderer.profiler.averageMs(.bloom) }
-    public var bloomExtractMs: Float { Renderer.profiler.averageMs(.bloomExtract) }
-    public var bloomDownsampleMs: Float { Renderer.profiler.averageMs(.bloomDownsample) }
-    public var bloomBlurMs: Float { Renderer.profiler.averageMs(.bloomBlur) }
-    public var compositeMs: Float { Renderer.profiler.averageMs(.composite) }
-    public var overlaysMs: Float { Renderer.profiler.averageMs(.overlays) }
-    public var presentMs: Float { Renderer.profiler.averageMs(.present) }
-    public var gpuMs: Float { Renderer.profiler.averageMs(.gpu) }
 }

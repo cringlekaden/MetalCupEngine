@@ -12,10 +12,46 @@ public enum SkySystem {
         let cosEl = cos(elevation)
         let dir = SIMD3<Float>(
             cosEl * cos(-azimuth),
-            -sin(elevation),
+            sin(elevation),
             cosEl * sin(-azimuth)
         )
         return simd_normalize(dir)
+    }
+
+    public static func requiresIBLRebuild(previous: SkyLightComponent, next: SkyLightComponent) -> Bool {
+        if previous.mode != next.mode { return true }
+        if previous.hdriHandle != next.hdriHandle { return true }
+        return false
+    }
+
+    public static func liveSkyParamsMatch(_ lhs: SkyLightComponent, _ rhs: SkyLightComponent) -> Bool {
+        return lhs.intensity == rhs.intensity
+            && lhs.skyTint == rhs.skyTint
+            && lhs.turbidity == rhs.turbidity
+            && lhs.azimuthDegrees == rhs.azimuthDegrees
+            && lhs.elevationDegrees == rhs.elevationDegrees
+            && lhs.sunSizeDegrees == rhs.sunSizeDegrees
+            && lhs.zenithTint == rhs.zenithTint
+            && lhs.horizonTint == rhs.horizonTint
+            && lhs.gradientStrength == rhs.gradientStrength
+            && lhs.hazeDensity == rhs.hazeDensity
+            && lhs.hazeFalloff == rhs.hazeFalloff
+            && lhs.hazeHeight == rhs.hazeHeight
+            && lhs.ozoneStrength == rhs.ozoneStrength
+            && lhs.ozoneTint == rhs.ozoneTint
+            && lhs.sunHaloSize == rhs.sunHaloSize
+            && lhs.sunHaloIntensity == rhs.sunHaloIntensity
+            && lhs.sunHaloSoftness == rhs.sunHaloSoftness
+            && lhs.cloudsEnabled == rhs.cloudsEnabled
+            && lhs.cloudsCoverage == rhs.cloudsCoverage
+            && lhs.cloudsSoftness == rhs.cloudsSoftness
+            && lhs.cloudsScale == rhs.cloudsScale
+            && lhs.cloudsSpeed == rhs.cloudsSpeed
+            && lhs.cloudsWindDirection == rhs.cloudsWindDirection
+            && lhs.cloudsHeight == rhs.cloudsHeight
+            && lhs.cloudsThickness == rhs.cloudsThickness
+            && lhs.cloudsBrightness == rhs.cloudsBrightness
+            && lhs.cloudsSunInfluence == rhs.cloudsSunInfluence
     }
 
     public static func update(scene: SceneECS) {
@@ -34,7 +70,6 @@ public enum SkySystem {
         var light = scene.get(LightComponent.self, for: sunEntity) ?? LightComponent(type: .directional)
         light.type = .directional
         light.direction = -sunDir
-        light.direction.y = -light.direction.y
         light.data.color = SIMD3<Float>(repeating: 1.0)
         light.data.brightness = max(sky.intensity, 0.0)
         light.data.diffuseIntensity = 1.0

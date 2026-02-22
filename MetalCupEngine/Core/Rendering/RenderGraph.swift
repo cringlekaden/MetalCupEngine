@@ -5,12 +5,15 @@
 import MetalKit
 
 struct RenderGraphFrame {
+    let renderer: Renderer
+    let engineContext: EngineContext
     let view: MTKView
     let sceneView: SceneView
     let commandBuffer: MTLCommandBuffer
     let resources: RenderResources
     let delegate: RendererDelegate?
     let frameContext: RendererFrameContext
+    let profiler: RendererProfiler
 }
 
 protocol RenderGraphPass {
@@ -23,6 +26,7 @@ final class RenderGraph {
 
     init() {
         passes = [
+            ShadowPass(),
             DepthPrepassPass(),
             ScenePass(),
             GridOverlayPass(),
@@ -42,7 +46,7 @@ final class RenderGraph {
             }
             pass.execute(frame: frame)
             if pass is BloomBlurPass, let start = bloomStart {
-                Renderer.profiler.record(.bloom, seconds: CACurrentMediaTime() - start)
+                frame.profiler.record(.bloom, seconds: CACurrentMediaTime() - start)
             }
         }
     }

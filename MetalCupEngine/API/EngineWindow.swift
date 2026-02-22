@@ -240,7 +240,7 @@ public final class EngineWindow: NSObject {
     /// - Parameters:
     ///   - spec: Window and surface configuration.
     ///   - device: Metal device used by the MTKView.
-    public func create(with spec: ApplicationSpecification, device: MTLDevice) {
+    public func create(with spec: ApplicationSpecification, device: MTLDevice, preferences: Preferences) {
         let style: NSWindow.StyleMask = {
             var mask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable]
             if spec.resizable { mask.insert(.resizable) }
@@ -254,11 +254,11 @@ public final class EngineWindow: NSObject {
 
         let view = EngineMTKView(frame: rect, device: device, eventHandler: self.eventHandler, inputAccumulator: inputAccumulator)
         view.autoresizingMask = [.width, .height]
-        view.colorPixelFormat = spec.colorPixelFormat ?? Preferences.defaultColorPixelFormat
-        view.depthStencilPixelFormat = spec.depthStencilPixelFormat ?? Preferences.defaultDepthPixelFormat
+        view.colorPixelFormat = spec.colorPixelFormat ?? preferences.defaultColorPixelFormat
+        view.depthStencilPixelFormat = spec.depthStencilPixelFormat ?? preferences.defaultDepthPixelFormat
         view.sampleCount = spec.sampleCount
         view.preferredFramesPerSecond = spec.preferredFramesPerSecond
-        view.clearColor = Preferences.clearColor
+        view.clearColor = preferences.clearColor
         view.isPaused = false
         view.enableSetNeedsDisplay = false
 

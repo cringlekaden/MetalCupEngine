@@ -10,21 +10,34 @@ public enum SamplerStateType {
     case Nearest
     case LinearClamp
     case LinearClampToZero
+    case ShadowCompare
+    case ShadowDepth
 }
 
 public class SamplerStateLibrary: Library<SamplerStateType, MTLSamplerState> {
-    
     private var _library: [SamplerStateType : SamplerState] = [:]
-    
-    override func fillLibrary() {
-        _library[.Linear] = LinearSamplerState()
-        _library[.Nearest] = NearestSamplerState()
-        _library[.LinearClamp] = LinearClampSamplerState()
-        _library[.LinearClampToZero] = LinearClampToZeroSamplerState()
+    private let device: MTLDevice
+
+    public init(device: MTLDevice) {
+        self.device = device
+        super.init()
     }
-    
+
+    override func fillLibrary() {
+        _library[.Linear] = LinearSamplerState(device: device)
+        _library[.Nearest] = NearestSamplerState(device: device)
+        _library[.LinearClamp] = LinearClampSamplerState(device: device)
+        _library[.LinearClampToZero] = LinearClampToZeroSamplerState(device: device)
+        _library[.ShadowCompare] = ShadowCompareSamplerState(device: device)
+        _library[.ShadowDepth] = ShadowDepthSamplerState(device: device)
+    }
+
     override subscript(_ type: SamplerStateType) -> MTLSamplerState {
-        return (_library[type]?.samplerState!)!
+        guard let sampler = _library[type]?.samplerState else {
+            MC_ASSERT(false, "Missing sampler state for \(type).")
+            fatalError("Missing sampler state for \(type).")
+        }
+        return sampler
     }
 }
 
@@ -36,7 +49,7 @@ protocol SamplerState {
 class LinearSamplerState: SamplerState {
     var name: String = "Linear Sampler State"
     var samplerState: MTLSamplerState!
-    init() {
+    init(device: MTLDevice) {
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
         samplerDescriptor.magFilter = .linear
@@ -45,14 +58,14 @@ class LinearSamplerState: SamplerState {
         samplerDescriptor.maxAnisotropy = 16
         samplerDescriptor.sAddressMode = .repeat
         samplerDescriptor.tAddressMode = .repeat
-        samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
+        samplerState = device.makeSamplerState(descriptor: samplerDescriptor)
     }
 }
 
 class NearestSamplerState: SamplerState {
     var name: String = "Nearest Sampler State"
     var samplerState: MTLSamplerState!
-    init() {
+    init(device: MTLDevice) {
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .nearest
         samplerDescriptor.magFilter = .nearest
@@ -61,14 +74,14 @@ class NearestSamplerState: SamplerState {
         samplerDescriptor.maxAnisotropy = 16
         samplerDescriptor.sAddressMode = .repeat
         samplerDescriptor.tAddressMode = .repeat
-        samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
+        samplerState = device.makeSamplerState(descriptor: samplerDescriptor)
     }
 }
 
 class LinearClampSamplerState: SamplerState {
     var name: String = "Linear Clamp Sampler State"
     var samplerState: MTLSamplerState!
-    init() {
+    init(device: MTLDevice) {
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
         samplerDescriptor.magFilter = .linear
@@ -77,14 +90,14 @@ class LinearClampSamplerState: SamplerState {
         samplerDescriptor.tAddressMode = .clampToEdge
         samplerDescriptor.rAddressMode = .clampToEdge
         samplerDescriptor.maxAnisotropy = 16
-        samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
+        samplerState = device.makeSamplerState(descriptor: samplerDescriptor)
     }
 }
 
 class LinearClampToZeroSamplerState: SamplerState {
     var name: String = "Linear Clamp To Zero Sampler State"
     var samplerState: MTLSamplerState!
-    init() {
+    init(device: MTLDevice) {
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
         samplerDescriptor.magFilter = .linear
@@ -93,6 +106,39 @@ class LinearClampToZeroSamplerState: SamplerState {
         samplerDescriptor.tAddressMode = .clampToZero
         samplerDescriptor.rAddressMode = .clampToZero
         samplerDescriptor.maxAnisotropy = 16
-        samplerState = Engine.Device.makeSamplerState(descriptor: samplerDescriptor)
+        samplerState = device.makeSamplerState(descriptor: samplerDescriptor)
     }
 }
+
+class ShadowCompareSamplerState: SamplerState {
+    var name: String = "Shadow Compare Sampler State"
+    var samplerState: MTLSamplerState!
+    init(device: MTLDevice) {
+        let samplerDescriptor = MTLSamplerDescriptor()
+        samplerDescriptor.minFilter = .linear
+        samplerDescriptor.magFilter = .linear
+        samplerDescriptor.mipFilter = .notMipmapped
+        samplerDescriptor.sAddressMode = .clampToEdge
+        samplerDescriptor.tAddressMode = .clampToEdge
+        samplerDescriptor.rAddressMode = .clampToEdge
+        samplerDescriptor.compareFunction = .lessEqual
+        samplerDescriptor.normalizedCoordinates = true
+        samplerState = device.makeSamplerState(descriptor: samplerDescriptor)
+    }
+}
+class ShadowDepthSamplerState: SamplerState {
+    var name: String = "Shadow Depth Sampler State"
+    var samplerState: MTLSamplerState!
+    init(device: MTLDevice) {
+        let samplerDescriptor = MTLSamplerDescriptor()
+        samplerDescriptor.minFilter = .nearest
+        samplerDescriptor.magFilter = .nearest
+        samplerDescriptor.mipFilter = .notMipmapped
+        samplerDescriptor.sAddressMode = .clampToEdge
+        samplerDescriptor.tAddressMode = .clampToEdge
+        samplerDescriptor.rAddressMode = .clampToEdge
+        samplerDescriptor.normalizedCoordinates = true
+        samplerState = device.makeSamplerState(descriptor: samplerDescriptor)
+    }
+}
+
