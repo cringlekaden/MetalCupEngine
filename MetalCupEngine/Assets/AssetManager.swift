@@ -30,6 +30,7 @@ public final class AssetManager {
             return direct
         }
         let normalized = sourcePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        // TODO: Remove Resources/ compatibility once legacy projects are fully migrated.
         if normalized.hasPrefix("Resources/") {
             let stripped = String(normalized.dropFirst("Resources/".count))
             if let handle = database.metadata(forSourcePath: stripped)?.handle {
@@ -64,6 +65,13 @@ public final class AssetManager {
             .origin: MTKTextureLoader.Origin.topLeft
         ]
         let sourcePath = metadata?.sourcePath ?? url.lastPathComponent
+        if let origin = metadata?.importSettings["origin"] {
+            if origin == "bottomLeft" {
+                options[.origin] = MTKTextureLoader.Origin.bottomLeft
+            } else if origin == "topLeft" {
+                options[.origin] = MTKTextureLoader.Origin.topLeft
+            }
+        }
         switch metadata?.type {
         case .environment:
             options[.SRGB] = false
@@ -71,16 +79,16 @@ public final class AssetManager {
         case .texture:
             options[.SRGB] = AssetManager.isColorTexture(path: sourcePath)
             let shouldMipmap = AssetManager.shouldGenerateMipmaps(path: sourcePath)
-            options[.generateMipmaps] = shouldMipmap
+            options[.generateMipmaps] = false
             options[.allocateMipmaps] = shouldMipmap
         default:
             break
         }
         do {
-            let texture = try loader.newTexture(URL: url, options: options)
+            var texture = try loader.newTexture(URL: url, options: options)
             if metadata?.type == .texture,
                AssetManager.shouldGenerateMipmaps(path: sourcePath) {
-                ensureMipmaps(texture)
+                texture = ensureMipmaps(texture)
             }
             cacheLock.lock()
             textureCache[handle] = texture
@@ -223,7 +231,29 @@ public final class AssetManager {
         return true
     }
 
-    private func ensureMipmaps(_ texture: MTLTexture) {
+    private func ensureMipmaps(_ texture: MTLTexture) -> MTLTexture {
+        if texture.mipmapLevelCount <= 1 {
+            if let expanded = makeMipmappedCopy(of: texture) {
+                generateMipmaps(expanded)
+                return expanded
+            }
+            return texture
+        }
+        generateMipmaps(texture)
+        return texture
+    }
+
+    private func generateMipmaps(_ texture: MTLTexture) {
+        if texture.mipmapLevelCount <= 1 {
+#if DEBUG
+            EngineLoggerContext.log(
+                "Skipping mipmap generation for \(texture.label ?? "texture") (mipmapLevelCount=\(texture.mipmapLevelCount)).",
+                level: .debug,
+                category: .assets
+            )
+#endif
+            return
+        }
         guard let commandQueue = device.makeCommandQueue() else { return }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
@@ -231,4 +261,37 @@ public final class AssetManager {
         blit.endEncoding()
         commandBuffer.commit()
     }
+
+    private func makeMipmappedCopy(of texture: MTLTexture) -> MTLTexture? {
+        guard texture.textureType == .type2D else { return nil }
+        let levels = max(1, 1 + Int(floor(log2(Double(max(texture.width, texture.height))))))
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: texture.pixelFormat,
+            width: texture.width,
+            height: texture.height,
+            mipmapped: true
+        )
+        descriptor.mipmapLevelCount = levels
+        descriptor.usage = texture.usage
+        descriptor.storageMode = texture.storageMode
+        guard let mipTexture = device.makeTexture(descriptor: descriptor) else { return nil }
+        guard let commandQueue = device.makeCommandQueue(),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
+        let size = MTLSize(width: texture.width, height: texture.height, depth: 1)
+        blit.copy(from: texture,
+                  sourceSlice: 0,
+                  sourceLevel: 0,
+                  sourceOrigin: .init(x: 0, y: 0, z: 0),
+                  sourceSize: size,
+                  to: mipTexture,
+                  destinationSlice: 0,
+                  destinationLevel: 0,
+                  destinationOrigin: .init(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return mipTexture
+    }
+
 }

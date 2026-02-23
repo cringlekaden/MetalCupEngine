@@ -5,10 +5,8 @@
 import MetalKit
 
 public enum RenderPipelineStateType {
-    case HDRBasic
     case HDRInstanced
     case PickID
-    case DepthPrepass
     case DepthPrepassInstanced
     case Skybox
     case Final
@@ -48,8 +46,7 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
         // Vertex buffers:
         //  - [[buffer(0)]] Vertex (pos/color/uv/normal/tangent.xyz + tangent.w handedness)
         //  - [[buffer(1)]] SceneConstants (SceneConstants)
-        //  - [[buffer(2)]] ModelConstants (ModelConstants) for non-instanced
-        //  - [[buffer(3)]] InstanceData (InstanceData) for instanced
+        //  - [[buffer(3)]] InstanceData (InstanceData) for all mesh draws
         // Fragment buffers:
         //  - [[buffer(1)]] Material (MetalCupMaterial)
         //  - [[buffer(2)]] RendererSettings (RendererSettings)
@@ -58,14 +55,6 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
         //  - [[buffer(7)]] ShadowConstants (ShadowConstants)
         // Textures/samplers:
         //  - See Shared.metal FragmentTextureIndex / FragmentSamplerIndex
-
-        library[.HDRBasic] = buildPipeline(label: "HDRBasic") { descriptor in
-            descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
-            descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
-            descriptor.vertexFunction = shaders[.BasicVertex]
-            descriptor.fragmentFunction = shaders[.BasicFragment]
-            descriptor.vertexDescriptor = vertexDescriptors[.Default]
-        }
 
         library[.HDRInstanced] = buildPipeline(label: "HDRInstanced") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
@@ -83,18 +72,10 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
             descriptor.vertexDescriptor = vertexDescriptors[.Default]
         }
 
-        library[.DepthPrepass] = buildPipeline(label: "DepthPrepass") { descriptor in
-            descriptor.colorAttachments[0].pixelFormat = .invalid
-            descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
-            descriptor.vertexFunction = shaders[.DepthOnlyVertex]
-            descriptor.fragmentFunction = nil
-            descriptor.vertexDescriptor = vertexDescriptors[.Default]
-        }
-
         library[.DepthPrepassInstanced] = buildPipeline(label: "DepthPrepassInstanced") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = .invalid
             descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
-            descriptor.vertexFunction = shaders[.DepthOnlyInstancedVertex]
+            descriptor.vertexFunction = shaders[.InstancedVertex]
             descriptor.fragmentFunction = nil
             descriptor.vertexDescriptor = vertexDescriptors[.Default]
         }

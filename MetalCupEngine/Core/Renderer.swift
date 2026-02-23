@@ -25,7 +25,7 @@ public final class Renderer: NSObject {
     }
     public let profiler = RendererProfiler()
     public var currentRenderPass: RenderPassType = .main
-    public var useDepthPrepass: Bool = false
+    public var useDepthPrepass: Bool = true
     public var layerFilterMask: LayerMask = .all
 
     private let _projection = float4x4(perspectiveFov: .pi / 2, aspect: 1.0, nearZ: 0.1, farZ: 10.0)
@@ -768,8 +768,6 @@ extension Renderer: MTKViewDelegate {
         let frame = FrameContext(time: frameTime, input: inputState)
         delegate?.update(frame: frame)
         profiler.record(.update, seconds: CACurrentMediaTime() - updateStart)
-        guard let commandBuffer = engineContext.commandQueue.makeCommandBuffer() else { return }
-        commandBuffer.label = "MetalCup Frame"
         let frameContext = _frameContextStorage.beginFrame()
         _frameContextStorage.updateRendererState(
             settings: settings,
@@ -777,42 +775,58 @@ extension Renderer: MTKViewDelegate {
             useDepthPrepass: useDepthPrepass,
             layerFilterMask: layerFilterMask
         )
-        let gpuStart = CACurrentMediaTime()
-        commandBuffer.addCompletedHandler { [weak self] _ in
-            self?.profiler.record(.gpu, seconds: CACurrentMediaTime() - gpuStart)
-        }
-
         let renderStart = CACurrentMediaTime()
         // Scene Pass -> Bloom -> Final Composite -> ImGui overlays
         let sceneView = delegate?.buildSceneView(renderer: self) ?? SceneView(viewportSize: viewportSize)
+        guard let overlayCommandBuffer = engineContext.commandQueue.makeCommandBuffer() else { return }
+        overlayCommandBuffer.label = "MetalCup Frame"
+        let frameId = frameContext.currentFrameCounter()
+        let gpuPassTimingsEnabled = profiler.gpuPassTimingsEnabled()
+        if gpuPassTimingsEnabled {
+            profiler.beginGpuFrame(frameId)
+        }
         let graphFrame = RenderGraphFrame(
             renderer: self,
             engineContext: engineContext,
             view: view,
             sceneView: sceneView,
-            commandBuffer: commandBuffer,
+            commandBuffer: overlayCommandBuffer,
             resources: _renderResources,
             delegate: delegate,
             frameContext: frameContext,
             profiler: profiler
         )
-        _renderGraph.execute(frame: graphFrame)
-
-        if let pickRequest = engineContext.pickingSystem.consumeRequest(),
-           let pickTexture = engineContext.assets.texture(handle: BuiltinAssets.pickIdRender),
-           let readbackBuffer = frameContext.pickReadbackBuffer() {
-            engineContext.pickingSystem.enqueueReadback(
-                request: pickRequest,
-                pickTexture: pickTexture,
-                readbackBuffer: readbackBuffer,
-                commandBuffer: commandBuffer
-            ) { pickedId, mask in
-                self.delegate?.handlePickResult(PickResult(pickedId: pickedId, mask: mask))
+        if gpuPassTimingsEnabled {
+            _renderGraph.execute(
+                frame: graphFrame,
+                commandBufferProvider: { [weak self] pass in
+                    guard let self,
+                          let commandBuffer = self.engineContext.commandQueue.makeCommandBuffer() else {
+                        return nil
+                    }
+                    commandBuffer.label = "MetalCup Pass \(pass.name)"
+                    if let gpuPass = pass.gpuPass {
+                        commandBuffer.addCompletedHandler { [weak self] buffer in
+                            let duration = max(0.0, buffer.gpuEndTime - buffer.gpuStartTime)
+                            self?.profiler.recordGpuPass(gpuPass, seconds: duration)
+                            self?.profiler.addGpuFrameTime(frameId, seconds: duration)
+                        }
+                    }
+                    return commandBuffer
+                }
+            )
+        } else {
+            let gpuStart = CACurrentMediaTime()
+            overlayCommandBuffer.addCompletedHandler { [weak self] buffer in
+                let duration = buffer.gpuEndTime - buffer.gpuStartTime
+                let resolved = duration > 0 ? duration : CACurrentMediaTime() - gpuStart
+                self?.profiler.record(.gpu, seconds: resolved)
             }
+            _renderGraph.execute(frame: graphFrame)
         }
 
         let overlaysStart = CACurrentMediaTime()
-        delegate?.renderOverlays(view: view, commandBuffer: commandBuffer, frameContext: frameContext)
+        delegate?.renderOverlays(view: view, commandBuffer: overlayCommandBuffer, frameContext: frameContext)
         profiler.record(.overlays, seconds: CACurrentMediaTime() - overlaysStart)
         profiler.record(.render, seconds: CACurrentMediaTime() - renderStart)
 
@@ -821,8 +835,15 @@ extension Renderer: MTKViewDelegate {
         }
 
         let presentStart = CACurrentMediaTime()
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
+        if gpuPassTimingsEnabled {
+            overlayCommandBuffer.addCompletedHandler { [weak self] buffer in
+                let duration = max(0.0, buffer.gpuEndTime - buffer.gpuStartTime)
+                self?.profiler.addGpuFrameTime(frameId, seconds: duration)
+                self?.profiler.endGpuFrame(frameId)
+            }
+        }
+        overlayCommandBuffer.present(drawable)
+        overlayCommandBuffer.commit()
         profiler.record(.present, seconds: CACurrentMediaTime() - presentStart)
         profiler.record(.frame, seconds: CACurrentMediaTime() - frameStart)
     }

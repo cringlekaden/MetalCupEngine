@@ -12,6 +12,7 @@ private let textureMapFlags: MetalCupMaterialFlags = [
     .hasMetallicMap,
     .hasRoughnessMap,
     .hasMetalRoughnessMap,
+    .hasORMMap,
     .hasAOMap,
     .hasEmissiveMap,
     .hasClearcoatMap,
@@ -27,6 +28,7 @@ private struct ResolvedPBRTextures {
     let metallic: MTLTexture
     let roughness: MTLTexture
     let metalRoughness: MTLTexture
+    let orm: MTLTexture
     let ao: MTLTexture
     let emissive: MTLTexture
     let clearcoat: MTLTexture
@@ -54,6 +56,7 @@ private func resolvePBRTextures(
     metallicHandle: AssetHandle?,
     roughnessHandle: AssetHandle?,
     mrHandle: AssetHandle?,
+    ormHandle: AssetHandle?,
     aoHandle: AssetHandle?,
     emissiveHandle: AssetHandle?,
     embeddedAlbedo: MTLTexture?,
@@ -61,6 +64,7 @@ private func resolvePBRTextures(
     embeddedMetallic: MTLTexture?,
     embeddedRoughness: MTLTexture?,
     embeddedMetalRoughness: MTLTexture?,
+    embeddedORM: MTLTexture?,
     embeddedAO: MTLTexture?,
     embeddedEmissive: MTLTexture?,
     embeddedClearcoat: MTLTexture?,
@@ -80,6 +84,10 @@ private func resolvePBRTextures(
     let mrSource = mrHandle.flatMap { assetManager?.texture(handle: $0) }
         ?? (useEmbeddedTextures ? embeddedMetalRoughness : nil)
     let (metalRoughness, hasMetalRoughness) = resolveTexture(mrSource, fallback: fallback.metalRoughness, fallbackLibrary: fallback)
+
+    let ormSource = ormHandle.flatMap { assetManager?.texture(handle: $0) }
+        ?? (useEmbeddedTextures ? embeddedORM : nil)
+    let (orm, hasORM) = resolveTexture(ormSource, fallback: fallback.orm, fallbackLibrary: fallback)
 
     let metallicSource = metallicHandle.flatMap { assetManager?.texture(handle: $0) }
         ?? (useEmbeddedTextures ? embeddedMetallic : nil)
@@ -112,7 +120,9 @@ private func resolvePBRTextures(
     var flags = MetalCupMaterialFlags()
     if hasAlbedo { flags.insert(.hasBaseColorMap) }
     if hasNormal { flags.insert(.hasNormalMap) }
-    if hasMetalRoughness {
+    if hasORM {
+        flags.insert(.hasORMMap)
+    } else if hasMetalRoughness {
         flags.insert(.hasMetalRoughnessMap)
     } else {
         if hasMetallicRaw { flags.insert(.hasMetallicMap) }
@@ -131,6 +141,7 @@ private func resolvePBRTextures(
         metallic: metallic,
         roughness: roughness,
         metalRoughness: metalRoughness,
+        orm: orm,
         ao: ao,
         emissive: emissive,
         clearcoat: clearcoat,
@@ -189,7 +200,6 @@ public class MCMesh {
         (descriptor.attributes[4] as! MDLVertexAttribute).name = MDLVertexAttributeTangent
         let bufferAllocator = MTKMeshBufferAllocator(device: device)
         let asset = MDLAsset(url: assetURL, vertexDescriptor: descriptor, bufferAllocator: bufferAllocator)
-        asset.loadTextures()
         var mdlMeshes: [MDLMesh] = []
         do {
             mdlMeshes = try MTKMesh.newMeshes(asset: asset, device: device).modelIOMeshes
@@ -210,21 +220,32 @@ public class MCMesh {
         }
         var mtkMeshes: [MTKMesh] = []
         for mdlMesh in mdlMeshes {
-            let baseFolder = assetURL.deletingLastPathComponent()
-            for case let sub as MDLSubmesh in (mdlMesh.submeshes ?? []) {
-                if let mat = sub.material {
-                    forceResolveMaterialTextures(mat, baseFolder: baseFolder)
-                }
+            let texcoordAttributeName = preferredTexcoordAttributeName(for: mdlMesh)
+#if DEBUG
+            if texcoordAttributeName != MDLVertexAttributeTextureCoordinate {
+                EngineLoggerContext.log(
+                    "Using fallback texcoord attribute '\(texcoordAttributeName)' for mesh \(name).",
+                    level: .debug,
+                    category: .assets
+                )
             }
-            mdlMesh.vertexDescriptor = descriptor
+#endif
+            if let meshDescriptor = descriptor.copy() as? MDLVertexDescriptor,
+               let attributes = meshDescriptor.attributes as? [MDLVertexAttribute],
+               attributes.count > 2 {
+                attributes[2].name = texcoordAttributeName
+                mdlMesh.vertexDescriptor = meshDescriptor
+            } else {
+                mdlMesh.vertexDescriptor = descriptor
+            }
             if !hasVertexAttribute(mdlMesh, name: MDLVertexAttributeNormal) {
                 mdlMesh.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.0)
             }
-            let hasTexcoords = hasVertexAttribute(mdlMesh, name: MDLVertexAttributeTextureCoordinate)
+            let hasTexcoords = hasVertexAttribute(mdlMesh, name: texcoordAttributeName)
             let hasTangents = hasVertexAttribute(mdlMesh, name: MDLVertexAttributeTangent)
             if hasTexcoords && !hasTangents {
                 mdlMesh.addTangentBasis(
-                    forTextureCoordinateAttributeNamed: MDLVertexAttributeTextureCoordinate,
+                    forTextureCoordinateAttributeNamed: texcoordAttributeName,
                     normalAttributeNamed: MDLVertexAttributeNormal,
                     tangentAttributeNamed: MDLVertexAttributeTangent
                 )
@@ -260,6 +281,24 @@ public class MCMesh {
                 addSubmesh(submesh)
             }
         }
+    }
+
+    private func preferredTexcoordAttributeName(for mesh: MDLMesh) -> String {
+        if hasVertexAttribute(mesh, name: MDLVertexAttributeTextureCoordinate) {
+            return MDLVertexAttributeTextureCoordinate
+        }
+        let candidates = [
+            "\(MDLVertexAttributeTextureCoordinate)0",
+            "texcoord0",
+            "TEXCOORD_0",
+            "uv0"
+        ]
+        for name in candidates {
+            if hasVertexAttribute(mesh, name: name) {
+                return name
+            }
+        }
+        return MDLVertexAttributeTextureCoordinate
     }
 
     private func hasVertexAttribute(_ mesh: MDLMesh, name: String) -> Bool {
@@ -311,38 +350,73 @@ public class MCMesh {
     func drawPrimitives(_ renderCommandEncoder: MTLRenderCommandEncoder,
                         frameContext: RendererFrameContext,
                         material: MetalCupMaterial? = nil,
+                        submeshMaterialHandles: [AssetHandle?]? = nil,
                         albedoMapHandle: AssetHandle? = nil,
                         normalMapHandle: AssetHandle? = nil,
                         metallicMapHandle: AssetHandle? = nil,
                         roughnessMapHandle: AssetHandle? = nil,
                         mrMapHandle: AssetHandle? = nil,
+                        ormMapHandle: AssetHandle? = nil,
                         aoMapHandle: AssetHandle? = nil,
                         emissiveMapHandle: AssetHandle? = nil,
                         useEmbeddedMaterial: Bool = true) {
         if(_vertexBuffer != nil) {
             renderCommandEncoder.setVertexBuffer(_vertexBuffer, offset: 0, index: VertexBufferIndex.vertices)
             if(_submeshes.count > 0) {
-                for submesh in _submeshes {
-                    let textureFlags = submesh.applyTextures(
-                        renderCommandEncoder: renderCommandEncoder,
-                        frameContext: frameContext,
-                        albedoMapHandle: albedoMapHandle,
-                        normalMapHandle: normalMapHandle,
-                        metallicMapHandle: metallicMapHandle,
-                        roughnessMapHandle: roughnessMapHandle,
-                        mrMapHandle: mrMapHandle,
-                        aoMapHandle: aoMapHandle,
-                        emissiveMapHandle: emissiveMapHandle,
-                        useEmbeddedTextures: useEmbeddedMaterial
-                    )
-                    let materialFallback = !useEmbeddedMaterial && material == nil
-                    submesh.applyMaterials(
-                        renderCommandEncoder: renderCommandEncoder,
-                        customMaterial: material,
-                        useEmbeddedMaterial: useEmbeddedMaterial,
-                        textureFlags: textureFlags,
-                        materialFallback: materialFallback
-                    )
+                let hasOverrides = material != nil
+                    || albedoMapHandle != nil
+                    || normalMapHandle != nil
+                    || metallicMapHandle != nil
+                    || roughnessMapHandle != nil
+                    || mrMapHandle != nil
+                    || aoMapHandle != nil
+                    || emissiveMapHandle != nil
+                for (index, submesh) in _submeshes.enumerated() {
+                    if !hasOverrides,
+                       let bindings = resolveSubmeshMaterialBindings(at: index, handles: submeshMaterialHandles) {
+                        let textureFlags = submesh.applyTextures(
+                            renderCommandEncoder: renderCommandEncoder,
+                            frameContext: frameContext,
+                            albedoMapHandle: bindings.albedoMapHandle,
+                            normalMapHandle: bindings.normalMapHandle,
+                            metallicMapHandle: bindings.metallicMapHandle,
+                            roughnessMapHandle: bindings.roughnessMapHandle,
+                            mrMapHandle: bindings.mrMapHandle,
+                            ormMapHandle: bindings.ormMapHandle,
+                            aoMapHandle: bindings.aoMapHandle,
+                            emissiveMapHandle: bindings.emissiveMapHandle,
+                            useEmbeddedTextures: false
+                        )
+                        submesh.applyMaterials(
+                            renderCommandEncoder: renderCommandEncoder,
+                            customMaterial: bindings.material,
+                            useEmbeddedMaterial: false,
+                            textureFlags: textureFlags,
+                            materialFallback: false
+                        )
+                    } else {
+                        let textureFlags = submesh.applyTextures(
+                            renderCommandEncoder: renderCommandEncoder,
+                            frameContext: frameContext,
+                            albedoMapHandle: albedoMapHandle,
+                            normalMapHandle: normalMapHandle,
+                            metallicMapHandle: metallicMapHandle,
+                            roughnessMapHandle: roughnessMapHandle,
+                            mrMapHandle: mrMapHandle,
+                            ormMapHandle: ormMapHandle,
+                            aoMapHandle: aoMapHandle,
+                            emissiveMapHandle: emissiveMapHandle,
+                            useEmbeddedTextures: useEmbeddedMaterial
+                        )
+                        let materialFallback = !useEmbeddedMaterial && material == nil
+                        submesh.applyMaterials(
+                            renderCommandEncoder: renderCommandEncoder,
+                            customMaterial: material,
+                            useEmbeddedMaterial: useEmbeddedMaterial,
+                            textureFlags: textureFlags,
+                            materialFallback: materialFallback
+                        )
+                    }
                     renderCommandEncoder.drawIndexedPrimitives(type: submesh.primitiveType, indexCount: submesh.indexCount, indexType: submesh.indexType, indexBuffer: submesh.indexBuffer, indexBufferOffset: submesh.indexBufferOffset, instanceCount: _instanceCount)
                 }
             } else {
@@ -420,6 +494,7 @@ public class MCMesh {
             metallicHandle: metallicMapHandle,
             roughnessHandle: roughnessMapHandle,
             mrHandle: mrMapHandle,
+            ormHandle: nil,
             aoHandle: aoMapHandle,
             emissiveHandle: emissiveMapHandle,
             embeddedAlbedo: nil,
@@ -427,6 +502,7 @@ public class MCMesh {
             embeddedMetallic: nil,
             embeddedRoughness: nil,
             embeddedMetalRoughness: nil,
+            embeddedORM: nil,
             embeddedAO: nil,
             embeddedEmissive: nil,
             embeddedClearcoat: nil,
@@ -440,6 +516,7 @@ public class MCMesh {
         renderCommandEncoder.setFragmentTexture(resolved.metallic, index: FragmentTextureIndex.metallic)
         renderCommandEncoder.setFragmentTexture(resolved.roughness, index: FragmentTextureIndex.roughness)
         renderCommandEncoder.setFragmentTexture(resolved.metalRoughness, index: FragmentTextureIndex.metalRoughness)
+        renderCommandEncoder.setFragmentTexture(resolved.orm, index: FragmentTextureIndex.orm)
         renderCommandEncoder.setFragmentTexture(resolved.ao, index: FragmentTextureIndex.ao)
         renderCommandEncoder.setFragmentTexture(resolved.emissive, index: FragmentTextureIndex.emissive)
         renderCommandEncoder.setFragmentTexture(resolved.clearcoat, index: FragmentTextureIndex.clearcoat)
@@ -471,6 +548,39 @@ public class MCMesh {
         }
         resolved.flags = flags.rawValue
         return resolved
+    }
+
+    private struct SubmeshMaterialBindings {
+        let material: MetalCupMaterial
+        let albedoMapHandle: AssetHandle?
+        let normalMapHandle: AssetHandle?
+        let metallicMapHandle: AssetHandle?
+        let roughnessMapHandle: AssetHandle?
+        let mrMapHandle: AssetHandle?
+        let ormMapHandle: AssetHandle?
+        let aoMapHandle: AssetHandle?
+        let emissiveMapHandle: AssetHandle?
+    }
+
+    private func resolveSubmeshMaterialBindings(at index: Int, handles: [AssetHandle?]?) -> SubmeshMaterialBindings? {
+        guard let handles,
+              index < handles.count,
+              let handle = handles[index],
+              let assetManager,
+              let materialAsset = assetManager.material(handle: handle) else { return nil }
+
+        let material = materialAsset.buildMetalMaterial(database: assetManager.assetDatabase)
+        return SubmeshMaterialBindings(
+            material: material,
+            albedoMapHandle: materialAsset.textures.baseColor,
+            normalMapHandle: materialAsset.textures.normal,
+            metallicMapHandle: materialAsset.textures.metallic,
+            roughnessMapHandle: materialAsset.textures.roughness,
+            mrMapHandle: materialAsset.textures.metalRoughness,
+            ormMapHandle: materialAsset.textures.orm,
+            aoMapHandle: materialAsset.textures.ao,
+            emissiveMapHandle: materialAsset.textures.emissive
+        )
     }
 }
 
@@ -527,10 +637,6 @@ class Submesh {
         _indexCount = mtkSubmesh.indexCount
         _indexType = mtkSubmesh.indexType
         _primitiveType = mtkSubmesh.primitiveType
-        if let material = mdlSubmesh.material {
-            createTexture(material)
-            createMaterial(material)
-        }
     }
     
     func applyTextures(renderCommandEncoder: MTLRenderCommandEncoder,
@@ -540,6 +646,7 @@ class Submesh {
                        metallicMapHandle: AssetHandle?,
                        roughnessMapHandle: AssetHandle?,
                        mrMapHandle: AssetHandle?,
+                       ormMapHandle: AssetHandle?,
                        aoMapHandle: AssetHandle?,
                        emissiveMapHandle: AssetHandle?,
                        useEmbeddedTextures: Bool) -> MetalCupMaterialFlags {
@@ -554,6 +661,7 @@ class Submesh {
             metallicHandle: metallicMapHandle,
             roughnessHandle: roughnessMapHandle,
             mrHandle: mrMapHandle,
+            ormHandle: ormMapHandle,
             aoHandle: aoMapHandle,
             emissiveHandle: emissiveMapHandle,
             embeddedAlbedo: _albedoMapTexture,
@@ -561,6 +669,7 @@ class Submesh {
             embeddedMetallic: _metallicMapTexture,
             embeddedRoughness: _roughnessMapTexture,
             embeddedMetalRoughness: _mrMapTexture,
+            embeddedORM: nil,
             embeddedAO: _aoMapTexture,
             embeddedEmissive: _emissiveMapTexture,
             embeddedClearcoat: _clearcoatMapTexture,
@@ -574,6 +683,7 @@ class Submesh {
         renderCommandEncoder.setFragmentTexture(resolved.metallic, index: FragmentTextureIndex.metallic)
         renderCommandEncoder.setFragmentTexture(resolved.roughness, index: FragmentTextureIndex.roughness)
         renderCommandEncoder.setFragmentTexture(resolved.metalRoughness, index: FragmentTextureIndex.metalRoughness)
+        renderCommandEncoder.setFragmentTexture(resolved.orm, index: FragmentTextureIndex.orm)
         renderCommandEncoder.setFragmentTexture(resolved.ao, index: FragmentTextureIndex.ao)
         renderCommandEncoder.setFragmentTexture(resolved.emissive, index: FragmentTextureIndex.emissive)
         renderCommandEncoder.setFragmentTexture(resolved.clearcoat, index: FragmentTextureIndex.clearcoat)
@@ -618,140 +728,6 @@ class Submesh {
         }
         material.flags = flags.rawValue
         renderCommandEncoder.setFragmentBytes(&material, length: MetalCupMaterial.stride, index: FragmentBufferIndex.material)
-    }
-    
-    private func createTexture(_ mdlMaterial: MDLMaterial) {
-        if(mdlMaterial.property(with: .baseColor)?.type == .texture) {
-            _albedoMapTexture = texture(for: .baseColor, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: true)
-            _materialFlags.insert(.hasBaseColorMap)
-        }
-        if(mdlMaterial.property(with: .tangentSpaceNormal)?.type == .texture) {
-            _normalMapTexture = texture(for: .tangentSpaceNormal, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-            _materialFlags.insert(.hasNormalMap)
-        }
-        let metallicProperty = mdlMaterial.property(with: .metallic)
-        let roughnessProperty = mdlMaterial.property(with: .roughness)
-        let metallicTexture = metallicProperty?.type == .texture ? metallicProperty?.textureSamplerValue?.texture : nil
-        let roughnessTexture = roughnessProperty?.type == .texture ? roughnessProperty?.textureSamplerValue?.texture : nil
-        let usesCombinedMetalRoughness = metallicTexture != nil && roughnessTexture != nil && metallicTexture === roughnessTexture
-        if(usesCombinedMetalRoughness) {
-            _mrMapTexture = texture(for: .metallic, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-            _materialFlags.insert(.hasMetalRoughnessMap)
-        } else {
-            if(metallicTexture != nil) {
-                _metallicMapTexture = texture(for: .metallic, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-                _materialFlags.insert(.hasMetallicMap)
-            }
-            if(roughnessTexture != nil) {
-                _roughnessMapTexture = texture(for: .roughness, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-                _materialFlags.insert(.hasRoughnessMap)
-            }
-        }
-        if(mdlMaterial.property(with: .ambientOcclusion)?.type == .texture) {
-            _aoMapTexture = texture(for: .ambientOcclusion, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-            _materialFlags.insert(.hasAOMap)
-        }
-        if(mdlMaterial.property(with: .emission)?.type == .texture) {
-            _emissiveMapTexture = texture(for: .emission, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: true)
-            _materialFlags.insert(.hasEmissiveMap)
-        }
-        if(mdlMaterial.property(with: .clearcoat)?.type == .texture) {
-            _clearcoatMapTexture = texture(for: .clearcoat, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-            _materialFlags.insert(.hasClearcoatMap)
-            _materialFlags.insert(.hasClearcoat)
-        }
-        if(mdlMaterial.property(with: .clearcoatGloss)?.type == .texture) {
-            _clearcoatRoughnessMapTexture = texture(for: .clearcoatGloss, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-            _materialFlags.insert(.hasClearcoatRoughnessMap)
-            _materialFlags.insert(.hasClearcoatGlossMap)
-            _materialFlags.insert(.hasClearcoat)
-        }
-        if(mdlMaterial.property(with: .sheenTint)?.type == .texture) {
-            _sheenColorMapTexture = texture(for: .sheenTint, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: true)
-            _materialFlags.insert(.hasSheenColorMap)
-            _materialFlags.insert(.hasSheen)
-        }
-        if(mdlMaterial.property(with: .sheen)?.type == .texture) {
-            _sheenIntensityMapTexture = texture(for: .sheen, in: mdlMaterial, textureOrigin: .bottomLeft, sRGB: false)
-            _materialFlags.insert(.hasSheenIntensityMap)
-            _materialFlags.insert(.hasSheen)
-        }
-    }
-    
-    private func createMaterial(_ mdlMaterial: MDLMaterial) {
-        if let albedo = mdlMaterial.property(with: .baseColor)?.float3Value {
-            _material.baseColor = albedo
-        }
-        if let metallic = mdlMaterial.property(with: .metallic)?.floatValue {
-            _material.metallicScalar = metallic
-        }
-        if let roughness = mdlMaterial.property(with: .roughness)?.floatValue {
-            _material.roughnessScalar = roughness
-        }
-        if let ao = mdlMaterial.property(with: .ambientOcclusion)?.floatValue {
-            _material.aoScalar = ao
-        }
-        if let clearcoat = mdlMaterial.property(with: .clearcoat)?.floatValue {
-            _material.clearcoatFactor = clearcoat
-            if clearcoat > 0.0 {
-                _materialFlags.insert(.hasClearcoat)
-            }
-        }
-        if let clearcoatGloss = mdlMaterial.property(with: .clearcoatGloss)?.floatValue {
-            _material.clearcoatRoughness = max(0.0, min(1.0, 1.0 - clearcoatGloss))
-            _materialFlags.insert(.hasClearcoat)
-        }
-        if let sheenValue = mdlMaterial.property(with: .sheen)?.floatValue {
-            _material.sheenColor = SIMD3<Float>(repeating: sheenValue)
-            if sheenValue > 0.0 {
-                _materialFlags.insert(.hasSheen)
-            }
-        }
-        if let sheenTint = mdlMaterial.property(with: .sheenTint) {
-            if sheenTint.type == .float4 {
-                let tint = SIMD3<Float>(sheenTint.float4Value.x, sheenTint.float4Value.y, sheenTint.float4Value.z)
-                let intensity = max(_material.sheenColor.x, max(_material.sheenColor.y, _material.sheenColor.z))
-                _material.sheenColor = intensity > 0.0 ? tint * intensity : tint
-                _materialFlags.insert(.hasSheen)
-            } else if sheenTint.type == .float3 {
-                let tint = sheenTint.float3Value
-                let intensity = max(_material.sheenColor.x, max(_material.sheenColor.y, _material.sheenColor.z))
-                _material.sheenColor = intensity > 0.0 ? tint * intensity : tint
-                _materialFlags.insert(.hasSheen)
-            }
-        }
-        guard let emissiveProperty = mdlMaterial.property(with: .emission) else { return }
-        if emissiveProperty.type == .float4 {
-            _material.emissiveColor = SIMD3<Float>(emissiveProperty.float4Value.x, emissiveProperty.float4Value.y, emissiveProperty.float4Value.z)
-        } else if emissiveProperty.type == .float3 {
-            _material.emissiveColor = emissiveProperty.float3Value
-        } else if emissiveProperty.type == .float {
-            _material.emissiveScalar = emissiveProperty.floatValue
-        }
-    }
-    
-    private func texture(for semantic: MDLMaterialSemantic,
-                         in material: MDLMaterial?,
-                         generateMipmaps: Bool = false,
-                         textureOrigin: MTKTextureLoader.Origin,
-                         sRGB: Bool) -> MTLTexture? {
-
-        let textureLoader = MTKTextureLoader(device: device)
-        guard let materialProperty = material?.property(with: semantic) else { return nil }
-        guard let sampler = materialProperty.textureSamplerValue else { return nil }
-        guard let sourceTexture = sampler.texture else { return nil }
-        let options: [MTKTextureLoader.Option : Any] = [
-            .origin: textureOrigin as Any,
-            .generateMipmaps: generateMipmaps,
-            .SRGB: sRGB
-        ]
-        if let urlTex = sourceTexture as? MDLURLTexture, urlTex.url.isFileURL {
-            return try? textureLoader.newTexture(URL: urlTex.url, options: options)
-        }
-        if let cg = sourceTexture.imageFromTexture()?.takeUnretainedValue() {
-            return try? textureLoader.newTexture(cgImage: cg, options: options)
-        }
-        return try? textureLoader.newTexture(texture: sourceTexture, options: options)
     }
     
     private func createIndexBuffer() {
@@ -897,53 +873,5 @@ class CubemapMesh: MCMesh {
         addSimpleVertex(position: SIMD3<Float>(-1,1,-1))
         addSimpleVertex(position: SIMD3<Float>(-1,-1,-1))
         addSimpleVertex(position: SIMD3<Float>(1,-1,-1))
-    }
-}
-
-private func forceResolveMaterialTextures(_ material: MDLMaterial, baseFolder: URL) {
-    let semantics: [MDLMaterialSemantic] = [
-        .baseColor,
-        .tangentSpaceNormal,
-        .metallic,
-        .roughness,
-        .ambientOcclusion,
-        .emission,
-        .clearcoat,
-        .clearcoatGloss,
-        .sheen,
-        .sheenTint
-    ]
-    for sem in semantics {
-        guard let prop = material.property(with: sem) else { continue }
-        guard prop.type == .texture, let sampler = prop.textureSamplerValue else { continue }
-        guard let mdlTex = sampler.texture else { continue }
-        var candidateURL: URL? = nil
-        if let urlTex = mdlTex as? MDLURLTexture {
-            let url = urlTex.url
-            candidateURL = url.isFileURL ? url : nil
-            if candidateURL == nil {}
-        } else if !mdlTex.name.isEmpty {
-            candidateURL = baseFolder.appendingPathComponent(mdlTex.name)
-        }
-        if candidateURL == nil, let str = prop.stringValue, !str.isEmpty {
-            candidateURL = baseFolder.appendingPathComponent(str)
-        }
-        if candidateURL == nil, let url = prop.urlValue {
-            candidateURL = url.isFileURL ? url : nil
-        }
-        guard let url = candidateURL else { continue }
-        let finalURL: URL
-        if url.isFileURL {
-            finalURL = url
-        } else {
-            finalURL = baseFolder.appendingPathComponent(url.path)
-        }
-        if FileManager.default.fileExists(atPath: finalURL.path) {
-            let texName = finalURL.lastPathComponent
-            let fixed = MDLURLTexture(url: finalURL, name: texName)
-            let fixedSampler = MDLTextureSampler()
-            fixedSampler.texture = fixed
-            prop.textureSamplerValue = fixedSampler
-        }
     }
 }

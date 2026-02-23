@@ -5,10 +5,7 @@
 import MetalKit
 
 public enum ShaderType {
-    case BasicVertex
     case InstancedVertex
-    case DepthOnlyVertex
-    case DepthOnlyInstancedVertex
     case BasicFragment
     case SkyboxVertex
     case SkyboxFragment
@@ -56,10 +53,7 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
     }
 
     public func registerDefaults() {
-        register(.BasicVertex, name: "Basic Vertex", functionName: "vertex_basic")
-        register(.InstancedVertex, name: "Instanced Vertex", functionName: "vertex_instanced")
-        register(.DepthOnlyVertex, name: "Depth Only Vertex", functionName: "vertex_depth_only")
-        register(.DepthOnlyInstancedVertex, name: "Depth Only Instanced Vertex", functionName: "vertex_depth_only_instanced")
+        register(.InstancedVertex, name: "Scene Instanced Vertex", functionName: "vertex_scene_instanced")
         register(.BasicFragment, name: "Basic Fragment", functionName: "fragment_basic")
         register(.SkyboxVertex, name: "Skybox Vertex", functionName: "vertex_skybox")
         register(.SkyboxFragment, name: "Skybox Fragment", functionName: "fragment_skybox")

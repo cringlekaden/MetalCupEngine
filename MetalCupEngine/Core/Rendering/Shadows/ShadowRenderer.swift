@@ -53,8 +53,9 @@ final class ShadowRenderer {
         let cameraNear = max(0.01, cameraState.nearPlane)
         let cameraFar = max(cameraNear + 0.01, cameraState.farPlane)
         let farDistance = (maxDistance > 0.0) ? min(cameraFar, maxDistance) : cameraFar
-        let splits = computeCascadeSplits(near: cameraNear, far: farDistance, count: cascadeCount, lambda: settings.cascadeSplitLambda)
-        let stabilizedSplits = enforceSplitEpsilon(splits: splits, near: cameraNear, far: farDistance)
+        let distanceNear = max(0.01, cameraNear)
+        let splits = computeCascadeSplits(near: distanceNear, far: farDistance, count: cascadeCount, lambda: settings.cascadeSplitLambda)
+        let stabilizedSplits = enforceSplitEpsilon(splits: splits, near: distanceNear, far: farDistance)
 
         var constants = ShadowConstants()
         constants.shadowEnabled = 1.0
@@ -83,11 +84,22 @@ final class ShadowRenderer {
         var lightViews: [matrix_float4x4] = Array(repeating: matrix_identity_float4x4, count: cascadeCount)
         var lightProjections: [matrix_float4x4] = Array(repeating: matrix_identity_float4x4, count: cascadeCount)
         var lightViewProjs: [matrix_float4x4] = Array(repeating: matrix_identity_float4x4, count: cascadeCount)
+        var cascadeWorldUnitsPerTexel: [Float] = Array(repeating: 0.0, count: cascadeCount)
+        var cascadeNearZ: [Float] = Array(repeating: 0.0, count: cascadeCount)
+        var cascadeFarZ: [Float] = Array(repeating: 0.0, count: cascadeCount)
         var disableFrame = false
         for cascadeIndex in 0..<cascadeCount {
-            let splitDistance = stabilizedSplits[cascadeIndex]
-            let centerWS = cameraState.position
-            let radius = stableCascadeRadius(splitFar: splitDistance, projection: cameraState.projection)
+            let splitFar = stabilizedSplits[cascadeIndex]
+            let splitNear = (cascadeIndex == 0) ? distanceNear : stabilizedSplits[cascadeIndex - 1]
+            let corners = frustumCornersWorld(
+                near: splitNear,
+                far: splitFar,
+                projection: cameraState.projection,
+                viewMatrix: cameraState.viewMatrix
+            )
+            let sphere = ritterBoundingSphere(points: corners)
+            let centerWS = sphere.center
+            let radius = max(sphere.radius, minSphereRadius)
             let extent = max(radius, minOrthoExtent * 0.5)
             let lightView = lightViewMatrix(lightDirection: lightDirection, center: centerWS, radius: extent)
             let stabilizedView = stabilizeLightView(
@@ -96,8 +108,12 @@ final class ShadowRenderer {
                 radius: extent,
                 resolution: resolution
             )
+            cascadeWorldUnitsPerTexel[cascadeIndex] = (2.0 * extent) / max(Float(resolution), 1.0)
             let centerLS = stabilizedView * SIMD4<Float>(centerWS, 1.0)
-            let (nearZ, farZ) = computeLightNearFar(centerZ: centerLS.z, radius: extent)
+            let casterDepthExtension = farDistance
+            let (nearZ, farZ) = computeLightNearFar(centerZ: centerLS.z, radius: extent, extraDepth: casterDepthExtension)
+            cascadeNearZ[cascadeIndex] = nearZ
+            cascadeFarZ[cascadeIndex] = farZ
             let lightProj = lightProjectionMatrix(radius: extent, nearZ: nearZ, farZ: farZ)
             let lightViewProj = lightProj * stabilizedView
             if !isFinite(stabilizedView) || !isFinite(lightProj) || !isFinite(lightViewProj) {
@@ -121,6 +137,24 @@ final class ShadowRenderer {
             stabilizedSplits.count > 1 ? stabilizedSplits[1] : farDistance,
             stabilizedSplits.count > 2 ? stabilizedSplits[2] : farDistance,
             stabilizedSplits.count > 3 ? stabilizedSplits[3] : farDistance
+        )
+        constants.cascadeWorldUnitsPerTexel = SIMD4<Float>(
+            cascadeWorldUnitsPerTexel.count > 0 ? cascadeWorldUnitsPerTexel[0] : 0.0,
+            cascadeWorldUnitsPerTexel.count > 1 ? cascadeWorldUnitsPerTexel[1] : 0.0,
+            cascadeWorldUnitsPerTexel.count > 2 ? cascadeWorldUnitsPerTexel[2] : 0.0,
+            cascadeWorldUnitsPerTexel.count > 3 ? cascadeWorldUnitsPerTexel[3] : 0.0
+        )
+        constants.cascadeNearZ = SIMD4<Float>(
+            cascadeNearZ.count > 0 ? cascadeNearZ[0] : 0.0,
+            cascadeNearZ.count > 1 ? cascadeNearZ[1] : 0.0,
+            cascadeNearZ.count > 2 ? cascadeNearZ[2] : 0.0,
+            cascadeNearZ.count > 3 ? cascadeNearZ[3] : 0.0
+        )
+        constants.cascadeFarZ = SIMD4<Float>(
+            cascadeFarZ.count > 0 ? cascadeFarZ[0] : 0.0,
+            cascadeFarZ.count > 1 ? cascadeFarZ[1] : 0.0,
+            cascadeFarZ.count > 2 ? cascadeFarZ[2] : 0.0,
+            cascadeFarZ.count > 3 ? cascadeFarZ[3] : 0.0
         )
 
         for cascadeIndex in cascadeCount..<4 {
@@ -380,10 +414,15 @@ final class ShadowRenderer {
         return stabilized
     }
 
-    private func computeLightNearFar(centerZ: Float, radius: Float) -> (Float, Float) {
+    private func computeLightNearFar(centerZ: Float, radius: Float, extraDepth: Float) -> (Float, Float) {
         let depthPad = max(depthPadding, radius * 0.005)
         var minZ = centerZ - radius - depthPad
         var maxZ = centerZ + radius + depthPad
+        let depthExtension = max(extraDepth, 0.0)
+        if depthExtension > 0.0 {
+            minZ -= depthExtension
+            maxZ += depthExtension
+        }
         let span = abs(maxZ - minZ)
         if span < minNearFarSpan {
             let extra = (minNearFarSpan - span) * 0.5
@@ -435,57 +474,9 @@ final class ShadowRenderer {
         return result
     }
 
-    private struct NdcBounds {
-        var minX: Float
-        var maxX: Float
-        var minY: Float
-        var maxY: Float
-        var minZ: Float
-        var maxZ: Float
-    }
-
-    private func ndcBoundsForCorners(_ corners: [SIMD3<Float>], lightViewProj: matrix_float4x4) -> NdcBounds {
-        var minX = Float.greatestFiniteMagnitude
-        var maxX = -Float.greatestFiniteMagnitude
-        var minY = Float.greatestFiniteMagnitude
-        var maxY = -Float.greatestFiniteMagnitude
-        var minZ = Float.greatestFiniteMagnitude
-        var maxZ = -Float.greatestFiniteMagnitude
-        for corner in corners {
-            let clip = lightViewProj * SIMD4<Float>(corner, 1.0)
-            if abs(clip.w) < 1e-6 || !isFinite(clip) {
-                continue
-            }
-            let invW = 1.0 / clip.w
-            let ndc = SIMD3<Float>(clip.x * invW, clip.y * invW, clip.z * invW)
-            minX = min(minX, ndc.x)
-            maxX = max(maxX, ndc.x)
-            minY = min(minY, ndc.y)
-            maxY = max(maxY, ndc.y)
-            minZ = min(minZ, ndc.z)
-            maxZ = max(maxZ, ndc.z)
-        }
-        if !minX.isFinite || !maxX.isFinite {
-            return NdcBounds(minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0)
-        }
-        return NdcBounds(minX: minX, maxX: maxX, minY: minY, maxY: maxY, minZ: minZ, maxZ: maxZ)
-    }
-
     private struct BoundingSphere {
         let center: SIMD3<Float>
         let radius: Float
-    }
-
-    private func stableCascadeRadius(splitFar: Float, projection: CameraProjection) -> Float {
-        switch projection {
-        case .perspective(let tanHalfFov, let aspect):
-            let diagonal = tanHalfFov * sqrt(1.0 + aspect * aspect)
-            let radius = splitFar * diagonal
-            return max(radius, minSphereRadius)
-        case .orthographic(let halfWidth, let halfHeight):
-            let radius = sqrt(halfWidth * halfWidth + halfHeight * halfHeight)
-            return max(radius, minSphereRadius)
-        }
     }
 
     private func ritterBoundingSphere(points: [SIMD3<Float>]) -> BoundingSphere {
@@ -538,30 +529,6 @@ final class ShadowRenderer {
         }
 
         return BoundingSphere(center: center, radius: max(radius, minSphereRadius))
-    }
-
-    private func viewZForDistance(_ distance: Float, projection: CameraProjection) -> Float {
-        let d = max(distance, 0.001)
-        switch projection {
-        case .perspective(let tanHalfFov, let aspect):
-            let t = tanHalfFov
-            let a = aspect
-            let factor = max(1e-4, sqrt(1.0 + t * t * (a * a + 1.0)))
-            return max(d / factor, 0.001)
-        case .orthographic(let halfWidth, let halfHeight):
-            let lateral = halfWidth * halfWidth + halfHeight * halfHeight
-            let zSquared = max(d * d - lateral, 0.000001)
-            return max(sqrt(zSquared), 0.001)
-        }
-    }
-
-    private func selectCascadeIndex(value: Float, splits: [Float], cascadeCount: Int) -> Int {
-        var cascade = 0
-        if splits.count > 0 && value > splits[0] { cascade = 1 }
-        if splits.count > 1 && value > splits[1] { cascade = 2 }
-        if splits.count > 2 && value > splits[2] { cascade = 3 }
-        let maxCascade = max(cascadeCount - 1, 0)
-        return min(cascade, maxCascade)
     }
 
     private func determinant3x3(right: SIMD3<Float>, up: SIMD3<Float>, forward: SIMD3<Float>) -> Float {

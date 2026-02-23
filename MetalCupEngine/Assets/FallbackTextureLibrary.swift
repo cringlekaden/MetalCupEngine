@@ -10,6 +10,7 @@ public final class FallbackTextureLibrary {
     public let flatNormal: MTLTexture
     public let aoMap: MTLTexture
     public let metalRoughness: MTLTexture
+    public let orm: MTLTexture
     public let emissive: MTLTexture
     public let blackCubemap: MTLTexture
     public let brdfLut: MTLTexture
@@ -24,6 +25,7 @@ public final class FallbackTextureLibrary {
         flatNormal = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(128, 128, 255, 255), label: "Fallback.FlatNormal")
         aoMap = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(255, 255, 255, 255), label: "Fallback.AO")
         metalRoughness = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(0, 255, 0, 255), label: "Fallback.MetalRoughness")
+        orm = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(255, 255, 0, 255), label: "Fallback.ORM")
         emissive = FallbackTextureLibrary.makeRGBA8Texture(device: device, color: SIMD4<UInt8>(0, 0, 0, 255), label: "Fallback.Emissive")
         blackCubemap = FallbackTextureLibrary.makeSolidCubemap(device: device, preferences: preferences, color: SIMD4<Float16>(0, 0, 0, 1), label: "Fallback.BlackCubemap")
         brdfLut = FallbackTextureLibrary.makeBRDFLut(device: device, label: "Fallback.BRDFLUT")
@@ -36,6 +38,7 @@ public final class FallbackTextureLibrary {
             ObjectIdentifier(flatNormal),
             ObjectIdentifier(aoMap),
             ObjectIdentifier(metalRoughness),
+            ObjectIdentifier(orm),
             ObjectIdentifier(emissive),
             ObjectIdentifier(blackCubemap),
             ObjectIdentifier(brdfLut),

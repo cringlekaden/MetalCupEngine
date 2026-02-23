@@ -71,6 +71,7 @@ public enum FragmentTextureIndex {
     public static let skybox = ShaderBindings.FragmentTexture.skybox
     public static let shadowMap = ShaderBindings.FragmentTexture.shadowMap
     public static let shadowMapSample = ShaderBindings.FragmentTexture.shadowMapSample
+    public static let orm = ShaderBindings.FragmentTexture.orm
 }
 
 public enum FragmentSamplerIndex {
@@ -125,6 +126,10 @@ public struct SceneConstants: sizeable {
     public var skyViewMatrix = matrix_identity_float4x4
     public var projectionMatrix = matrix_identity_float4x4
     public var cameraPositionAndIBL = SIMD4<Float>(0, 0, 0, 1)
+
+    public static let expectedMetalStride = 16
+        + (MemoryLayout<matrix_float4x4>.stride * 3)
+        + MemoryLayout<SIMD4<Float>>.stride
 }
 
 public struct MetalCupMaterial: sizeable {
@@ -139,7 +144,10 @@ public struct MetalCupMaterial: sizeable {
     public var clearcoatFactor: Float = 0.0
     public var clearcoatRoughness: Float = 0.1
     public var sheenRoughness: Float = 0.3
-    public var padding: Float = 0.0
+    public var pbrMaskMode: UInt32 = 0
+    public var aoChannel: UInt32 = 0
+    public var roughnessChannel: UInt32 = 1
+    public var metallicChannel: UInt32 = 2
     public var sheenColor = SIMD3<Float>(0.0, 0.0, 0.0)
     public var padding2: Float = 0.0
 }
@@ -167,6 +175,7 @@ public struct MetalCupMaterialFlags: OptionSet {
     public static let hasSheenIntensityMap = MetalCupMaterialFlags(rawValue: 1 << 17)
     public static let hasClearcoatGlossMap = MetalCupMaterialFlags(rawValue: 1 << 18)
     public static let usesFallbackMaterial = MetalCupMaterialFlags(rawValue: 1 << 19)
+    public static let hasORMMap =            MetalCupMaterialFlags(rawValue: 1 << 20)
 }
 
 public struct LightData: sizeable {
@@ -259,6 +268,9 @@ public struct ShadowConstants: sizeable {
     public var cascadeSplits = SIMD4<Float>(repeating: 0)
     public var shadowCasterDirectionAndEnabled = SIMD4<Float>(0, -1, 0, 0)
     public var shadowMapInvSizeAndCount = SIMD4<Float>(0, 0, 0, 0)
+    public var cascadeWorldUnitsPerTexel = SIMD4<Float>(repeating: 0)
+    public var cascadeNearZ = SIMD4<Float>(repeating: 0)
+    public var cascadeFarZ = SIMD4<Float>(repeating: 0)
     public var shadowBiasParams = SIMD4<Float>(0, 0, 1.0, 0)
     public var shadowFadeParams = SIMD4<Float>(0, 0, 0, 0)
     public var pcssParams0 = SIMD4<Float>(1.0, 1.0, 8.0, 4.0)

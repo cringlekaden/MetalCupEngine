@@ -146,8 +146,11 @@ public final class RendererProfiler {
     public enum Scope: String, CaseIterable {
         case frame
         case update
+        case sceneUpdate
+        case fixedUpdate
         case scene
         case render
+        case renderBatches
         case bloom
         case bloomExtract
         case bloomDownsample
@@ -156,6 +159,18 @@ public final class RendererProfiler {
         case overlays
         case present
         case gpu
+    }
+
+    public enum GpuPass: String, CaseIterable {
+        case shadows
+        case depthPrepass
+        case scene
+        case grid
+        case picking
+        case outline
+        case bloomExtract
+        case bloomBlur
+        case finalComposite
     }
 
     private final class RollingAverage {
@@ -182,10 +197,16 @@ public final class RendererProfiler {
 
     private let queue = DispatchQueue(label: "RendererProfiler.queue")
     private var averages: [Scope: RollingAverage] = [:]
+    private var gpuPassAverages: [GpuPass: RollingAverage] = [:]
+    private var gpuPassProfilingEnabled: Bool = false
+    private var gpuFrameTotals: [UInt64: Double] = [:]
 
     public init(sampleCount: Int = 120) {
         for scope in Scope.allCases {
             averages[scope] = RollingAverage(capacity: sampleCount)
+        }
+        for pass in GpuPass.allCases {
+            gpuPassAverages[pass] = RollingAverage(capacity: sampleCount)
         }
     }
 
@@ -201,5 +222,54 @@ public final class RendererProfiler {
             result = self.averages[scope]?.average ?? 0
         }
         return Float(result)
+    }
+
+    public func recordGpuPass(_ pass: GpuPass, seconds: Double) {
+        queue.async {
+            self.gpuPassAverages[pass]?.add(seconds * 1000.0)
+        }
+    }
+
+    public func averageGpuPassMs(_ pass: GpuPass) -> Float {
+        var result: Double = 0
+        queue.sync {
+            result = self.gpuPassAverages[pass]?.average ?? 0
+        }
+        return Float(result)
+    }
+
+    public func setGpuPassTimingsEnabled(_ enabled: Bool) {
+        queue.async {
+            self.gpuPassProfilingEnabled = enabled
+        }
+    }
+
+    public func gpuPassTimingsEnabled() -> Bool {
+        var result = false
+        queue.sync {
+            result = gpuPassProfilingEnabled
+        }
+        return result
+    }
+
+    public func beginGpuFrame(_ frameId: UInt64) {
+        queue.async {
+            self.gpuFrameTotals[frameId] = 0.0
+        }
+    }
+
+    public func addGpuFrameTime(_ frameId: UInt64, seconds: Double) {
+        queue.async {
+            let current = self.gpuFrameTotals[frameId] ?? 0.0
+            self.gpuFrameTotals[frameId] = current + seconds
+        }
+    }
+
+    public func endGpuFrame(_ frameId: UInt64) {
+        queue.async {
+            if let totalSeconds = self.gpuFrameTotals.removeValue(forKey: frameId) {
+                self.averages[.gpu]?.add(totalSeconds * 1000.0)
+            }
+        }
     }
 }

@@ -78,35 +78,41 @@ public struct PrefabInstanceComponent {
 public struct MeshRendererComponent {
     public var meshHandle: AssetHandle?
     public var materialHandle: AssetHandle?
+    public var submeshMaterialHandles: [AssetHandle?]?
     public var material: MetalCupMaterial?
     public var albedoMapHandle: AssetHandle?
     public var normalMapHandle: AssetHandle?
     public var metallicMapHandle: AssetHandle?
     public var roughnessMapHandle: AssetHandle?
     public var mrMapHandle: AssetHandle?
+    public var ormMapHandle: AssetHandle?
     public var aoMapHandle: AssetHandle?
     public var emissiveMapHandle: AssetHandle?
 
     public init(
         meshHandle: AssetHandle?,
         materialHandle: AssetHandle? = nil,
+        submeshMaterialHandles: [AssetHandle?]? = nil,
         material: MetalCupMaterial? = nil,
         albedoMapHandle: AssetHandle? = nil,
         normalMapHandle: AssetHandle? = nil,
         metallicMapHandle: AssetHandle? = nil,
         roughnessMapHandle: AssetHandle? = nil,
         mrMapHandle: AssetHandle? = nil,
+        ormMapHandle: AssetHandle? = nil,
         aoMapHandle: AssetHandle? = nil,
         emissiveMapHandle: AssetHandle? = nil
     ) {
         self.meshHandle = meshHandle
         self.materialHandle = materialHandle
+        self.submeshMaterialHandles = submeshMaterialHandles
         self.material = material
         self.albedoMapHandle = albedoMapHandle
         self.normalMapHandle = normalMapHandle
         self.metallicMapHandle = metallicMapHandle
         self.roughnessMapHandle = roughnessMapHandle
         self.mrMapHandle = mrMapHandle
+        self.ormMapHandle = ormMapHandle
         self.aoMapHandle = aoMapHandle
         self.emissiveMapHandle = emissiveMapHandle
     }

@@ -188,12 +188,14 @@ public class EngineScene {
                             MeshRendererComponentDTO(
                                 meshHandle: component.meshHandle,
                                 materialHandle: component.materialHandle,
+                                submeshMaterialHandles: component.submeshMaterialHandles,
                                 material: component.material.map { MaterialDTO(material: $0) },
                                 albedoMapHandle: component.albedoMapHandle,
                                 normalMapHandle: component.normalMapHandle,
                                 metallicMapHandle: component.metallicMapHandle,
                                 roughnessMapHandle: component.roughnessMapHandle,
                                 mrMapHandle: component.mrMapHandle,
+                                ormMapHandle: component.ormMapHandle,
                                 aoMapHandle: component.aoMapHandle,
                                 emissiveMapHandle: component.emissiveMapHandle
                             )
@@ -278,12 +280,14 @@ public class EngineScene {
                     MeshRendererComponentDTO(
                         meshHandle: component.meshHandle,
                         materialHandle: component.materialHandle,
+                        submeshMaterialHandles: component.submeshMaterialHandles,
                         material: component.material.map { MaterialDTO(material: $0) },
                         albedoMapHandle: component.albedoMapHandle,
                         normalMapHandle: component.normalMapHandle,
                         metallicMapHandle: component.metallicMapHandle,
                         roughnessMapHandle: component.roughnessMapHandle,
                         mrMapHandle: component.mrMapHandle,
+                        ormMapHandle: component.ormMapHandle,
                         aoMapHandle: component.aoMapHandle,
                         emissiveMapHandle: component.emissiveMapHandle
                     )
@@ -394,12 +398,14 @@ public class EngineScene {
                     let component = MeshRendererComponent(
                         meshHandle: meshRenderer.meshHandle,
                         materialHandle: meshRenderer.materialHandle,
+                        submeshMaterialHandles: meshRenderer.submeshMaterialHandles,
                         material: meshRenderer.material?.toMaterial(),
                         albedoMapHandle: meshRenderer.albedoMapHandle,
                         normalMapHandle: meshRenderer.normalMapHandle,
                         metallicMapHandle: meshRenderer.metallicMapHandle,
                         roughnessMapHandle: meshRenderer.roughnessMapHandle,
                         mrMapHandle: meshRenderer.mrMapHandle,
+                        ormMapHandle: meshRenderer.ormMapHandle,
                         aoMapHandle: meshRenderer.aoMapHandle,
                         emissiveMapHandle: meshRenderer.emissiveMapHandle
                     )
@@ -489,12 +495,14 @@ public class EngineScene {
                 let component = MeshRendererComponent(
                     meshHandle: meshRenderer.meshHandle,
                     materialHandle: meshRenderer.materialHandle,
+                    submeshMaterialHandles: meshRenderer.submeshMaterialHandles,
                     material: meshRenderer.material?.toMaterial(),
                     albedoMapHandle: meshRenderer.albedoMapHandle,
                     normalMapHandle: meshRenderer.normalMapHandle,
                     metallicMapHandle: meshRenderer.metallicMapHandle,
                     roughnessMapHandle: meshRenderer.roughnessMapHandle,
                     mrMapHandle: meshRenderer.mrMapHandle,
+                    ormMapHandle: meshRenderer.ormMapHandle,
                     aoMapHandle: meshRenderer.aoMapHandle,
                     emissiveMapHandle: meshRenderer.emissiveMapHandle
                 )
@@ -617,12 +625,14 @@ public class EngineScene {
                 let component = MeshRendererComponent(
                     meshHandle: meshRenderer.meshHandle,
                     materialHandle: meshRenderer.materialHandle,
+                    submeshMaterialHandles: meshRenderer.submeshMaterialHandles,
                     material: meshRenderer.material?.toMaterial(),
                     albedoMapHandle: meshRenderer.albedoMapHandle,
                     normalMapHandle: meshRenderer.normalMapHandle,
                     metallicMapHandle: meshRenderer.metallicMapHandle,
                     roughnessMapHandle: meshRenderer.roughnessMapHandle,
                     mrMapHandle: meshRenderer.mrMapHandle,
+                    ormMapHandle: meshRenderer.ormMapHandle,
                     aoMapHandle: meshRenderer.aoMapHandle,
                     emissiveMapHandle: meshRenderer.emissiveMapHandle
                 )

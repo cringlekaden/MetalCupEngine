@@ -8,15 +8,14 @@ import Foundation
 public enum OutlineSystem {
 
     static func encodeSelectionOutline(frame: RenderGraphFrame) {
+        guard frame.renderer.settings.outlineEnabled != 0,
+              RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) else { return }
         guard let outline = frame.resources.texture(.outlineMask) else { return }
         let clearPass = RenderPassBuilder.color(texture: outline, clearColor: MTLClearColorMake(0, 0, 0, 0))
         guard let clearEncoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: clearPass) else { return }
         clearEncoder.label = "Selection Outline Clear"
         clearEncoder.endEncoding()
 
-        if frame.renderer.settings.outlineEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) {
-            return
-        }
         guard let pickId = frame.resources.texture(.pickId) else { return }
         guard let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
         guard let selectedId = frame.sceneView.selectedEntityIds.first else { return }

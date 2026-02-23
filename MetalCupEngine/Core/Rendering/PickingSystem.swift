@@ -51,6 +51,10 @@ public final class PickingSystem {
         pendingRequest = PickingRequest(pixel: pixel, mask: mask)
     }
 
+    public func hasPendingRequest() -> Bool {
+        pendingRequest != nil
+    }
+
     public func consumeRequest() -> PickingRequest? {
         let request = pendingRequest
         pendingRequest = nil

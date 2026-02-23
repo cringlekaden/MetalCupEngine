@@ -105,8 +105,8 @@ struct FullscreenPass {
             encoder.setFragmentTexture(grid ?? fallback.blackRGBA, index: PostProcessTextureIndex.grid)
         }
         let resolvedSettings = settings ?? frameContext.rendererSettings()
-        let buffer = frameContext.uploadRendererSettings(resolvedSettings)
-        encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
+        let settingsBuffer = frameContext.uploadRendererSettings(resolvedSettings)
+        encoder.setFragmentBuffer(settingsBuffer.buffer, offset: settingsBuffer.offset, index: FragmentBufferIndex.rendererSettings)
         quad.drawPrimitives(encoder, frameContext: frameContext)
         encoder.popDebugGroup()
     }
@@ -114,6 +114,7 @@ struct FullscreenPass {
 
 final class ShadowPass: RenderGraphPass {
     let name = "ShadowPass"
+    let gpuPass: RendererProfiler.GpuPass? = .shadows
 
     func execute(frame: RenderGraphFrame) {
         frame.renderer.shadowRenderer.render(frame: frame)
@@ -122,6 +123,7 @@ final class ShadowPass: RenderGraphPass {
 
 final class DepthPrepassPass: RenderGraphPass {
     let name = "DepthPrepassPass"
+    let gpuPass: RendererProfiler.GpuPass? = .depthPrepass
 
     func execute(frame: RenderGraphFrame) {
         guard frame.renderer.useDepthPrepass else { return }
@@ -141,6 +143,7 @@ final class DepthPrepassPass: RenderGraphPass {
 
 final class ScenePass: RenderGraphPass {
     let name = "ScenePass"
+    let gpuPass: RendererProfiler.GpuPass? = .scene
 
     func execute(frame: RenderGraphFrame) {
         let sceneStart = CACurrentMediaTime()
@@ -152,7 +155,7 @@ final class ScenePass: RenderGraphPass {
         let depthLoad: MTLLoadAction = frame.renderer.useDepthPrepass ? .load : .clear
         let pass = RenderPassBuilder.colorDepth(color: baseColor, depth: baseDepth, depthLoadAction: depthLoad)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
-        encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates[.HDRBasic])
+        encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates[.HDRInstanced])
         encoder.label = "Scene Pass"
         encoder.pushDebugGroup("Scene Pass")
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(baseColor))
@@ -167,12 +170,20 @@ final class ScenePass: RenderGraphPass {
 
 final class PickingPass: RenderGraphPass {
     let name = "PickingPass"
+    let gpuPass: RendererProfiler.GpuPass? = .picking
 
     func execute(frame: RenderGraphFrame) {
+        // Outline relies on the pickId buffer, so keep it current while a selection is active.
+        let hasSelection = frame.renderer.settings.outlineEnabled != 0
+            && RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView)
+            && !frame.sceneView.selectedEntityIds.isEmpty
+        let needsPickingPass = frame.engineContext.pickingSystem.hasPendingRequest() || hasSelection
+        guard needsPickingPass else { return }
         guard
             let pickId = frame.resources.texture(.pickId),
             let pickDepth = frame.resources.texture(.pickDepth)
         else { return }
+        let request = frame.engineContext.pickingSystem.consumeRequest()
 
         let pass = RenderPassBuilder.color(texture: pickId, clearColor: MTLClearColorMake(0, 0, 0, 0))
         pass.depthAttachment.texture = pickDepth
@@ -189,13 +200,27 @@ final class PickingPass: RenderGraphPass {
         }
         encoder.popDebugGroup()
         encoder.endEncoding()
+
+        if let request, let readbackBuffer = frame.frameContext.pickReadbackBuffer() {
+            frame.engineContext.pickingSystem.enqueueReadback(
+                request: request,
+                pickTexture: pickId,
+                readbackBuffer: readbackBuffer,
+                commandBuffer: frame.commandBuffer
+            ) { pickedId, mask in
+                frame.delegate?.handlePickResult(PickResult(pickedId: pickedId, mask: mask))
+            }
+        }
     }
 }
 
 final class GridOverlayPass: RenderGraphPass {
     let name = "GridOverlayPass"
+    let gpuPass: RendererProfiler.GpuPass? = .grid
 
     func execute(frame: RenderGraphFrame) {
+        guard frame.renderer.settings.gridEnabled != 0,
+              RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) else { return }
         guard let grid = frame.resources.texture(.gridColor) else { return }
         let pass = RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
@@ -206,9 +231,6 @@ final class GridOverlayPass: RenderGraphPass {
             encoder.endEncoding()
         }
 
-        if frame.renderer.settings.gridEnabled == 0 || !RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) {
-            return
-        }
         guard
             let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh),
             var params = frame.engineContext.debugDraw.gridParams()
@@ -221,14 +243,15 @@ final class GridOverlayPass: RenderGraphPass {
         encoder.setFragmentSamplerState(frame.engineContext.graphics.samplerStates[.LinearClampToZero], index: FragmentSamplerIndex.linearClamp)
         encoder.setFragmentTexture(depthTexture, index: PostProcessTextureIndex.depth)
         encoder.setFragmentBytes(&params, length: GridParams.stride, index: FragmentBufferIndex.gridParams)
-        let buffer = frame.frameContext.uploadRendererSettings(frame.renderer.settings)
-        encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
+        let settingsBuffer = frame.frameContext.uploadRendererSettings(frame.renderer.settings)
+        encoder.setFragmentBuffer(settingsBuffer.buffer, offset: settingsBuffer.offset, index: FragmentBufferIndex.rendererSettings)
         quadMesh.drawPrimitives(encoder, frameContext: frame.frameContext)
     }
 }
 
 final class SelectionOutlinePass: RenderGraphPass {
     let name = "SelectionOutlinePass"
+    let gpuPass: RendererProfiler.GpuPass? = .outline
 
     func execute(frame: RenderGraphFrame) {
         OutlineSystem.encodeSelectionOutline(frame: frame)
@@ -237,6 +260,7 @@ final class SelectionOutlinePass: RenderGraphPass {
 
 final class BloomExtractPass: RenderGraphPass {
     let name = "BloomExtractPass"
+    let gpuPass: RendererProfiler.GpuPass? = .bloomExtract
 
     func execute(frame: RenderGraphFrame) {
         let settings = frame.renderer.settings
@@ -292,6 +316,7 @@ final class BloomExtractPass: RenderGraphPass {
 
 final class BloomBlurPass: RenderGraphPass {
     let name = "BloomBlurPass"
+    let gpuPass: RendererProfiler.GpuPass? = .bloomBlur
 
     func execute(frame: RenderGraphFrame) {
         let settings = frame.renderer.settings
@@ -420,6 +445,7 @@ final class BloomBlurPass: RenderGraphPass {
 
 final class FinalCompositePass: RenderGraphPass {
     let name = "FinalCompositePass"
+    let gpuPass: RendererProfiler.GpuPass? = .finalComposite
 
     func execute(frame: RenderGraphFrame) {
         guard

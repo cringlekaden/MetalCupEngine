@@ -80,7 +80,7 @@ public struct RendererFrameContext {
         storage.makeSceneConstantsBuffer(constants, label: label)
     }
 
-    public func uploadRendererSettings(_ settings: RendererSettings) -> MTLBuffer {
+    public func uploadRendererSettings(_ settings: RendererSettings) -> (buffer: MTLBuffer, offset: Int) {
         storage.uploadRendererSettings(settings)
     }
 
@@ -167,6 +167,10 @@ public final class RendererFrameContextStorage {
     private var instanceBufferCapacities: [Int] = []
     private var pickReadbackBuffers: [MTLBuffer?] = []
     private var sceneConstantsBuffers: [MTLBuffer?] = []
+    private var sceneConstantsUploaded: [Bool] = []
+    private var rendererSettingsBuffers: [MTLBuffer?] = []
+    private var rendererSettingsBufferCapacities: [Int] = []
+    private var rendererSettingsWriteOffsets: [Int] = []
     private var lightCountBuffers: [MTLBuffer?] = []
     private var lightDataBuffers: [MTLBuffer?] = []
     private var lightDataBufferCapacities: [Int] = []
@@ -187,6 +191,8 @@ public final class RendererFrameContextStorage {
         ensureFrameStorage()
         batchStats = RendererBatchStats()
         iblReady = false
+        sceneConstantsUploaded[frameIndex] = false
+        rendererSettingsWriteOffsets[frameIndex] = 0
         return RendererFrameContext(storage: self)
     }
 
@@ -260,8 +266,11 @@ public final class RendererFrameContextStorage {
             fatalError("SceneConstants buffer creation failed.")
         }
         MC_ASSERT(requiredBytes <= buffer.length, "SceneConstants buffer too small for upload.")
-        var value = constants
-        memcpy(buffer.contents(), &value, requiredBytes)
+        if !sceneConstantsUploaded[frameIndex] {
+            var value = constants
+            memcpy(buffer.contents(), &value, requiredBytes)
+            sceneConstantsUploaded[frameIndex] = true
+        }
         return buffer
     }
 
@@ -276,19 +285,30 @@ public final class RendererFrameContextStorage {
         return buffer
     }
 
-    fileprivate func uploadRendererSettings(_ settings: RendererSettings) -> MTLBuffer {
+    fileprivate func uploadRendererSettings(_ settings: RendererSettings) -> (buffer: MTLBuffer, offset: Int) {
         #if DEBUG
         MC_ASSERT(RendererSettings.stride == RendererSettings.expectedMetalStride,
                   "RendererSettings stride mismatch (expected \(RendererSettings.expectedMetalStride), got \(RendererSettings.stride)).")
         #endif
+        ensureFrameStorage()
         let requiredBytes = RendererSettings.stride
-        guard let buffer = device.makeBuffer(length: requiredBytes, options: [.storageModeShared]) else {
+        let alignedBytes = alignBufferSize(requiredBytes)
+        let writeOffset = rendererSettingsWriteOffsets[frameIndex]
+        let requiredCapacity = writeOffset + alignedBytes
+        let currentCapacity = rendererSettingsBufferCapacities[frameIndex]
+        if rendererSettingsBuffers[frameIndex] == nil || currentCapacity < requiredCapacity {
+            let newCapacity = max(requiredCapacity, max(currentCapacity, 1) * 2)
+            rendererSettingsBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
+            rendererSettingsBuffers[frameIndex]?.label = "RendererSettings.Frame\(frameIndex)"
+            rendererSettingsBufferCapacities[frameIndex] = newCapacity
+        }
+        guard let buffer = rendererSettingsBuffers[frameIndex] else {
             fatalError("RendererSettings buffer creation failed.")
         }
-        buffer.label = "RendererSettings.Frame\(frameIndex)"
         var value = settings
-        memcpy(buffer.contents(), &value, requiredBytes)
-        return buffer
+        memcpy(buffer.contents().advanced(by: writeOffset), &value, requiredBytes)
+        rendererSettingsWriteOffsets[frameIndex] = writeOffset + alignedBytes
+        return (buffer, writeOffset)
     }
 
     fileprivate func uploadLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer, dataBuffer: MTLBuffer) {
@@ -344,7 +364,7 @@ public final class RendererFrameContextStorage {
             return buffer
         }
 #if DEBUG
-        MC_ASSERT(ShadowConstants.stride == 368, "ShadowConstants stride mismatch. Keep Swift and Metal layouts in sync.")
+        MC_ASSERT(ShadowConstants.stride == 416, "ShadowConstants stride mismatch. Keep Swift and Metal layouts in sync.")
 #endif
         let requiredBytes = ShadowConstants.stride
         guard let buffer = device.makeBuffer(length: requiredBytes, options: [.storageModeShared]) else {
@@ -407,6 +427,12 @@ public final class RendererFrameContextStorage {
         }
         if sceneConstantsBuffers.count < maxFramesInFlight {
             sceneConstantsBuffers = Array(repeating: nil, count: maxFramesInFlight)
+            sceneConstantsUploaded = Array(repeating: false, count: maxFramesInFlight)
+        }
+        if rendererSettingsBuffers.count < maxFramesInFlight {
+            rendererSettingsBuffers = Array(repeating: nil, count: maxFramesInFlight)
+            rendererSettingsBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
+            rendererSettingsWriteOffsets = Array(repeating: 0, count: maxFramesInFlight)
         }
         if lightCountBuffers.count < maxFramesInFlight {
             lightCountBuffers = Array(repeating: nil, count: maxFramesInFlight)
@@ -437,6 +463,11 @@ public final class RendererFrameContextStorage {
         if pickReadbackBuffers[frameIndex] != nil { return }
         pickReadbackBuffers[frameIndex] = device.makeBuffer(length: MemoryLayout<UInt32>.stride, options: [.storageModeShared])
         pickReadbackBuffers[frameIndex]?.label = "PickReadback.Frame\(frameIndex)"
+    }
+
+    private func alignBufferSize(_ size: Int) -> Int {
+        let alignment = 256
+        return ((size + alignment - 1) / alignment) * alignment
     }
 
     private func ensureLightDataBufferCapacity(_ requiredBytes: Int) {

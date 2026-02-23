@@ -160,12 +160,14 @@ public struct MeshRendererComponentDTO: Codable {
     public var schemaVersion: Int
     public var meshHandle: AssetHandle?
     public var materialHandle: AssetHandle?
+    public var submeshMaterialHandles: [AssetHandle?]?
     public var material: MaterialDTO?
     public var albedoMapHandle: AssetHandle?
     public var normalMapHandle: AssetHandle?
     public var metallicMapHandle: AssetHandle?
     public var roughnessMapHandle: AssetHandle?
     public var mrMapHandle: AssetHandle?
+    public var ormMapHandle: AssetHandle?
     public var aoMapHandle: AssetHandle?
     public var emissiveMapHandle: AssetHandle?
 
@@ -173,24 +175,28 @@ public struct MeshRendererComponentDTO: Codable {
         schemaVersion: Int = 1,
         meshHandle: AssetHandle?,
         materialHandle: AssetHandle?,
+        submeshMaterialHandles: [AssetHandle?]?,
         material: MaterialDTO?,
         albedoMapHandle: AssetHandle?,
         normalMapHandle: AssetHandle?,
         metallicMapHandle: AssetHandle?,
         roughnessMapHandle: AssetHandle?,
         mrMapHandle: AssetHandle?,
+        ormMapHandle: AssetHandle?,
         aoMapHandle: AssetHandle?,
         emissiveMapHandle: AssetHandle?
     ) {
         self.schemaVersion = schemaVersion
         self.meshHandle = meshHandle
         self.materialHandle = materialHandle
+        self.submeshMaterialHandles = submeshMaterialHandles
         self.material = material
         self.albedoMapHandle = albedoMapHandle
         self.normalMapHandle = normalMapHandle
         self.metallicMapHandle = metallicMapHandle
         self.roughnessMapHandle = roughnessMapHandle
         self.mrMapHandle = mrMapHandle
+        self.ormMapHandle = ormMapHandle
         self.aoMapHandle = aoMapHandle
         self.emissiveMapHandle = emissiveMapHandle
     }
@@ -1054,6 +1060,10 @@ public struct MaterialDTO: Codable {
     public var clearcoatFactor: Float
     public var clearcoatRoughness: Float
     public var sheenRoughness: Float
+    public var pbrMaskMode: UInt32
+    public var aoChannel: UInt32
+    public var roughnessChannel: UInt32
+    public var metallicChannel: UInt32
     public var sheenColor: Vector3DTO
 
     public init(schemaVersion: Int = 1, material: MetalCupMaterial) {
@@ -1069,6 +1079,10 @@ public struct MaterialDTO: Codable {
         self.clearcoatFactor = material.clearcoatFactor
         self.clearcoatRoughness = material.clearcoatRoughness
         self.sheenRoughness = material.sheenRoughness
+        self.pbrMaskMode = material.pbrMaskMode
+        self.aoChannel = material.aoChannel
+        self.roughnessChannel = material.roughnessChannel
+        self.metallicChannel = material.metallicChannel
         self.sheenColor = Vector3DTO(material.sheenColor)
     }
 
@@ -1086,6 +1100,10 @@ public struct MaterialDTO: Codable {
         clearcoatFactor = try container.decode(Float.self, forKey: .clearcoatFactor)
         clearcoatRoughness = try container.decode(Float.self, forKey: .clearcoatRoughness)
         sheenRoughness = try container.decode(Float.self, forKey: .sheenRoughness)
+        pbrMaskMode = try container.decodeIfPresent(UInt32.self, forKey: .pbrMaskMode) ?? 0
+        aoChannel = try container.decodeIfPresent(UInt32.self, forKey: .aoChannel) ?? 0
+        roughnessChannel = try container.decodeIfPresent(UInt32.self, forKey: .roughnessChannel) ?? 1
+        metallicChannel = try container.decodeIfPresent(UInt32.self, forKey: .metallicChannel) ?? 2
         sheenColor = try container.decode(Vector3DTO.self, forKey: .sheenColor)
     }
 
@@ -1103,6 +1121,10 @@ public struct MaterialDTO: Codable {
         try container.encode(clearcoatFactor, forKey: .clearcoatFactor)
         try container.encode(clearcoatRoughness, forKey: .clearcoatRoughness)
         try container.encode(sheenRoughness, forKey: .sheenRoughness)
+        try container.encode(pbrMaskMode, forKey: .pbrMaskMode)
+        try container.encode(aoChannel, forKey: .aoChannel)
+        try container.encode(roughnessChannel, forKey: .roughnessChannel)
+        try container.encode(metallicChannel, forKey: .metallicChannel)
         try container.encode(sheenColor, forKey: .sheenColor)
     }
 
@@ -1119,6 +1141,10 @@ public struct MaterialDTO: Codable {
         case clearcoatFactor
         case clearcoatRoughness
         case sheenRoughness
+        case pbrMaskMode
+        case aoChannel
+        case roughnessChannel
+        case metallicChannel
         case sheenColor
     }
 
@@ -1135,6 +1161,10 @@ public struct MaterialDTO: Codable {
         material.clearcoatFactor = clearcoatFactor
         material.clearcoatRoughness = clearcoatRoughness
         material.sheenRoughness = sheenRoughness
+        material.pbrMaskMode = pbrMaskMode
+        material.aoChannel = aoChannel
+        material.roughnessChannel = roughnessChannel
+        material.metallicChannel = metallicChannel
         material.sheenColor = sheenColor.toSIMD()
         return material
     }

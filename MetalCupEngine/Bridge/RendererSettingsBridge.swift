@@ -741,6 +741,16 @@ public func MCERendererGetUpdateMs(_ contextPtr: UnsafeRawPointer?) -> Float {
     profiler(contextPtr)?.averageMs(.update) ?? 0
 }
 
+@_cdecl("MCERendererGetSceneUpdateMs")
+public func MCERendererGetSceneUpdateMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.sceneUpdate) ?? 0
+}
+
+@_cdecl("MCERendererGetFixedUpdateMs")
+public func MCERendererGetFixedUpdateMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.fixedUpdate) ?? 0
+}
+
 @_cdecl("MCERendererGetSceneMs")
 public func MCERendererGetSceneMs(_ contextPtr: UnsafeRawPointer?) -> Float {
     profiler(contextPtr)?.averageMs(.scene) ?? 0
@@ -749,6 +759,11 @@ public func MCERendererGetSceneMs(_ contextPtr: UnsafeRawPointer?) -> Float {
 @_cdecl("MCERendererGetRenderMs")
 public func MCERendererGetRenderMs(_ contextPtr: UnsafeRawPointer?) -> Float {
     profiler(contextPtr)?.averageMs(.render) ?? 0
+}
+
+@_cdecl("MCERendererGetRenderBatchMs")
+public func MCERendererGetRenderBatchMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.renderBatches) ?? 0
 }
 
 @_cdecl("MCERendererGetBloomMs")
@@ -784,6 +799,61 @@ public func MCERendererGetOverlaysMs(_ contextPtr: UnsafeRawPointer?) -> Float {
 @_cdecl("MCERendererGetPresentMs")
 public func MCERendererGetPresentMs(_ contextPtr: UnsafeRawPointer?) -> Float {
     profiler(contextPtr)?.averageMs(.present) ?? 0
+}
+
+@_cdecl("MCERendererGetGpuPassTimingsEnabled")
+public func MCERendererGetGpuPassTimingsEnabled(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    profiler(contextPtr)?.gpuPassTimingsEnabled() == true ? 1 : 0
+}
+
+@_cdecl("MCERendererSetGpuPassTimingsEnabled")
+public func MCERendererSetGpuPassTimingsEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    profiler(contextPtr)?.setGpuPassTimingsEnabled(value != 0)
+}
+
+@_cdecl("MCERendererGetGpuShadowPassMs")
+public func MCERendererGetGpuShadowPassMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageGpuPassMs(.shadows) ?? 0
+}
+
+@_cdecl("MCERendererGetGpuDepthPrepassMs")
+public func MCERendererGetGpuDepthPrepassMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageGpuPassMs(.depthPrepass) ?? 0
+}
+
+@_cdecl("MCERendererGetGpuScenePassMs")
+public func MCERendererGetGpuScenePassMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageGpuPassMs(.scene) ?? 0
+}
+
+@_cdecl("MCERendererGetGpuGridPassMs")
+public func MCERendererGetGpuGridPassMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageGpuPassMs(.grid) ?? 0
+}
+
+@_cdecl("MCERendererGetGpuPickingPassMs")
+public func MCERendererGetGpuPickingPassMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageGpuPassMs(.picking) ?? 0
+}
+
+@_cdecl("MCERendererGetGpuOutlinePassMs")
+public func MCERendererGetGpuOutlinePassMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageGpuPassMs(.outline) ?? 0
+}
+
+@_cdecl("MCERendererGetGpuBloomExtractPassMs")
+public func MCERendererGetGpuBloomExtractPassMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageGpuPassMs(.bloomExtract) ?? 0
+}
+
+@_cdecl("MCERendererGetGpuBloomBlurPassMs")
+public func MCERendererGetGpuBloomBlurPassMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageGpuPassMs(.bloomBlur) ?? 0
+}
+
+@_cdecl("MCERendererGetGpuFinalCompositePassMs")
+public func MCERendererGetGpuFinalCompositePassMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageGpuPassMs(.finalComposite) ?? 0
 }
 
 @_cdecl("MCERendererGetGpuMs")

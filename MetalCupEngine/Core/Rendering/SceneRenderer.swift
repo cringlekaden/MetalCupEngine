@@ -3,6 +3,7 @@
 /// Created by Kaden Cringle.
 
 import MetalKit
+import QuartzCore
 import simd
 
 public enum SceneRenderer {
@@ -25,21 +26,21 @@ public enum SceneRenderer {
 
     static func renderScene(into encoder: MTLRenderCommandEncoder, scene: EngineScene, frameContext: RendererFrameContext) {
         encoder.pushDebugGroup("Rendering Scene \(scene.name)...")
-        bindSceneConstants(encoder, scene: scene, frameContext: frameContext)
+        syncIBLTextures(scene: scene, frameContext: frameContext)
+        let sceneConstantsBuffer = resolvedSceneConstantsBuffer(scene: scene, frameContext: frameContext)
         switch frameContext.currentRenderPass() {
         case .main:
-            syncIBLTextures(scene: scene, frameContext: frameContext)
             bindRendererSettings(encoder, settings: frameContext.rendererSettings(), frameContext: frameContext)
             bindShadowResources(encoder, frameContext: frameContext)
             scene.getLightManager().setLightData(encoder, frameContext: frameContext)
-            renderSky(encoder, scene: scene, frameContext: frameContext)
-            renderMeshes(encoder, scene: scene, pass: .main, frameContext: frameContext)
+            renderSky(encoder, scene: scene, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
+            renderMeshes(encoder, scene: scene, pass: .main, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
         case .shadow:
-            renderMeshes(encoder, scene: scene, pass: .shadow, frameContext: frameContext)
+            renderMeshes(encoder, scene: scene, pass: .shadow, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
         case .picking:
-            renderMeshes(encoder, scene: scene, pass: .picking, frameContext: frameContext)
+            renderMeshes(encoder, scene: scene, pass: .picking, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
         case .depthPrepass:
-            renderMeshes(encoder, scene: scene, pass: .depthPrepass, frameContext: frameContext)
+            renderMeshes(encoder, scene: scene, pass: .depthPrepass, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
         }
         encoder.popDebugGroup()
     }
@@ -216,17 +217,27 @@ public enum SceneRenderer {
         let engineContext = frameContext.engineContext()
         encoder.setTriangleFillMode(engineContext.preferences.isWireframeEnabled ? .lines : .fill)
         let usePrepass = frameContext.useDepthPrepass() && pass == .main
-        encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[usePrepass ? .LessEqualNoWrite : .Less])
+        if pass == .depthPrepass {
+            encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.LessEqual])
+        } else if usePrepass {
+            // Shared vertex shader keeps clip-space depth identical, so strict equality is safe.
+            encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.EqualNoWrite])
+        } else {
+            encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.Less])
+        }
         if pass == .shadow {
-            encoder.setCullMode(.none)
+            // Default to front-face culling to reduce self-shadowing (acne).
+            // Preserve double-sided materials by honoring .none from material bindings.
+            let isDoubleSided = (cullMode == .none)
+            encoder.setCullMode(isDoubleSided ? .none : .front)
         } else {
             encoder.setCullMode(cullMode)
         }
         encoder.setFrontFacing(.counterClockwise)
         switch pass {
         case .depthPrepass:
-            // Restore original prepass bias; smaller values cause widespread clipping.
-            encoder.setDepthBias(0.0005, slopeScale: 1.0, clamp: 0.0)
+            // Depth prepass should match main pass depth without bias.
+            encoder.setDepthBias(0.0, slopeScale: 0.0, clamp: 0.0)
         case .shadow:
             // Shadow bias is handled in shader to avoid double-biasing.
             encoder.setDepthBias(0.0, slopeScale: 0.0, clamp: 0.0)
@@ -250,12 +261,11 @@ public enum SceneRenderer {
             encoder,
             scene: scene,
             batch: batch,
-            batchResult: batchResult,
+            batchResult,
             instanceBuffer: instanceBuffer,
             instanceOffset: instanceOffset,
             instanceCount: instanceCount,
-            instancedPipeline: .DepthPrepassInstanced,
-            singlePipeline: .DepthPrepass,
+            pipeline: .DepthPrepassInstanced,
             bindings: nil,
             sceneConstantsBuffer: sceneConstantsBuffer,
             frameContext: frameContext
@@ -277,12 +287,11 @@ public enum SceneRenderer {
             encoder,
             scene: scene,
             batch: batch,
-            batchResult: batchResult,
+            batchResult,
             instanceBuffer: instanceBuffer,
             instanceOffset: instanceOffset,
             instanceCount: instanceCount,
-            instancedPipeline: .DepthPrepassInstanced,
-            singlePipeline: .DepthPrepass,
+            pipeline: .DepthPrepassInstanced,
             bindings: nil,
             sceneConstantsBuffer: sceneConstantsBuffer,
             frameContext: frameContext
@@ -322,12 +331,11 @@ public enum SceneRenderer {
             encoder,
             scene: scene,
             batch: batch,
-            batchResult: batchResult,
+            batchResult,
             instanceBuffer: instanceBuffer,
             instanceOffset: instanceOffset,
             instanceCount: instanceCount,
-            instancedPipeline: .HDRInstanced,
-            singlePipeline: .HDRBasic,
+            pipeline: .HDRInstanced,
             bindings: batch.bindings,
             sceneConstantsBuffer: sceneConstantsBuffer,
             frameContext: frameContext
@@ -338,32 +346,22 @@ public enum SceneRenderer {
         _ encoder: MTLRenderCommandEncoder,
         scene: EngineScene,
         batch: RenderBatch,
-        batchResult: RenderBatchResult,
+        _ batchResult: RenderBatchResult,
         instanceBuffer: MTLBuffer,
         instanceOffset: Int,
         instanceCount: Int,
-        instancedPipeline: RenderPipelineStateType,
-        singlePipeline: RenderPipelineStateType,
+        pipeline: RenderPipelineStateType,
         bindings: MaterialBindings?,
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
         let engineContext = frameContext.engineContext()
-        if instanceCount > 1 {
-            encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[instancedPipeline])
-            bindSceneConstants(encoder, scene: scene, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
-            bindInstanceBuffer(encoder, buffer: instanceBuffer, offset: instanceOffset)
-            assertInstanceBindings(instanceBuffer: instanceBuffer, instanceOffset: instanceOffset, instanceCount: instanceCount)
-            batch.mesh.setInstanceCount(instanceCount)
-            drawMesh(encoder, mesh: batch.mesh, bindings: bindings, frameContext: frameContext)
-            return
-        }
-        encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[singlePipeline])
-        let instanceIndex = batch.instanceRange.lowerBound
-        guard instanceIndex < batchResult.instances.count else { return }
+        // Instanced-only pipeline keeps a single vertex path for every draw, preventing PSO + clip-space divergence.
+        encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[pipeline])
         bindSceneConstants(encoder, scene: scene, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
-        bindModelConstants(encoder, modelMatrix: batchResult.instances[instanceIndex].modelMatrix)
-        batch.mesh.setInstanceCount(1)
+        bindInstanceBuffer(encoder, buffer: instanceBuffer, offset: instanceOffset)
+        assertInstanceBindings(instanceBuffer: instanceBuffer, instanceOffset: instanceOffset, instanceCount: instanceCount)
+        batch.mesh.setInstanceCount(instanceCount)
         drawMesh(encoder, mesh: batch.mesh, bindings: bindings, frameContext: frameContext)
     }
 
@@ -372,15 +370,30 @@ public enum SceneRenderer {
             encoder,
             frameContext: frameContext,
             material: bindings?.materialOverride,
+            submeshMaterialHandles: bindings?.submeshMaterialHandles,
             albedoMapHandle: bindings?.albedoMapHandle,
             normalMapHandle: bindings?.normalMapHandle,
             metallicMapHandle: bindings?.metallicMapHandle,
             roughnessMapHandle: bindings?.roughnessMapHandle,
             mrMapHandle: bindings?.mrMapHandle,
+            ormMapHandle: bindings?.ormMapHandle,
             aoMapHandle: bindings?.aoMapHandle,
             emissiveMapHandle: bindings?.emissiveMapHandle,
             useEmbeddedMaterial: false
         )
+    }
+
+    private static func resolvedSceneConstantsBuffer(scene: EngineScene, frameContext: RendererFrameContext) -> MTLBuffer {
+        var constants = scene.getSceneConstants()
+        if !frameContext.iblReady() {
+            constants.cameraPositionAndIBL.w = 0.0
+        }
+        let buffer = frameContext.uploadSceneConstants(constants)
+#if DEBUG
+        MC_ASSERT(SceneConstants.stride == SceneConstants.expectedMetalStride, "SceneConstants stride mismatch. Keep Swift and Metal layouts in sync.")
+#endif
+        MC_ASSERT(buffer.length >= SceneConstants.stride, "SceneConstants buffer too small.")
+        return buffer
     }
 
     private static func bindSceneConstants(_ encoder: MTLRenderCommandEncoder,
@@ -392,19 +405,8 @@ public enum SceneRenderer {
             encoder.setVertexBuffer(overrideBuffer, offset: 0, index: VertexBufferIndex.sceneConstants)
             return
         }
-        var constants = scene.getSceneConstants()
-        if !frameContext.iblReady() {
-            constants.cameraPositionAndIBL.w = 0.0
-        }
-        let buffer = frameContext.uploadSceneConstants(constants)
-        MC_ASSERT(buffer.length >= SceneConstants.stride, "SceneConstants buffer too small.")
+        let buffer = resolvedSceneConstantsBuffer(scene: scene, frameContext: frameContext)
         encoder.setVertexBuffer(buffer, offset: 0, index: VertexBufferIndex.sceneConstants)
-    }
-
-    private static func bindModelConstants(_ encoder: MTLRenderCommandEncoder, modelMatrix: simd_float4x4) {
-        var modelConstants = ModelConstants()
-        modelConstants.modelMatrix = modelMatrix
-        encoder.setVertexBytes(&modelConstants, length: ModelConstants.stride, index: VertexBufferIndex.modelConstants)
     }
 
     private static func bindInstanceBuffer(_ encoder: MTLRenderCommandEncoder, buffer: MTLBuffer, offset: Int) {
@@ -417,12 +419,12 @@ public enum SceneRenderer {
             resolvedSettings.iblEnabled = 0
             resolvedSettings.iblIntensity = 0.0
         }
-        let buffer = frameContext.uploadRendererSettings(resolvedSettings)
+        let settingsBuffer = frameContext.uploadRendererSettings(resolvedSettings)
 #if DEBUG
         MC_ASSERT(RendererSettings.stride == RendererSettings.expectedMetalStride, "RendererSettings stride mismatch. Keep Swift and Metal layouts in sync.")
-        MC_ASSERT(buffer.length >= RendererSettings.expectedMetalStride, "RendererSettings buffer too small.")
+        MC_ASSERT(settingsBuffer.buffer.length >= RendererSettings.expectedMetalStride, "RendererSettings buffer too small.")
 #endif
-        encoder.setFragmentBuffer(buffer, offset: 0, index: FragmentBufferIndex.rendererSettings)
+        encoder.setFragmentBuffer(settingsBuffer.buffer, offset: settingsBuffer.offset, index: FragmentBufferIndex.rendererSettings)
     }
 
     private static func bindShadowResources(_ encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {
@@ -456,12 +458,14 @@ public enum SceneRenderer {
 
     private struct MaterialBindings {
         var materialHandle: AssetHandle?
+        var submeshMaterialHandles: [AssetHandle?]?
         var materialOverride: MetalCupMaterial?
         var albedoMapHandle: AssetHandle?
         var normalMapHandle: AssetHandle?
         var metallicMapHandle: AssetHandle?
         var roughnessMapHandle: AssetHandle?
         var mrMapHandle: AssetHandle?
+        var ormMapHandle: AssetHandle?
         var aoMapHandle: AssetHandle?
         var emissiveMapHandle: AssetHandle?
         var cullMode: MTLCullMode
@@ -546,6 +550,8 @@ public enum SceneRenderer {
 
     private static func buildRenderBatches(scene: EngineScene, frameContext: RendererFrameContext) -> RenderBatchResult {
         let engineContext = frameContext.engineContext()
+        let profiler = engineContext.renderer?.profiler
+        let buildStart = CACurrentMediaTime()
         var builders: [RenderBatchKey: RenderBatchBuilder] = [:]
         var uniqueMeshes = Set<AssetHandle>()
         let items = buildRenderItems(scene: scene, frameContext: frameContext, engineContext: engineContext)
@@ -557,7 +563,7 @@ public enum SceneRenderer {
             let key = RenderBatchKey(
                 meshHandle: item.meshHandle,
                 materialKey: materialKey,
-                pipeline: .HDRBasic,
+                pipeline: .HDRInstanced,
                 cullModeKey: bindings.cullMode == .none ? 0 : 1
             )
             var builder = builders[key] ?? RenderBatchBuilder(mesh: item.mesh, bindings: bindings, instances: [])
@@ -575,18 +581,13 @@ public enum SceneRenderer {
         var batches: [RenderBatch] = []
         batches.reserveCapacity(builders.count)
         var instancedDrawCalls = 0
-        var nonInstancedDrawCalls = 0
 
         for builder in builders.values {
             let start = instances.count
             instances.append(contentsOf: builder.instances)
             let end = instances.count
             batches.append(RenderBatch(mesh: builder.mesh, bindings: builder.bindings, instanceRange: start..<end))
-            if builder.instances.count > 1 {
-                instancedDrawCalls += 1
-            } else {
-                nonInstancedDrawCalls += 1
-            }
+            instancedDrawCalls += 1
         }
 
         let instanceBuffer = frameContext.uploadInstanceData(instances)
@@ -595,10 +596,13 @@ public enum SceneRenderer {
             uniqueMeshes: uniqueMeshes.count,
             batches: batches.count,
             instancedDrawCalls: instancedDrawCalls,
-            nonInstancedDrawCalls: nonInstancedDrawCalls
+            nonInstancedDrawCalls: 0
         )
         frameContext.updateBatchStats(stats)
 
+        if let profiler {
+            profiler.record(.renderBatches, seconds: CACurrentMediaTime() - buildStart)
+        }
         return RenderBatchResult(instances: instances, batches: batches, instanceBuffer: instanceBuffer)
     }
 
@@ -607,17 +611,21 @@ public enum SceneRenderer {
                                                 meshRenderer: MeshRendererComponent,
                                                 engineContext: EngineContext) -> MaterialBindings {
         let materialHandle = meshRenderer.materialHandle ?? scene.ecs.get(MaterialComponent.self, for: entity)?.materialHandle
+        let submeshMaterialHandles = meshRenderer.submeshMaterialHandles
         var materialOverride = meshRenderer.material
         var albedoMapHandle = meshRenderer.albedoMapHandle
         var normalMapHandle = meshRenderer.normalMapHandle
         var metallicMapHandle = meshRenderer.metallicMapHandle
         var roughnessMapHandle = meshRenderer.roughnessMapHandle
         var mrMapHandle = meshRenderer.mrMapHandle
+        var ormMapHandle = meshRenderer.ormMapHandle
         var aoMapHandle = meshRenderer.aoMapHandle
         var emissiveMapHandle = meshRenderer.emissiveMapHandle
         var cullMode: MTLCullMode = .back
 
-        if let materialHandle,
+        let usesSubmeshMaterials = submeshMaterialHandles?.contains(where: { $0 != nil }) == true
+        if !usesSubmeshMaterials,
+           let materialHandle,
            let materialAsset = engineContext.assets.material(handle: materialHandle) {
             materialOverride = materialAsset.buildMetalMaterial(database: engineContext.assetDatabase)
             albedoMapHandle = materialAsset.textures.baseColor
@@ -625,6 +633,7 @@ public enum SceneRenderer {
             metallicMapHandle = materialAsset.textures.metallic
             roughnessMapHandle = materialAsset.textures.roughness
             mrMapHandle = materialAsset.textures.metalRoughness
+            ormMapHandle = materialAsset.textures.orm
             aoMapHandle = materialAsset.textures.ao
             emissiveMapHandle = materialAsset.textures.emissive
             if (materialOverride?.flags ?? 0) & MetalCupMaterialFlags.isDoubleSided.rawValue != 0 {
@@ -636,7 +645,8 @@ public enum SceneRenderer {
         }
         if let normalHandle = normalMapHandle,
            let metadata = engineContext.assetDatabase?.metadata(for: normalHandle) {
-            if AssetManager.shouldFlipNormalY(path: metadata.sourcePath) {
+            if metadata.importSettings["flipNormalY"] == "true"
+                || AssetManager.shouldFlipNormalY(path: metadata.sourcePath) {
                 var material = materialOverride ?? MetalCupMaterial()
                 material.flags |= MetalCupMaterialFlags.normalFlipY.rawValue
                 materialOverride = material
@@ -645,12 +655,14 @@ public enum SceneRenderer {
 
         return MaterialBindings(
             materialHandle: materialHandle,
+            submeshMaterialHandles: submeshMaterialHandles,
             materialOverride: materialOverride,
             albedoMapHandle: albedoMapHandle,
             normalMapHandle: normalMapHandle,
             metallicMapHandle: metallicMapHandle,
             roughnessMapHandle: roughnessMapHandle,
             mrMapHandle: mrMapHandle,
+            ormMapHandle: ormMapHandle,
             aoMapHandle: aoMapHandle,
             emissiveMapHandle: emissiveMapHandle,
             cullMode: cullMode
@@ -658,6 +670,14 @@ public enum SceneRenderer {
     }
 
     private static func makeMaterialKey(bindings: MaterialBindings) -> MaterialBatchKey {
+        if let submeshHandles = bindings.submeshMaterialHandles,
+           submeshHandles.contains(where: { $0 != nil }) {
+            var hasher = Hasher()
+            for handle in submeshHandles {
+                hasher.combine(handle?.rawValue)
+            }
+            return MaterialBatchKey(materialHandle: nil, overrideHash: hasher.finalize())
+        }
         if let materialHandle = bindings.materialHandle {
             return MaterialBatchKey(materialHandle: materialHandle, overrideHash: 0)
         }
@@ -670,6 +690,7 @@ public enum SceneRenderer {
         hasher.combine(bindings.metallicMapHandle?.rawValue)
         hasher.combine(bindings.roughnessMapHandle?.rawValue)
         hasher.combine(bindings.mrMapHandle?.rawValue)
+        hasher.combine(bindings.ormMapHandle?.rawValue)
         hasher.combine(bindings.aoMapHandle?.rawValue)
         hasher.combine(bindings.emissiveMapHandle?.rawValue)
         return MaterialBatchKey(materialHandle: nil, overrideHash: hasher.finalize())

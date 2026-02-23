@@ -43,6 +43,7 @@ enum ShaderBindings {
         static let skybox = 14
         static let shadowMap = 15
         static let shadowMapSample = 16
+        static let orm = 17
     }
 
     enum FragmentSampler {

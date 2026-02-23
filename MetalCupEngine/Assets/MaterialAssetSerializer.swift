@@ -24,6 +24,8 @@ public struct MaterialAssetDocument: Codable {
     public var unlit: Bool?
 
     public var textures: MaterialTextureSlots?
+    public var pbrMaskMode: PBRMaskMode?
+    public var pbrMaskChannels: PBRMaskChannels?
 
     public init(schemaVersion: Int = 1) {
         self.schemaVersion = schemaVersion
@@ -78,6 +80,17 @@ public enum MaterialAssetSerializer {
 
         var textures = document.textures ?? MaterialTextureSlots()
         textures.enforceMetalRoughnessRule()
+        let resolvedMaskMode: PBRMaskMode
+        if let mode = document.pbrMaskMode {
+            resolvedMaskMode = mode
+        } else if textures.orm != nil {
+            resolvedMaskMode = .orm
+        } else if textures.metalRoughness != nil {
+            resolvedMaskMode = .metallicRoughness
+        } else {
+            resolvedMaskMode = .separate
+        }
+        let resolvedChannels = document.pbrMaskChannels ?? PBRMaskChannels()
 
         let name = document.name ?? url.deletingPathExtension().lastPathComponent
         let baseColor = document.baseColorFactor?.toSIMD() ?? SIMD3<Float>(1.0, 1.0, 1.0)
@@ -97,7 +110,9 @@ public enum MaterialAssetSerializer {
             alphaCutoff: document.alphaCutoff ?? 0.5,
             doubleSided: document.doubleSided ?? false,
             unlit: document.unlit ?? false,
-            textures: textures
+            textures: textures,
+            pbrMaskMode: resolvedMaskMode,
+            pbrMaskChannels: resolvedChannels
         )
     }
 
@@ -117,6 +132,8 @@ public enum MaterialAssetSerializer {
         document.doubleSided = asset.doubleSided
         document.unlit = asset.unlit
         document.textures = asset.textures
+        document.pbrMaskMode = asset.pbrMaskMode
+        document.pbrMaskChannels = asset.pbrMaskChannels
         return document
     }
 }
