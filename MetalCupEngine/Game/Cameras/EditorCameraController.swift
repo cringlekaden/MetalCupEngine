@@ -21,9 +21,14 @@ public final class EditorCameraController {
 
     public func update(transform: inout TransformComponent, frame: FrameContext) {
         if !lastInitialized {
-            yaw = transform.rotation.y
-            pitch = transform.rotation.x
-            let forward = forwardVector(pitch: pitch, yaw: yaw)
+            let rotation = simd_quatf(real: transform.rotation.w,
+                                      imag: SIMD3<Float>(transform.rotation.x,
+                                                        transform.rotation.y,
+                                                        transform.rotation.z))
+            let forward = simd_normalize(rotation.act(SIMD3<Float>(0, 0, -1)))
+            yaw = atan2(forward.x, -forward.z)
+            let clampedY = max(-1.0 as Float, min(1.0 as Float, -forward.y))
+            pitch = asinf(clampedY)
             focalPoint = transform.position + forward * distance
             lastInitialized = true
         }
@@ -55,20 +60,22 @@ public final class EditorCameraController {
             }
         }
 
-        let forward = forwardVector(pitch: pitch, yaw: yaw)
+        let basis = basisFromYawPitch()
+        let forward = basis.forward
         transform.position = focalPoint - forward * distance
-        transform.rotation = SIMD3<Float>(pitch, yaw, 0.0)
+        transform.rotation = basis.rotation
     }
 
     private func orbit(delta: SIMD2<Float>) {
-        yaw += delta.x * lookSpeed * 0.02 * orbitSpeed
-        pitch += delta.y * lookSpeed * 0.02 * orbitSpeed
+        yaw -= delta.x * lookSpeed * 0.02 * orbitSpeed
+        pitch -= delta.y * lookSpeed * 0.02 * orbitSpeed
         pitch = clampPitch(pitch)
     }
 
     private func pan(delta: SIMD2<Float>) {
-        let right = rightVector(pitch: pitch, yaw: yaw)
-        let up = SIMD3<Float>(0, 1, 0)
+        let basis = basisFromYawPitch()
+        let right = basis.right
+        let up = basis.up
         let scale = panSpeed * max(distance, 0.1)
         focalPoint -= right * delta.x * scale
         focalPoint += up * delta.y * scale
@@ -85,14 +92,15 @@ public final class EditorCameraController {
     }
 
     private func freeLook(delta: SIMD2<Float>) {
-        yaw += delta.x * lookSpeed * 0.02
-        pitch += delta.y * lookSpeed * 0.02
+        yaw -= delta.x * lookSpeed * 0.02
+        pitch -= delta.y * lookSpeed * 0.02
         pitch = clampPitch(pitch)
     }
 
     private func fly(dt: Float, keys: [Bool]) {
-        let forward = forwardVector(pitch: pitch, yaw: yaw)
-        let right = rightVector(pitch: pitch, yaw: yaw)
+        let basis = basisFromYawPitch()
+        let forward = basis.forward
+        let right = basis.right
         var move = SIMD3<Float>.zero
         if keyDown(.w, keys: keys) { move += forward }
         if keyDown(.s, keys: keys) { move -= forward }
@@ -116,17 +124,21 @@ public final class EditorCameraController {
         return index >= 0 && index < buttons.count ? buttons[index] : false
     }
 
-    private func forwardVector(pitch: Float, yaw: Float) -> SIMD3<Float> {
-        let cp = cos(pitch)
-        let sp = sin(pitch)
-        let cy = cos(yaw)
-        let sy = sin(yaw)
-        return simd_normalize(SIMD3<Float>(sy * cp, -sp, -cy * cp))
-    }
+    private func basisFromYawPitch() -> (forward: SIMD3<Float>, right: SIMD3<Float>, up: SIMD3<Float>, rotation: SIMD4<Float>) {
+        let worldUp = SIMD3<Float>(0, 1, 0)
+        let yawQuat = simd_quatf(angle: yaw, axis: worldUp)
+        let yawRight = simd_normalize(yawQuat.act(SIMD3<Float>(1, 0, 0)))
+        let pitchQuat = simd_quatf(angle: pitch, axis: yawRight)
+        let rotationQuat = simd_normalize(pitchQuat * yawQuat)
 
-    private func rightVector(pitch: Float, yaw: Float) -> SIMD3<Float> {
-        let forward = forwardVector(pitch: pitch, yaw: yaw)
-        return simd_normalize(cross(forward, SIMD3<Float>(0, 1, 0)))
+        let forward = simd_normalize(rotationQuat.act(SIMD3<Float>(0, 0, -1)))
+        let right = simd_normalize(rotationQuat.act(SIMD3<Float>(1, 0, 0)))
+        let up = simd_normalize(rotationQuat.act(SIMD3<Float>(0, 1, 0)))
+        let rotation = TransformMath.normalizedQuaternion(SIMD4<Float>(rotationQuat.imag.x,
+                                                                     rotationQuat.imag.y,
+                                                                     rotationQuat.imag.z,
+                                                                     rotationQuat.real))
+        return (forward: forward, right: right, up: up, rotation: rotation)
     }
 
     private func clampPitch(_ value: Float) -> Float {

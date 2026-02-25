@@ -28,6 +28,10 @@ public enum ShaderType {
     case PickFragment
     case GridFragment
     case OutlineFragment
+    case DebugLineVertex
+    case DebugLineFragment
+    case DepthAlphaFragment
+    case ShadowAlphaFragment
 }
 
 public class ShaderLibrary: Library<ShaderType, MTLFunction> {
@@ -75,6 +79,10 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         register(.PickFragment, name: "Pick Fragment", functionName: "fragment_pick_id")
         register(.GridFragment, name: "Grid Fragment", functionName: "fragment_grid")
         register(.OutlineFragment, name: "Outline Fragment", functionName: "fragment_outline_mask")
+        register(.DebugLineVertex, name: "Debug Line Vertex", functionName: "vertex_debug_line")
+        register(.DebugLineFragment, name: "Debug Line Fragment", functionName: "fragment_debug_line")
+        register(.DepthAlphaFragment, name: "Depth Alpha Fragment", functionName: "fragment_depth_alpha")
+        register(.ShadowAlphaFragment, name: "Shadow Alpha Fragment", functionName: "fragment_shadow_alpha")
     }
 
     override subscript(_ type: ShaderType)->MTLFunction {
@@ -83,20 +91,41 @@ public class ShaderLibrary: Library<ShaderType, MTLFunction> {
         }
         return fn
     }
+
+    public func function(_ type: ShaderType, constants: MTLFunctionConstantValues?) -> MTLFunction {
+        guard let shader = _library[type] else {
+            fatalError("ShaderLibrary: shader for \(type) not registered. Register shaders before building pipeline states.")
+        }
+        return shader.makeFunction(constants: constants)
+    }
 }
 
 public class Shader {
+    let name: String
+    let functionName: String
+    private let resourceRegistry: ResourceRegistry
+    private let device: MTLDevice
+    private let fallbackLibrary: MTLLibrary?
     var function: MTLFunction!
 
     init(name: String, functionName: String, resourceRegistry: ResourceRegistry, device: MTLDevice, fallbackLibrary: MTLLibrary?) {
-        let fn = resourceRegistry.resolveFunction(functionName, device: device, fallbackLibrary: fallbackLibrary)
+        self.name = name
+        self.functionName = functionName
+        self.resourceRegistry = resourceRegistry
+        self.device = device
+        self.fallbackLibrary = fallbackLibrary
+        self.function = makeFunction(constants: nil)
+    }
+
+    func makeFunction(constants: MTLFunctionConstantValues?) -> MTLFunction {
+        let fn = resourceRegistry.resolveFunction(functionName, device: device, fallbackLibrary: fallbackLibrary, constants: constants)
         guard let resolved = fn else {
             if let compileError = resourceRegistry.lastShaderCompileError {
                 fatalError("Shader '\(functionName)' not found. Metal compile error: \(compileError)")
             }
             fatalError("Shader '\(functionName)' not found. Ensure the .metal file is compiled into the app target or runtime shader library.")
         }
-        self.function = resolved
-        self.function.label = name
+        resolved.label = name
+        return resolved
     }
 }

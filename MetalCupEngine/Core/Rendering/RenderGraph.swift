@@ -35,6 +35,7 @@ final class RenderGraph {
             DepthPrepassPass(),
             ScenePass(),
             GridOverlayPass(),
+            DebugDrawPass(),
             PickingPass(),
             SelectionOutlinePass(),
             BloomExtractPass(),

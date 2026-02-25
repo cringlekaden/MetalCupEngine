@@ -15,19 +15,22 @@ public struct SceneDocument: Codable {
     public var name: String
     public var entities: [EntityDocument]
     public var rendererSettingsOverride: RendererSettingsDTO?
+    public var physicsSettingsOverride: PhysicsSettingsDTO?
 
     public init(
         schemaVersion: Int = SceneSchema.currentVersion,
         id: UUID,
         name: String,
         entities: [EntityDocument],
-        rendererSettingsOverride: RendererSettingsDTO? = nil
+        rendererSettingsOverride: RendererSettingsDTO? = nil,
+        physicsSettingsOverride: PhysicsSettingsDTO? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
         self.name = name
         self.entities = entities
         self.rendererSettingsOverride = rendererSettingsOverride
+        self.physicsSettingsOverride = physicsSettingsOverride
     }
 }
 
@@ -49,6 +52,8 @@ public struct ComponentsDocument: Codable {
     public var prefabOverrides: PrefabOverrideComponentDTO?
     public var meshRenderer: MeshRendererComponentDTO?
     public var materialComponent: MaterialComponentDTO?
+    public var rigidbody: RigidbodyComponentDTO?
+    public var collider: ColliderComponentDTO?
     public var light: LightComponentDTO?
     public var lightOrbit: LightOrbitComponentDTO?
     public var camera: CameraComponentDTO?
@@ -65,6 +70,8 @@ public struct ComponentsDocument: Codable {
         prefabOverrides: PrefabOverrideComponentDTO? = nil,
         meshRenderer: MeshRendererComponentDTO? = nil,
         materialComponent: MaterialComponentDTO? = nil,
+        rigidbody: RigidbodyComponentDTO? = nil,
+        collider: ColliderComponentDTO? = nil,
         light: LightComponentDTO? = nil,
         lightOrbit: LightOrbitComponentDTO? = nil,
         camera: CameraComponentDTO? = nil,
@@ -80,6 +87,8 @@ public struct ComponentsDocument: Codable {
         self.prefabOverrides = prefabOverrides
         self.meshRenderer = meshRenderer
         self.materialComponent = materialComponent
+        self.rigidbody = rigidbody
+        self.collider = collider
         self.light = light
         self.lightOrbit = lightOrbit
         self.camera = camera
@@ -111,14 +120,45 @@ public struct NameComponentDTO: Codable {
 public struct TransformComponentDTO: Codable {
     public var schemaVersion: Int
     public var position: Vector3DTO
-    public var rotation: Vector3DTO
+    public var rotationQuat: Vector4DTO
     public var scale: Vector3DTO
 
-    public init(schemaVersion: Int = 1, position: Vector3DTO, rotation: Vector3DTO, scale: Vector3DTO) {
+    public init(schemaVersion: Int = 2, position: Vector3DTO, rotationQuat: Vector4DTO, scale: Vector3DTO) {
         self.schemaVersion = schemaVersion
         self.position = position
-        self.rotation = rotation
+        self.rotationQuat = rotationQuat
         self.scale = scale
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case position
+        case rotationQuat
+        case rotation
+        case scale
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        position = try container.decode(Vector3DTO.self, forKey: .position)
+        scale = try container.decode(Vector3DTO.self, forKey: .scale)
+
+        if let quat = try container.decodeIfPresent(Vector4DTO.self, forKey: .rotationQuat) {
+            rotationQuat = quat
+        } else if let euler = try container.decodeIfPresent(Vector3DTO.self, forKey: .rotation) {
+            rotationQuat = Vector4DTO(TransformMath.quaternionFromEulerXYZ(euler.toSIMD()))
+        } else {
+            rotationQuat = Vector4DTO(TransformMath.identityQuaternion)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(position, forKey: .position)
+        try container.encode(rotationQuat, forKey: .rotationQuat)
+        try container.encode(scale, forKey: .scale)
     }
 }
 
@@ -209,6 +249,138 @@ public struct MaterialComponentDTO: Codable {
     public init(schemaVersion: Int = 1, materialHandle: AssetHandle?) {
         self.schemaVersion = schemaVersion
         self.materialHandle = materialHandle
+    }
+}
+
+public struct RigidbodyComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var motionType: UInt32
+    public var mass: Float
+    public var friction: Float
+    public var restitution: Float
+    public var linearDamping: Float
+    public var angularDamping: Float
+    public var gravityFactor: Float
+    public var allowSleeping: Bool
+    public var ccdEnabled: Bool
+    public var collisionLayer: Int32
+
+    public init(schemaVersion: Int = 1,
+                enabled: Bool,
+                motionType: UInt32,
+                mass: Float,
+                friction: Float,
+                restitution: Float,
+                linearDamping: Float,
+                angularDamping: Float,
+                gravityFactor: Float,
+                allowSleeping: Bool,
+                ccdEnabled: Bool,
+                collisionLayer: Int32) {
+        self.schemaVersion = schemaVersion
+        self.enabled = enabled
+        self.motionType = motionType
+        self.mass = mass
+        self.friction = friction
+        self.restitution = restitution
+        self.linearDamping = linearDamping
+        self.angularDamping = angularDamping
+        self.gravityFactor = gravityFactor
+        self.allowSleeping = allowSleeping
+        self.ccdEnabled = ccdEnabled
+        self.collisionLayer = collisionLayer
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        motionType = try container.decodeIfPresent(UInt32.self, forKey: .motionType) ?? RigidbodyMotionType.dynamic.rawValue
+        mass = try container.decodeIfPresent(Float.self, forKey: .mass) ?? 1.0
+        friction = try container.decodeIfPresent(Float.self, forKey: .friction) ?? 0.5
+        restitution = try container.decodeIfPresent(Float.self, forKey: .restitution) ?? 0.0
+        linearDamping = try container.decodeIfPresent(Float.self, forKey: .linearDamping) ?? 0.0
+        angularDamping = try container.decodeIfPresent(Float.self, forKey: .angularDamping) ?? 0.05
+        gravityFactor = try container.decodeIfPresent(Float.self, forKey: .gravityFactor) ?? 1.0
+        allowSleeping = try container.decodeIfPresent(Bool.self, forKey: .allowSleeping) ?? true
+        ccdEnabled = try container.decodeIfPresent(Bool.self, forKey: .ccdEnabled) ?? false
+        collisionLayer = try container.decodeIfPresent(Int32.self, forKey: .collisionLayer) ?? 0
+    }
+
+    public func toComponent() -> RigidbodyComponent {
+        return RigidbodyComponent(isEnabled: enabled,
+                                  motionType: RigidbodyMotionType(rawValue: motionType) ?? .dynamic,
+                                  mass: mass,
+                                  friction: friction,
+                                  restitution: restitution,
+                                  linearDamping: linearDamping,
+                                  angularDamping: angularDamping,
+                                  gravityFactor: gravityFactor,
+                                  allowSleeping: allowSleeping,
+                                  ccdEnabled: ccdEnabled,
+                                  collisionLayer: collisionLayer)
+    }
+}
+
+public struct ColliderComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var shapeType: UInt32
+    public var boxHalfExtents: Vector3DTO
+    public var sphereRadius: Float
+    public var capsuleHalfHeight: Float
+    public var capsuleRadius: Float
+    public var offset: Vector3DTO
+    public var rotationOffset: Vector3DTO
+    public var isTrigger: Bool
+
+    public init(schemaVersion: Int = 1,
+                enabled: Bool,
+                shapeType: UInt32,
+                boxHalfExtents: Vector3DTO,
+                sphereRadius: Float,
+                capsuleHalfHeight: Float,
+                capsuleRadius: Float,
+                offset: Vector3DTO,
+                rotationOffset: Vector3DTO,
+                isTrigger: Bool) {
+        self.schemaVersion = schemaVersion
+        self.enabled = enabled
+        self.shapeType = shapeType
+        self.boxHalfExtents = boxHalfExtents
+        self.sphereRadius = sphereRadius
+        self.capsuleHalfHeight = capsuleHalfHeight
+        self.capsuleRadius = capsuleRadius
+        self.offset = offset
+        self.rotationOffset = rotationOffset
+        self.isTrigger = isTrigger
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        shapeType = try container.decodeIfPresent(UInt32.self, forKey: .shapeType) ?? ColliderShapeType.box.rawValue
+        boxHalfExtents = try container.decodeIfPresent(Vector3DTO.self, forKey: .boxHalfExtents) ?? Vector3DTO(SIMD3<Float>(repeating: 0.5))
+        sphereRadius = try container.decodeIfPresent(Float.self, forKey: .sphereRadius) ?? 0.5
+        capsuleHalfHeight = try container.decodeIfPresent(Float.self, forKey: .capsuleHalfHeight) ?? 0.5
+        capsuleRadius = try container.decodeIfPresent(Float.self, forKey: .capsuleRadius) ?? 0.5
+        offset = try container.decodeIfPresent(Vector3DTO.self, forKey: .offset) ?? Vector3DTO(.zero)
+        rotationOffset = try container.decodeIfPresent(Vector3DTO.self, forKey: .rotationOffset) ?? Vector3DTO(.zero)
+        isTrigger = try container.decodeIfPresent(Bool.self, forKey: .isTrigger) ?? false
+    }
+
+    public func toComponent() -> ColliderComponent {
+        return ColliderComponent(isEnabled: enabled,
+                                 shapeType: ColliderShapeType(rawValue: shapeType) ?? .box,
+                                 boxHalfExtents: boxHalfExtents.toSIMD(),
+                                 sphereRadius: sphereRadius,
+                                 capsuleHalfHeight: capsuleHalfHeight,
+                                 capsuleRadius: capsuleRadius,
+                                 offset: offset.toSIMD(),
+                                 rotationOffset: rotationOffset.toSIMD(),
+                                 isTrigger: isTrigger)
     }
 }
 
@@ -850,6 +1022,124 @@ public struct RendererSettingsDTO: Codable {
     }
 }
 
+public struct PhysicsSettingsDTO: Codable {
+    public var schemaVersion: Int
+    public var isEnabled: Bool
+    public var gravity: Vector3DTO
+    public var solverIterations: UInt32
+    public var qualityPreset: UInt32
+    public var fixedDeltaTime: Float
+    public var maxSubsteps: Int32
+    public var defaultFriction: Float
+    public var defaultRestitution: Float
+    public var defaultAngularDamping: Float
+    public var ccdEnabled: Bool
+    public var resolveInitialOverlap: Bool
+    public var deterministic: Bool = false
+    public var debugDrawEnabled: Bool
+    public var debugDrawInPlay: Bool
+    public var showColliders: Bool
+    public var showCOMAxes: Bool
+    public var showContacts: Bool
+    public var showSleeping: Bool = false
+    public var showOverlaps: Bool = false
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case isEnabled
+        case gravity
+        case solverIterations
+        case qualityPreset
+        case fixedDeltaTime
+        case maxSubsteps
+        case defaultFriction
+        case defaultRestitution
+        case defaultAngularDamping
+        case ccdEnabled
+        case resolveInitialOverlap
+        case deterministic
+        case debugDrawEnabled
+        case debugDrawInPlay
+        case showColliders
+        case showCOMAxes
+        case showContacts
+        case showSleeping
+        case showOverlaps
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        gravity = try container.decode(Vector3DTO.self, forKey: .gravity)
+        solverIterations = try container.decode(UInt32.self, forKey: .solverIterations)
+        qualityPreset = try container.decode(UInt32.self, forKey: .qualityPreset)
+        fixedDeltaTime = try container.decode(Float.self, forKey: .fixedDeltaTime)
+        maxSubsteps = try container.decode(Int32.self, forKey: .maxSubsteps)
+        defaultFriction = try container.decode(Float.self, forKey: .defaultFriction)
+        defaultRestitution = try container.decode(Float.self, forKey: .defaultRestitution)
+        defaultAngularDamping = try container.decode(Float.self, forKey: .defaultAngularDamping)
+        ccdEnabled = try container.decode(Bool.self, forKey: .ccdEnabled)
+        resolveInitialOverlap = try container.decode(Bool.self, forKey: .resolveInitialOverlap)
+        deterministic = try container.decodeIfPresent(Bool.self, forKey: .deterministic) ?? false
+        debugDrawEnabled = try container.decode(Bool.self, forKey: .debugDrawEnabled)
+        debugDrawInPlay = try container.decode(Bool.self, forKey: .debugDrawInPlay)
+        showColliders = try container.decode(Bool.self, forKey: .showColliders)
+        showCOMAxes = try container.decode(Bool.self, forKey: .showCOMAxes)
+        showContacts = try container.decode(Bool.self, forKey: .showContacts)
+        showSleeping = try container.decodeIfPresent(Bool.self, forKey: .showSleeping) ?? false
+        showOverlaps = try container.decodeIfPresent(Bool.self, forKey: .showOverlaps) ?? false
+    }
+
+    public init(schemaVersion: Int = 1, settings: PhysicsSettings) {
+        self.schemaVersion = schemaVersion
+        self.isEnabled = settings.isEnabled
+        self.gravity = Vector3DTO(settings.gravity)
+        self.solverIterations = settings.solverIterations
+        self.qualityPreset = settings.qualityPreset.rawValue
+        self.fixedDeltaTime = settings.fixedDeltaTime
+        self.maxSubsteps = Int32(settings.maxSubsteps)
+        self.defaultFriction = settings.defaultFriction
+        self.defaultRestitution = settings.defaultRestitution
+        self.defaultAngularDamping = settings.defaultAngularDamping
+        self.ccdEnabled = settings.ccdEnabled
+        self.resolveInitialOverlap = settings.resolveInitialOverlap
+        self.deterministic = settings.deterministic
+        self.debugDrawEnabled = settings.debugDrawEnabled
+        self.debugDrawInPlay = settings.debugDrawInPlay
+        self.showColliders = settings.showColliders
+        self.showCOMAxes = settings.showCOMAxes
+        self.showContacts = settings.showContacts
+        self.showSleeping = settings.showSleeping
+        self.showOverlaps = settings.showOverlaps
+    }
+
+    public func makePhysicsSettings() -> PhysicsSettings {
+        let preset = PhysicsSettings.QualityPreset(rawValue: qualityPreset) ?? .medium
+        return PhysicsSettings(
+            isEnabled: isEnabled,
+            gravity: gravity.toSIMD(),
+            solverIterations: solverIterations,
+            qualityPreset: preset,
+            fixedDeltaTime: fixedDeltaTime,
+            maxSubsteps: Int(maxSubsteps),
+            defaultFriction: defaultFriction,
+            defaultRestitution: defaultRestitution,
+            defaultAngularDamping: defaultAngularDamping,
+            ccdEnabled: ccdEnabled,
+            resolveInitialOverlap: resolveInitialOverlap,
+            deterministic: deterministic,
+            debugDrawEnabled: debugDrawEnabled,
+            debugDrawInPlay: debugDrawInPlay,
+            showColliders: showColliders,
+            showCOMAxes: showCOMAxes,
+            showContacts: showContacts,
+            showSleeping: showSleeping,
+            showOverlaps: showOverlaps
+        )
+    }
+}
+
 public struct ShadowsSettingsDTO: Codable {
     public var enabled: UInt32
     public var directionalEnabled: UInt32
@@ -975,6 +1265,38 @@ public struct Vector3DTO: Codable {
     }
 }
 
+public struct Vector4DTO: Codable {
+    public var x: Float
+    public var y: Float
+    public var z: Float
+    public var w: Float
+
+    public init(_ value: SIMD4<Float>) {
+        self.x = value.x
+        self.y = value.y
+        self.z = value.z
+        self.w = value.w
+    }
+
+    public func toSIMD() -> SIMD4<Float> {
+        SIMD4<Float>(x, y, z, w)
+    }
+}
+
+public struct Vector2DTO: Codable {
+    public var x: Float
+    public var y: Float
+
+    public init(_ value: SIMD2<Float>) {
+        self.x = value.x
+        self.y = value.y
+    }
+
+    public func toSIMD() -> SIMD2<Float> {
+        SIMD2<Float>(x, y)
+    }
+}
+
 public enum LightTypeDTO: String, Codable {
     case point
     case spot
@@ -1065,6 +1387,8 @@ public struct MaterialDTO: Codable {
     public var roughnessChannel: UInt32
     public var metallicChannel: UInt32
     public var sheenColor: Vector3DTO
+    public var uvTiling: Vector2DTO
+    public var uvOffset: Vector2DTO
 
     public init(schemaVersion: Int = 1, material: MetalCupMaterial) {
         self.schemaVersion = schemaVersion
@@ -1084,6 +1408,8 @@ public struct MaterialDTO: Codable {
         self.roughnessChannel = material.roughnessChannel
         self.metallicChannel = material.metallicChannel
         self.sheenColor = Vector3DTO(material.sheenColor)
+        self.uvTiling = Vector2DTO(material.uvTiling)
+        self.uvOffset = Vector2DTO(material.uvOffset)
     }
 
     public init(from decoder: Decoder) throws {
@@ -1105,6 +1431,8 @@ public struct MaterialDTO: Codable {
         roughnessChannel = try container.decodeIfPresent(UInt32.self, forKey: .roughnessChannel) ?? 1
         metallicChannel = try container.decodeIfPresent(UInt32.self, forKey: .metallicChannel) ?? 2
         sheenColor = try container.decode(Vector3DTO.self, forKey: .sheenColor)
+        uvTiling = try container.decodeIfPresent(Vector2DTO.self, forKey: .uvTiling) ?? Vector2DTO(SIMD2<Float>(1.0, 1.0))
+        uvOffset = try container.decodeIfPresent(Vector2DTO.self, forKey: .uvOffset) ?? Vector2DTO(SIMD2<Float>(0.0, 0.0))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1126,6 +1454,8 @@ public struct MaterialDTO: Codable {
         try container.encode(roughnessChannel, forKey: .roughnessChannel)
         try container.encode(metallicChannel, forKey: .metallicChannel)
         try container.encode(sheenColor, forKey: .sheenColor)
+        try container.encode(uvTiling, forKey: .uvTiling)
+        try container.encode(uvOffset, forKey: .uvOffset)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1146,6 +1476,8 @@ public struct MaterialDTO: Codable {
         case roughnessChannel
         case metallicChannel
         case sheenColor
+        case uvTiling
+        case uvOffset
     }
 
     public func toMaterial() -> MetalCupMaterial {
@@ -1166,14 +1498,20 @@ public struct MaterialDTO: Codable {
         material.roughnessChannel = roughnessChannel
         material.metallicChannel = metallicChannel
         material.sheenColor = sheenColor.toSIMD()
+        material.uvTiling = uvTiling.toSIMD()
+        material.uvOffset = uvOffset.toSIMD()
         return material
     }
 }
 
 public enum SceneSerializer {
     public static func save(scene: EngineScene, to url: URL) throws {
-        let settings = scene.engineContext?.rendererSettings ?? RendererSettings()
-        let document = scene.toDocument(rendererSettingsOverride: RendererSettingsDTO(settings: settings))
+        let rendererSettings = scene.engineContext?.rendererSettings ?? RendererSettings()
+        let physicsSettings = scene.engineContext?.physicsSettings ?? PhysicsSettings()
+        let document = scene.toDocument(
+            rendererSettingsOverride: RendererSettingsDTO(settings: rendererSettings),
+            physicsSettingsOverride: PhysicsSettingsDTO(settings: physicsSettings)
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(document)

@@ -23,13 +23,16 @@ public enum OutlineSystem {
         let selectedPickId = frame.engineContext.pickingSystem.pickId(for: selectedId)
         if selectedPickId == 0 { return }
 
+        let frameIndex = frame.frameContext.currentFrameIndex()
         let pass = RenderPassBuilder.color(texture: outline, clearColor: MTLClearColorMake(0, 0, 0, 0))
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "Selection Outline"
         encoder.pushDebugGroup("Selection Outline")
+        frame.profiler.sampleGpuPassBegin(.outline, encoder: encoder, frameIndex: frameIndex)
         defer {
             encoder.popDebugGroup()
             encoder.endEncoding()
+            frame.profiler.sampleGpuPassEnd(.outline, encoder: encoder, frameIndex: frameIndex)
         }
 
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(outline))

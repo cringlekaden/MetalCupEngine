@@ -110,11 +110,17 @@ public struct SimpleVertex: sizeable {
     public var position: SIMD3<Float>
 }
 
+public struct DebugLineVertex: sizeable {
+    public var position: SIMD3<Float>
+    public var color: SIMD4<Float>
+}
+
 public struct ModelConstants: sizeable {
     public var modelMatrix = matrix_identity_float4x4
 }
 
 public struct InstanceData: sizeable {
+    public static let expectedMetalStride: Int = 96
     public var modelMatrix = matrix_identity_float4x4
     public var entityID: UInt32 = 0
     public var padding = SIMD4<UInt32>(repeating: 0)
@@ -125,15 +131,19 @@ public struct SceneConstants: sizeable {
     public var viewMatrix = matrix_identity_float4x4
     public var skyViewMatrix = matrix_identity_float4x4
     public var projectionMatrix = matrix_identity_float4x4
+    public var inverseProjectionMatrix = matrix_identity_float4x4
     public var cameraPositionAndIBL = SIMD4<Float>(0, 0, 0, 1)
 
     public static let expectedMetalStride = 16
-        + (MemoryLayout<matrix_float4x4>.stride * 3)
+        + (MemoryLayout<matrix_float4x4>.stride * 4)
         + MemoryLayout<SIMD4<Float>>.stride
 }
 
 public struct MetalCupMaterial: sizeable {
+    public static let expectedMetalStride: Int = 144
+
     public var baseColor = SIMD3<Float>(0.8, 0.8, 0.8)
+    public var baseColorAlpha: Float = 1.0
     public var metallicScalar: Float = 0.0
     public var roughnessScalar: Float = 0.8
     public var aoScalar: Float = 1.0
@@ -150,6 +160,8 @@ public struct MetalCupMaterial: sizeable {
     public var metallicChannel: UInt32 = 2
     public var sheenColor = SIMD3<Float>(0.0, 0.0, 0.0)
     public var padding2: Float = 0.0
+    public var uvTiling = SIMD2<Float>(1.0, 1.0)
+    public var uvOffset = SIMD2<Float>(0.0, 0.0)
 }
 
 public struct MetalCupMaterialFlags: OptionSet {

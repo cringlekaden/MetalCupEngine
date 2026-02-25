@@ -79,11 +79,14 @@ public struct MaterialAsset {
     public var version: Int
 
     public var baseColorFactor: SIMD3<Float>
+    public var baseColorAlpha: Float
     public var metallicFactor: Float
     public var roughnessFactor: Float
     public var aoFactor: Float
     public var emissiveColor: SIMD3<Float>
     public var emissiveIntensity: Float
+    public var uvTiling: SIMD2<Float>
+    public var uvOffset: SIMD2<Float>
 
     public var alphaMode: MaterialAlphaMode
     public var alphaCutoff: Float
@@ -99,11 +102,14 @@ public struct MaterialAsset {
         name: String,
         version: Int = 1,
         baseColorFactor: SIMD3<Float> = SIMD3<Float>(1.0, 1.0, 1.0),
+        baseColorAlpha: Float = 1.0,
         metallicFactor: Float = 1.0,
         roughnessFactor: Float = 1.0,
         aoFactor: Float = 1.0,
         emissiveColor: SIMD3<Float> = SIMD3<Float>(0.0, 0.0, 0.0),
         emissiveIntensity: Float = 1.0,
+        uvTiling: SIMD2<Float> = SIMD2<Float>(1.0, 1.0),
+        uvOffset: SIMD2<Float> = SIMD2<Float>(0.0, 0.0),
         alphaMode: MaterialAlphaMode = .opaque,
         alphaCutoff: Float = 0.5,
         doubleSided: Bool = false,
@@ -116,11 +122,14 @@ public struct MaterialAsset {
         self.name = name
         self.version = version
         self.baseColorFactor = baseColorFactor
+        self.baseColorAlpha = baseColorAlpha
         self.metallicFactor = metallicFactor
         self.roughnessFactor = roughnessFactor
         self.aoFactor = aoFactor
         self.emissiveColor = emissiveColor
         self.emissiveIntensity = emissiveIntensity
+        self.uvTiling = uvTiling
+        self.uvOffset = uvOffset
         self.alphaMode = alphaMode
         self.alphaCutoff = alphaCutoff
         self.doubleSided = doubleSided
@@ -137,12 +146,15 @@ public struct MaterialAsset {
     public func buildMetalMaterial(database: AssetDatabase?) -> MetalCupMaterial {
         var material = MetalCupMaterial()
         material.baseColor = baseColorFactor
+        material.baseColorAlpha = baseColorAlpha
         material.metallicScalar = metallicFactor
         material.roughnessScalar = roughnessFactor
         material.aoScalar = aoFactor
         material.emissiveColor = emissiveColor
         material.emissiveScalar = emissiveIntensity
         material.alphaCutoff = alphaCutoff
+        material.uvTiling = uvTiling
+        material.uvOffset = uvOffset
 
         var flags = MetalCupMaterialFlags()
         if textures.baseColor != nil { flags.insert(.hasBaseColorMap) }

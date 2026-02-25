@@ -18,6 +18,8 @@ public final class SceneECS {
     private var nameComponents: [Entity: NameComponent] = [:]
     private var transformComponents: [Entity: TransformComponent] = [:]
     private var layerComponents: [Entity: LayerComponent] = [:]
+    private var rigidbodyComponents: [Entity: RigidbodyComponent] = [:]
+    private var colliderComponents: [Entity: ColliderComponent] = [:]
     private var prefabInstanceComponents: [Entity: PrefabInstanceComponent] = [:]
     private var prefabOverrideComponents: [Entity: PrefabOverrideComponent] = [:]
     private var meshRendererComponents: [Entity: MeshRendererComponent] = [:]
@@ -58,6 +60,8 @@ public final class SceneECS {
         nameComponents.removeValue(forKey: e)
         transformComponents.removeValue(forKey: e)
         layerComponents.removeValue(forKey: e)
+        rigidbodyComponents.removeValue(forKey: e)
+        colliderComponents.removeValue(forKey: e)
         prefabInstanceComponents.removeValue(forKey: e)
         prefabOverrideComponents.removeValue(forKey: e)
         meshRendererComponents.removeValue(forKey: e)
@@ -76,6 +80,8 @@ public final class SceneECS {
         nameComponents.removeAll()
         transformComponents.removeAll()
         layerComponents.removeAll()
+        rigidbodyComponents.removeAll()
+        colliderComponents.removeAll()
         prefabInstanceComponents.removeAll()
         prefabOverrideComponents.removeAll()
         meshRendererComponents.removeAll()
@@ -101,6 +107,10 @@ public final class SceneECS {
             transformComponents[entity] = value
         case let value as LayerComponent:
             layerComponents[entity] = value
+        case let value as RigidbodyComponent:
+            rigidbodyComponents[entity] = value
+        case let value as ColliderComponent:
+            colliderComponents[entity] = value
         case let value as PrefabInstanceComponent:
             prefabInstanceComponents[entity] = value
         case let value as PrefabOverrideComponent:
@@ -136,6 +146,10 @@ public final class SceneECS {
             transformComponents.removeValue(forKey: entity)
         case is LayerComponent.Type:
             layerComponents.removeValue(forKey: entity)
+        case is RigidbodyComponent.Type:
+            rigidbodyComponents.removeValue(forKey: entity)
+        case is ColliderComponent.Type:
+            colliderComponents.removeValue(forKey: entity)
         case is PrefabInstanceComponent.Type:
             prefabInstanceComponents.removeValue(forKey: entity)
         case is PrefabOverrideComponent.Type:
@@ -171,6 +185,10 @@ public final class SceneECS {
             return transformComponents[entity] as? T
         case is LayerComponent.Type:
             return layerComponents[entity] as? T
+        case is RigidbodyComponent.Type:
+            return rigidbodyComponents[entity] as? T
+        case is ColliderComponent.Type:
+            return colliderComponents[entity] as? T
         case is PrefabInstanceComponent.Type:
             return prefabInstanceComponents[entity] as? T
         case is PrefabOverrideComponent.Type:

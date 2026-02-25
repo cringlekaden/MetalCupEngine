@@ -420,6 +420,9 @@ public class MCMesh {
                     renderCommandEncoder.drawIndexedPrimitives(type: submesh.primitiveType, indexCount: submesh.indexCount, indexType: submesh.indexType, indexBuffer: submesh.indexBuffer, indexBufferOffset: submesh.indexBufferOffset, instanceCount: _instanceCount)
                 }
             } else {
+#if DEBUG
+                MC_ASSERT(MetalCupMaterial.stride == MetalCupMaterial.expectedMetalStride, "MetalCupMaterial stride mismatch. Keep Swift and Metal layouts in sync.")
+#endif
                 if material != nil
                     || albedoMapHandle != nil
                     || normalMapHandle != nil

@@ -164,6 +164,8 @@ final class ShadowRenderer {
         frame.frameContext.setShadowConstants(constants)
         frame.frameContext.setShadowMapTexture(shadowMap)
 
+        let frameIndex = frame.frameContext.currentFrameIndex()
+        var didSampleBegin = false
         for cascadeIndex in 0..<cascadeCount {
             let pass = MTLRenderPassDescriptor()
             pass.depthAttachment.texture = shadowMap
@@ -174,6 +176,10 @@ final class ShadowRenderer {
             guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { continue }
             encoder.label = "Shadow Cascade \(cascadeIndex)"
             encoder.pushDebugGroup("Shadow Cascade \(cascadeIndex)")
+            if !didSampleBegin {
+                frame.profiler.sampleGpuPassBegin(.shadows, encoder: encoder, frameIndex: frameIndex)
+                didSampleBegin = true
+            }
             RenderPassHelpers.setViewport(encoder, SIMD2<Float>(Float(shadowMap.width), Float(shadowMap.height)))
             let constantsBuffer = frame.frameContext.makeSceneConstantsBuffer(
                 shadowSceneConstants(
@@ -192,6 +198,9 @@ final class ShadowRenderer {
                 )
             }
             encoder.popDebugGroup()
+            if cascadeIndex == cascadeCount - 1 {
+                frame.profiler.sampleGpuPassEnd(.shadows, encoder: encoder, frameIndex: frameIndex)
+            }
             encoder.endEncoding()
         }
 
@@ -552,6 +561,7 @@ final class ShadowRenderer {
         constants.viewMatrix = viewMatrix
         constants.skyViewMatrix = viewMatrix
         constants.projectionMatrix = projectionMatrix
+        constants.inverseProjectionMatrix = simd_inverse(projectionMatrix)
         constants.cameraPositionAndIBL = SIMD4<Float>(0, 0, 0, 0)
         return constants
     }

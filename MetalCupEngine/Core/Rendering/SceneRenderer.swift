@@ -7,6 +7,9 @@ import QuartzCore
 import simd
 
 public enum SceneRenderer {
+    #if DEBUG
+    private static var didInstanceSanityCheck = false
+    #endif
     @discardableResult
     public static func render(scene: EngineScene, view: SceneView, context: RenderContext, frameContext: RendererFrameContext) -> RenderOutputs {
         if let encoder = context.renderEncoder {
@@ -64,6 +67,7 @@ public enum SceneRenderer {
         previewConstants.skyViewMatrix[3][1] = 0
         previewConstants.skyViewMatrix[3][2] = 0
         previewConstants.projectionMatrix = projectionMatrix(from: camera, aspectRatio: aspect)
+        previewConstants.inverseProjectionMatrix = simd_inverse(previewConstants.projectionMatrix)
         previewConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, sceneConstants.cameraPositionAndIBL.w)
         let previewConstantsBuffer = frameContext.makeSceneConstantsBuffer(
             previewConstants,
@@ -97,12 +101,12 @@ public enum SceneRenderer {
             if !sky.enabled { return }
             renderedSky = true
             let engineContext = frameContext.engineContext()
-            guard let mesh = engineContext.assets.mesh(handle: BuiltinAssets.skyboxMesh) else { return }
+            guard let mesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
             bindSceneConstants(encoder, scene: scene, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
             encoder.setTriangleFillMode(engineContext.preferences.isWireframeEnabled ? .lines : .fill)
             encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.Skybox])
             encoder.setDepthStencilState(engineContext.graphics.depthStencilStates[.LessEqualNoWrite])
-            encoder.setCullMode(.front)
+            encoder.setCullMode(.none)
             encoder.setFrontFacing(.clockwise)
             var modelConstants = ModelConstants()
             modelConstants.modelMatrix = matrix_identity_float4x4
@@ -257,6 +261,11 @@ public enum SceneRenderer {
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
+        let engineContext = frameContext.engineContext()
+        let useAlphaClip = batch.bindings.isAlphaMasked
+        let pipeline = useAlphaClip
+            ? engineContext.graphics.renderPipelineStates[.DepthPrepassAlphaInstanced]
+            : engineContext.graphics.renderPipelineStates[.DepthPrepassInstanced]
         encodeMeshBatch(
             encoder,
             scene: scene,
@@ -265,8 +274,8 @@ public enum SceneRenderer {
             instanceBuffer: instanceBuffer,
             instanceOffset: instanceOffset,
             instanceCount: instanceCount,
-            pipeline: .DepthPrepassInstanced,
-            bindings: nil,
+            pipelineState: pipeline,
+            bindings: useAlphaClip ? batch.bindings : nil,
             sceneConstantsBuffer: sceneConstantsBuffer,
             frameContext: frameContext
         )
@@ -283,6 +292,11 @@ public enum SceneRenderer {
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
+        let engineContext = frameContext.engineContext()
+        let useAlphaClip = batch.bindings.isAlphaMasked
+        let pipeline = useAlphaClip
+            ? engineContext.graphics.renderPipelineStates[.ShadowAlphaInstanced]
+            : engineContext.graphics.renderPipelineStates[.DepthPrepassInstanced]
         encodeMeshBatch(
             encoder,
             scene: scene,
@@ -291,8 +305,8 @@ public enum SceneRenderer {
             instanceBuffer: instanceBuffer,
             instanceOffset: instanceOffset,
             instanceCount: instanceCount,
-            pipeline: .DepthPrepassInstanced,
-            bindings: nil,
+            pipelineState: pipeline,
+            bindings: useAlphaClip ? batch.bindings : nil,
             sceneConstantsBuffer: sceneConstantsBuffer,
             frameContext: frameContext
         )
@@ -327,6 +341,8 @@ public enum SceneRenderer {
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
+        let engineContext = frameContext.engineContext()
+        let pipelineState = engineContext.graphics.renderPipelineStates.hdrInstancedPipeline(settings: frameContext.rendererSettings())
         encodeMeshBatch(
             encoder,
             scene: scene,
@@ -335,7 +351,7 @@ public enum SceneRenderer {
             instanceBuffer: instanceBuffer,
             instanceOffset: instanceOffset,
             instanceCount: instanceCount,
-            pipeline: .HDRInstanced,
+            pipelineState: pipelineState,
             bindings: batch.bindings,
             sceneConstantsBuffer: sceneConstantsBuffer,
             frameContext: frameContext
@@ -350,14 +366,13 @@ public enum SceneRenderer {
         instanceBuffer: MTLBuffer,
         instanceOffset: Int,
         instanceCount: Int,
-        pipeline: RenderPipelineStateType,
+        pipelineState: MTLRenderPipelineState,
         bindings: MaterialBindings?,
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
-        let engineContext = frameContext.engineContext()
         // Instanced-only pipeline keeps a single vertex path for every draw, preventing PSO + clip-space divergence.
-        encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[pipeline])
+        encoder.setRenderPipelineState(pipelineState)
         bindSceneConstants(encoder, scene: scene, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
         bindInstanceBuffer(encoder, buffer: instanceBuffer, offset: instanceOffset)
         assertInstanceBindings(instanceBuffer: instanceBuffer, instanceOffset: instanceOffset, instanceCount: instanceCount)
@@ -469,6 +484,7 @@ public enum SceneRenderer {
         var aoMapHandle: AssetHandle?
         var emissiveMapHandle: AssetHandle?
         var cullMode: MTLCullMode
+        var isAlphaMasked: Bool
     }
 
     private struct RenderItem {
@@ -592,6 +608,28 @@ public enum SceneRenderer {
 
         let instanceBuffer = frameContext.uploadInstanceData(instances)
 
+#if DEBUG
+        if !didInstanceSanityCheck, let instanceBuffer, let first = instances.first {
+            didInstanceSanityCheck = true
+            let raw = instanceBuffer.contents().assumingMemoryBound(to: Float.self)
+            let reconstructed = matrix_float4x4(columns: (
+                SIMD4<Float>(raw[0], raw[1], raw[2], raw[3]),
+                SIMD4<Float>(raw[4], raw[5], raw[6], raw[7]),
+                SIMD4<Float>(raw[8], raw[9], raw[10], raw[11]),
+                SIMD4<Float>(raw[12], raw[13], raw[14], raw[15])
+            ))
+            let expected = first.modelMatrix
+            var maxDelta: Float = 0.0
+            for c in 0..<4 {
+                for r in 0..<4 {
+                    let delta = abs(reconstructed[c][r] - expected[c][r])
+                    if delta > maxDelta { maxDelta = delta }
+                }
+            }
+            MC_ASSERT(maxDelta < 1e-4, "Instance matrix upload mismatch (column-major). Max delta: \(maxDelta).")
+        }
+#endif
+
         let stats = RendererBatchStats(
             uniqueMeshes: uniqueMeshes.count,
             batches: batches.count,
@@ -622,6 +660,7 @@ public enum SceneRenderer {
         var aoMapHandle = meshRenderer.aoMapHandle
         var emissiveMapHandle = meshRenderer.emissiveMapHandle
         var cullMode: MTLCullMode = .back
+        var isAlphaMasked = false
 
         let usesSubmeshMaterials = submeshMaterialHandles?.contains(where: { $0 != nil }) == true
         if !usesSubmeshMaterials,
@@ -638,6 +677,22 @@ public enum SceneRenderer {
             emissiveMapHandle = materialAsset.textures.emissive
             if (materialOverride?.flags ?? 0) & MetalCupMaterialFlags.isDoubleSided.rawValue != 0 {
                 cullMode = .none
+            }
+            isAlphaMasked = materialAsset.alphaMode == .masked
+        }
+        if let overrideFlags = materialOverride?.flags {
+            if (overrideFlags & MetalCupMaterialFlags.alphaMasked.rawValue) != 0 {
+                isAlphaMasked = true
+            }
+        }
+        if usesSubmeshMaterials, let handles = submeshMaterialHandles {
+            for handle in handles {
+                guard let handle,
+                      let submeshMaterial = engineContext.assets.material(handle: handle) else { continue }
+                if submeshMaterial.alphaMode == .masked {
+                    isAlphaMasked = true
+                    break
+                }
             }
         }
         if let name = scene.ecs.get(NameComponent.self, for: entity), name.name == "Ground" {
@@ -665,7 +720,8 @@ public enum SceneRenderer {
             ormMapHandle: ormMapHandle,
             aoMapHandle: aoMapHandle,
             emissiveMapHandle: emissiveMapHandle,
-            cullMode: cullMode
+            cullMode: cullMode,
+            isAlphaMasked: isAlphaMasked
         )
     }
 
@@ -712,17 +768,17 @@ public enum SceneRenderer {
         MC_ASSERT(isFinite(transform.position) && isFinite(transform.rotation) && isFinite(transform.scale),
                   "Transform contains non-finite values (NaN/inf).")
 #endif
-        var matrix = matrix_identity_float4x4
-        matrix.translate(direction: transform.position)
-        matrix.rotate(angle: transform.rotation.x, axis: xAxis)
-        matrix.rotate(angle: transform.rotation.y, axis: yAxis)
-        matrix.rotate(angle: transform.rotation.z, axis: zAxis)
-        matrix.scale(axis: transform.scale)
-        return matrix
+        return TransformMath.makeMatrix(position: transform.position,
+                                        rotation: transform.rotation,
+                                        scale: transform.scale)
     }
 
     private static func isFinite(_ value: SIMD3<Float>) -> Bool {
         value.x.isFinite && value.y.isFinite && value.z.isFinite
+    }
+
+    private static func isFinite(_ value: SIMD4<Float>) -> Bool {
+        value.x.isFinite && value.y.isFinite && value.z.isFinite && value.w.isFinite
     }
 
     public static func cameraMatrices(scene: EngineScene) -> (view: matrix_float4x4, projection: matrix_float4x4) {
@@ -753,12 +809,8 @@ public enum SceneRenderer {
     }
 
     static func viewMatrix(from transform: TransformComponent) -> matrix_float4x4 {
-        var matrix = matrix_identity_float4x4
-        matrix.rotate(angle: transform.rotation.x, axis: xAxis)
-        matrix.rotate(angle: transform.rotation.y, axis: yAxis)
-        matrix.rotate(angle: transform.rotation.z, axis: zAxis)
-        matrix.translate(direction: -transform.position)
-        return matrix
+        return TransformMath.makeViewMatrix(position: transform.position,
+                                            rotation: transform.rotation)
     }
 
     static func projectionMatrix(from camera: CameraComponent, aspectRatio: Float) -> matrix_float4x4 {

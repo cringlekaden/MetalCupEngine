@@ -15,17 +15,107 @@ public struct NameComponent {
 
 public struct TransformComponent {
     public var position: SIMD3<Float>
-    public var rotation: SIMD3<Float>
     public var scale: SIMD3<Float>
+    private var rotationStorage: SIMD4<Float>
+
+    public var rotation: SIMD4<Float> {
+        get { rotationStorage }
+        set { rotationStorage = TransformMath.normalizedQuaternion(newValue) }
+    }
 
     public init(
         position: SIMD3<Float> = .zero,
-        rotation: SIMD3<Float> = .zero,
+        rotation: SIMD4<Float> = TransformMath.identityQuaternion,
         scale: SIMD3<Float> = SIMD3<Float>(repeating: 1.0)
     ) {
         self.position = position
-        self.rotation = rotation
         self.scale = scale
+        self.rotationStorage = TransformMath.normalizedQuaternion(rotation)
+    }
+}
+
+public enum RigidbodyMotionType: UInt32, Codable {
+    case staticBody = 0
+    case dynamic = 1
+    case kinematic = 2
+}
+
+public enum ColliderShapeType: UInt32, Codable {
+    case box = 0
+    case sphere = 1
+    case capsule = 2
+}
+
+public struct RigidbodyComponent {
+    public var isEnabled: Bool
+    public var motionType: RigidbodyMotionType
+    public var mass: Float
+    public var friction: Float
+    public var restitution: Float
+    public var linearDamping: Float
+    public var angularDamping: Float
+    public var gravityFactor: Float
+    public var allowSleeping: Bool
+    public var ccdEnabled: Bool
+    public var collisionLayer: Int32
+    public var bodyId: UInt64?
+
+    public init(isEnabled: Bool = true,
+                motionType: RigidbodyMotionType = .dynamic,
+                mass: Float = 1.0,
+                friction: Float = 0.6,
+                restitution: Float = 0.0,
+                linearDamping: Float = 0.02,
+                angularDamping: Float = 0.2,
+                gravityFactor: Float = 1.0,
+                allowSleeping: Bool = true,
+                ccdEnabled: Bool = false,
+                collisionLayer: Int32 = 0,
+                bodyId: UInt64? = nil) {
+        self.isEnabled = isEnabled
+        self.motionType = motionType
+        self.mass = mass
+        self.friction = friction
+        self.restitution = restitution
+        self.linearDamping = linearDamping
+        self.angularDamping = angularDamping
+        self.gravityFactor = gravityFactor
+        self.allowSleeping = allowSleeping
+        self.ccdEnabled = ccdEnabled
+        self.collisionLayer = collisionLayer
+        self.bodyId = bodyId
+    }
+}
+
+public struct ColliderComponent {
+    public var isEnabled: Bool
+    public var shapeType: ColliderShapeType
+    public var boxHalfExtents: SIMD3<Float>
+    public var sphereRadius: Float
+    public var capsuleHalfHeight: Float
+    public var capsuleRadius: Float
+    public var offset: SIMD3<Float>
+    public var rotationOffset: SIMD3<Float>
+    public var isTrigger: Bool
+
+    public init(isEnabled: Bool = true,
+                shapeType: ColliderShapeType = .box,
+                boxHalfExtents: SIMD3<Float> = SIMD3<Float>(repeating: 0.5),
+                sphereRadius: Float = 0.5,
+                capsuleHalfHeight: Float = 0.5,
+                capsuleRadius: Float = 0.5,
+                offset: SIMD3<Float> = .zero,
+                rotationOffset: SIMD3<Float> = .zero,
+                isTrigger: Bool = false) {
+        self.isEnabled = isEnabled
+        self.shapeType = shapeType
+        self.boxHalfExtents = boxHalfExtents
+        self.sphereRadius = sphereRadius
+        self.capsuleHalfHeight = capsuleHalfHeight
+        self.capsuleRadius = capsuleRadius
+        self.offset = offset
+        self.rotationOffset = rotationOffset
+        self.isTrigger = isTrigger
     }
 }
 
@@ -42,6 +132,8 @@ public enum PrefabOverrideType: String, Codable, CaseIterable {
     case layer
     case meshRenderer
     case material
+    case rigidbody
+    case collider
     case light
     case lightOrbit
     case camera

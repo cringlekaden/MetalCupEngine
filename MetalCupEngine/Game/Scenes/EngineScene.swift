@@ -9,6 +9,7 @@ public class EngineScene {
     public let ecs: SceneECS
     public let runtime = SceneRuntime()
     public var prefabSystem: PrefabSystem?
+    public private(set) var physicsSystem: PhysicsSystem?
     public weak var engineContext: EngineContext?
 
     public let id: UUID
@@ -119,7 +120,11 @@ public class EngineScene {
     }
 
     public func raycast(origin: SIMD3<Float>, direction: SIMD3<Float>, mask: LayerMask = .all) -> Entity? {
-        return nil
+        guard let physicsSystem else { return nil }
+        guard let hit = physicsSystem.raycastClosest(origin: origin, direction: direction, maxDistance: 1000.0),
+              let entityId = hit.entityId,
+              let entity = ecs.entity(with: entityId) else { return nil }
+        return raycast(hitEntity: entity, mask: mask)
     }
 
     public func raycast(hitEntity: Entity?, mask: LayerMask = .all) -> Entity? {
@@ -140,9 +145,34 @@ public class EngineScene {
 
     func doUpdate() {}
 
-    func doFixedUpdate() {}
+    func doFixedUpdate() {
+        let defaultDelta: Float = 1.0 / 60.0
+        let fixedDelta = engineContext?.physicsSettings.fixedDeltaTime
+            ?? lastFrameContext?.time.fixedDeltaTime
+            ?? defaultDelta
+        physicsSystem?.fixedUpdate(scene: self, fixedDeltaTime: fixedDelta)
+    }
 
-    public func toDocument(rendererSettingsOverride: RendererSettingsDTO? = nil) -> SceneDocument {
+    public func startPhysics(settings: PhysicsSettings) {
+        guard physicsSystem == nil else { return }
+        guard let system = PhysicsSystem(settings: settings) else { return }
+        system.buildBodies(scene: self)
+        physicsSystem = system
+    }
+
+    public func stopPhysics() {
+        guard let system = physicsSystem else { return }
+        system.destroyBodies(scene: self)
+        physicsSystem = nil
+    }
+
+    public func rebuildPhysicsBody(for entity: Entity) -> Bool {
+        guard let system = physicsSystem else { return false }
+        return system.rebuildBody(entity: entity, scene: self)
+    }
+
+    public func toDocument(rendererSettingsOverride: RendererSettingsDTO? = nil,
+                           physicsSettingsOverride: PhysicsSettingsDTO? = nil) -> SceneDocument {
         func overrideSet(for entity: Entity) -> Set<PrefabOverrideType> {
             return ecs.get(PrefabOverrideComponent.self, for: entity)?.overridden ?? []
         }
@@ -155,7 +185,7 @@ public class EngineScene {
             return ecs.get(TransformComponent.self, for: entity).map { component in
                 TransformComponentDTO(
                     position: Vector3DTO(component.position),
-                    rotation: Vector3DTO(component.rotation),
+                    rotationQuat: Vector4DTO(component.rotation),
                     scale: Vector3DTO(component.scale)
                 )
             }
@@ -203,6 +233,38 @@ public class EngineScene {
                         : nil,
                     materialComponent: shouldSerializeOverride(.material, for: entity)
                         ? ecs.get(MaterialComponent.self, for: entity).map { MaterialComponentDTO(materialHandle: $0.materialHandle) }
+                        : nil,
+                    rigidbody: shouldSerializeOverride(.rigidbody, for: entity)
+                        ? ecs.get(RigidbodyComponent.self, for: entity).map { component in
+                            RigidbodyComponentDTO(
+                                enabled: component.isEnabled,
+                                motionType: component.motionType.rawValue,
+                                mass: component.mass,
+                                friction: component.friction,
+                                restitution: component.restitution,
+                                linearDamping: component.linearDamping,
+                                angularDamping: component.angularDamping,
+                                gravityFactor: component.gravityFactor,
+                                allowSleeping: component.allowSleeping,
+                                ccdEnabled: component.ccdEnabled,
+                                collisionLayer: component.collisionLayer
+                            )
+                        }
+                        : nil,
+                    collider: shouldSerializeOverride(.collider, for: entity)
+                        ? ecs.get(ColliderComponent.self, for: entity).map { component in
+                            ColliderComponentDTO(
+                                enabled: component.isEnabled,
+                                shapeType: component.shapeType.rawValue,
+                                boxHalfExtents: Vector3DTO(component.boxHalfExtents),
+                                sphereRadius: component.sphereRadius,
+                                capsuleHalfHeight: component.capsuleHalfHeight,
+                                capsuleRadius: component.capsuleRadius,
+                                offset: Vector3DTO(component.offset),
+                                rotationOffset: Vector3DTO(component.rotationOffset),
+                                isTrigger: component.isTrigger
+                            )
+                        }
                         : nil,
                     light: shouldSerializeOverride(.light, for: entity)
                         ? ecs.get(LightComponent.self, for: entity).map { component in
@@ -295,6 +357,34 @@ public class EngineScene {
                 materialComponent: ecs.get(MaterialComponent.self, for: entity).map { component in
                     MaterialComponentDTO(materialHandle: component.materialHandle)
                 },
+                rigidbody: ecs.get(RigidbodyComponent.self, for: entity).map { component in
+                    RigidbodyComponentDTO(
+                        enabled: component.isEnabled,
+                        motionType: component.motionType.rawValue,
+                        mass: component.mass,
+                        friction: component.friction,
+                        restitution: component.restitution,
+                        linearDamping: component.linearDamping,
+                        angularDamping: component.angularDamping,
+                        gravityFactor: component.gravityFactor,
+                        allowSleeping: component.allowSleeping,
+                        ccdEnabled: component.ccdEnabled,
+                        collisionLayer: component.collisionLayer
+                    )
+                },
+                collider: ecs.get(ColliderComponent.self, for: entity).map { component in
+                    ColliderComponentDTO(
+                        enabled: component.isEnabled,
+                        shapeType: component.shapeType.rawValue,
+                        boxHalfExtents: Vector3DTO(component.boxHalfExtents),
+                        sphereRadius: component.sphereRadius,
+                        capsuleHalfHeight: component.capsuleHalfHeight,
+                        capsuleRadius: component.capsuleRadius,
+                        offset: Vector3DTO(component.offset),
+                        rotationOffset: Vector3DTO(component.rotationOffset),
+                        isTrigger: component.isTrigger
+                    )
+                },
                 light: ecs.get(LightComponent.self, for: entity).map { component in
                     LightComponentDTO(
                         type: LightTypeDTO(from: component.type),
@@ -356,7 +446,13 @@ public class EngineScene {
             )
             return EntityDocument(id: entity.id, components: components)
         }
-        return SceneDocument(id: id, name: name, entities: entities, rendererSettingsOverride: rendererSettingsOverride)
+        return SceneDocument(
+            id: id,
+            name: name,
+            entities: entities,
+            rendererSettingsOverride: rendererSettingsOverride,
+            physicsSettingsOverride: physicsSettingsOverride
+        )
     }
 
     public func apply(document: SceneDocument) {
@@ -368,7 +464,7 @@ public class EngineScene {
             if let transform = entityDoc.components.transform {
                 let component = TransformComponent(
                     position: transform.position.toSIMD(),
-                    rotation: transform.rotation.toSIMD(),
+                    rotation: transform.rotationQuat.toSIMD(),
                     scale: transform.scale.toSIMD()
                 )
                 ecs.add(component, to: entity)
@@ -413,6 +509,12 @@ public class EngineScene {
                 }
                 if let materialComponent = entityDoc.components.materialComponent {
                     ecs.add(MaterialComponent(materialHandle: materialComponent.materialHandle), to: entity)
+                }
+                if let rigidbody = entityDoc.components.rigidbody {
+                    ecs.add(rigidbody.toComponent(), to: entity)
+                }
+                if let collider = entityDoc.components.collider {
+                    ecs.add(collider.toComponent(), to: entity)
                 }
                 if let light = entityDoc.components.light {
                     let component = LightComponent(
@@ -512,6 +614,12 @@ public class EngineScene {
                 let component = MaterialComponent(materialHandle: materialComponent.materialHandle)
                 ecs.add(component, to: entity)
             }
+            if let rigidbody = entityDoc.components.rigidbody {
+                ecs.add(rigidbody.toComponent(), to: entity)
+            }
+            if let collider = entityDoc.components.collider {
+                ecs.add(collider.toComponent(), to: entity)
+            }
             if let light = entityDoc.components.light {
                 let component = LightComponent(
                     type: light.type.toLightType(),
@@ -599,7 +707,7 @@ public class EngineScene {
             if let transform = entityDoc.components.transform {
                 let component = TransformComponent(
                     position: transform.position.toSIMD(),
-                    rotation: transform.rotation.toSIMD(),
+                    rotation: transform.rotationQuat.toSIMD(),
                     scale: transform.scale.toSIMD()
                 )
                 ecs.add(component, to: entity)
@@ -767,6 +875,7 @@ public class EngineScene {
         _sceneConstants.skyViewMatrix[3][1] = 0
         _sceneConstants.skyViewMatrix[3][2] = 0
         _sceneConstants.projectionMatrix = SceneRenderer.projectionMatrix(from: camera, aspectRatio: aspectRatio)
+        _sceneConstants.inverseProjectionMatrix = simd_inverse(_sceneConstants.projectionMatrix)
         _sceneConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, 1.0)
     }
 

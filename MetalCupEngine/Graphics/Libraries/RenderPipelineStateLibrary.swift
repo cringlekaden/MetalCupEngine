@@ -8,6 +8,8 @@ public enum RenderPipelineStateType {
     case HDRInstanced
     case PickID
     case DepthPrepassInstanced
+    case DepthPrepassAlphaInstanced
+    case ShadowAlphaInstanced
     case Skybox
     case Final
     case Cubemap
@@ -22,10 +24,12 @@ public enum RenderPipelineStateType {
     case SelectionOutline
     case ProceduralSkyCubemap
     case HDRILuminance
+    case DebugLines
 }
 
 public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, MTLRenderPipelineState> {
     private var library: [RenderPipelineStateType: RenderPipelineState] = [:]
+    private var hdrInstancedVariants: [HDRInstancedVariantKey: MTLRenderPipelineState] = [:]
     private let shaders: ShaderLibrary
     private let vertexDescriptors: VertexDescriptorLibrary
     private let preferences: Preferences
@@ -56,13 +60,8 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
         // Textures/samplers:
         //  - See Shared.metal FragmentTextureIndex / FragmentSamplerIndex
 
-        library[.HDRInstanced] = buildPipeline(label: "HDRInstanced") { descriptor in
-            descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
-            descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
-            descriptor.vertexFunction = shaders[.InstancedVertex]
-            descriptor.fragmentFunction = shaders[.BasicFragment]
-            descriptor.vertexDescriptor = vertexDescriptors[.Default]
-        }
+        let defaultHDR = hdrInstancedPipeline(debugEnabled: false, shadowFilter: .pcf)
+        library[.HDRInstanced] = ExistingRenderPipelineState(renderPipelineState: defaultHDR)
 
         library[.PickID] = buildPipeline(label: "PickID") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = .r32Uint
@@ -77,6 +76,22 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
             descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
             descriptor.vertexFunction = shaders[.InstancedVertex]
             descriptor.fragmentFunction = nil
+            descriptor.vertexDescriptor = vertexDescriptors[.Default]
+        }
+
+        library[.DepthPrepassAlphaInstanced] = buildPipeline(label: "DepthPrepassAlphaInstanced") { descriptor in
+            descriptor.colorAttachments[0].pixelFormat = .invalid
+            descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
+            descriptor.vertexFunction = shaders[.InstancedVertex]
+            descriptor.fragmentFunction = shaders[.DepthAlphaFragment]
+            descriptor.vertexDescriptor = vertexDescriptors[.Default]
+        }
+
+        library[.ShadowAlphaInstanced] = buildPipeline(label: "ShadowAlphaInstanced") { descriptor in
+            descriptor.colorAttachments[0].pixelFormat = .invalid
+            descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
+            descriptor.vertexFunction = shaders[.InstancedVertex]
+            descriptor.fragmentFunction = shaders[.ShadowAlphaFragment]
             descriptor.vertexDescriptor = vertexDescriptors[.Default]
         }
 
@@ -195,6 +210,23 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
             descriptor.vertexDescriptor = vertexDescriptors[.Simple]
         }
 
+        library[.DebugLines] = buildPipeline(label: "DebugLines") { descriptor in
+            descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
+            descriptor.colorAttachments[0].isBlendingEnabled = true
+            descriptor.colorAttachments[0].rgbBlendOperation = .add
+            descriptor.colorAttachments[0].alphaBlendOperation = .add
+            descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+            descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            descriptor.vertexFunction = shaders[.DebugLineVertex]
+            descriptor.fragmentFunction = shaders[.DebugLineFragment]
+            descriptor.vertexDescriptor = vertexDescriptors[.DebugLine]
+            descriptor.depthAttachmentPixelFormat = .invalid
+            descriptor.stencilAttachmentPixelFormat = .invalid
+            descriptor.inputPrimitiveTopology = .triangle
+        }
+
         library[.HDRILuminance] = buildPipeline(label: "HDRILuminance") { descriptor in
             descriptor.colorAttachments[0].pixelFormat = .r16Float
             descriptor.vertexFunction = shaders[.FSQuadVertex]
@@ -205,6 +237,39 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
 
     override subscript(_ type: RenderPipelineStateType) -> MTLRenderPipelineState {
         return library[type]!.renderPipelineState
+    }
+
+    public func hdrInstancedPipeline(settings: RendererSettings) -> MTLRenderPipelineState {
+        let debugEnabled = settings.shadingDebugMode != 0
+        let filterMode = ShadowFilterMode(rawValue: settings.shadows.filterMode) ?? .pcf
+        return hdrInstancedPipeline(debugEnabled: debugEnabled, shadowFilter: filterMode)
+    }
+
+    private func hdrInstancedPipeline(debugEnabled: Bool, shadowFilter: ShadowFilterMode) -> MTLRenderPipelineState {
+        let key = HDRInstancedVariantKey(debugEnabled: debugEnabled, shadowFilter: shadowFilter)
+        if let cached = hdrInstancedVariants[key] {
+            return cached
+        }
+        let pipeline = makeHDRInstancedPipeline(debugEnabled: debugEnabled, shadowFilter: shadowFilter)
+        hdrInstancedVariants[key] = pipeline
+        return pipeline
+    }
+
+    private func makeHDRInstancedPipeline(debugEnabled: Bool, shadowFilter: ShadowFilterMode) -> MTLRenderPipelineState {
+        let constants = MTLFunctionConstantValues()
+        var debugFlag = debugEnabled
+        var filterValue = Int32(shadowFilter.rawValue)
+        constants.setConstantValue(&debugFlag, type: .bool, index: 0)
+        constants.setConstantValue(&filterValue, type: .int, index: 1)
+
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.label = "HDRInstanced"
+        descriptor.colorAttachments[0].pixelFormat = preferences.HDRPixelFormat
+        descriptor.depthAttachmentPixelFormat = preferences.defaultDepthPixelFormat
+        descriptor.vertexFunction = shaders[.InstancedVertex]
+        descriptor.fragmentFunction = shaders.function(.BasicFragment, constants: constants)
+        descriptor.vertexDescriptor = vertexDescriptors[.Default]
+        return try! device.makeRenderPipelineState(descriptor: descriptor)
     }
 }
 
@@ -218,6 +283,18 @@ class BasicRenderPipelineState: RenderPipelineState {
         descriptor.label = label
         renderPipelineState = try! device.makeRenderPipelineState(descriptor: descriptor)
     }
+}
+
+class ExistingRenderPipelineState: RenderPipelineState {
+    var renderPipelineState: MTLRenderPipelineState!
+    init(renderPipelineState: MTLRenderPipelineState) {
+        self.renderPipelineState = renderPipelineState
+    }
+}
+
+private struct HDRInstancedVariantKey: Hashable {
+    let debugEnabled: Bool
+    let shadowFilter: ShadowFilterMode
 }
 
 extension RenderPipelineStateLibrary {

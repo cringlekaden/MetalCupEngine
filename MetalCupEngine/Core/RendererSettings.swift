@@ -3,6 +3,7 @@
 /// Created by Kaden Cringle.
 
 import Foundation
+import Metal
 
 public enum TonemapType: UInt32 {
     case none = 0
@@ -199,7 +200,21 @@ public final class RendererProfiler {
     private var averages: [Scope: RollingAverage] = [:]
     private var gpuPassAverages: [GpuPass: RollingAverage] = [:]
     private var gpuPassProfilingEnabled: Bool = false
-    private var gpuFrameTotals: [UInt64: Double] = [:]
+    private let gpuCounterLock = NSLock()
+    private var gpuCounterSampleBuffer: MTLCounterSampleBuffer?
+    private var gpuCounterResolveBuffer: MTLBuffer?
+    private var gpuCounterSamplesPerFrame: Int = 0
+    private var gpuCounterBytesPerSample: Int = 0
+    private var gpuCounterBytesPerFrame: Int = 0
+    private var gpuCounterInFlightFrames: Int = 0
+    private var gpuCounterBeginMask: [UInt32] = []
+    private var gpuCounterEndMask: [UInt32] = []
+    private var gpuCounterFrameIds: [UInt64] = []
+    private var gpuCounterSupported: Bool = false
+    private var gpuCounterSupportReason: String = ""
+    private var gpuCounterSetName: String = ""
+    private var gpuCounterSamplingPointName: String = ""
+    private var gpuCounterLoggedDiagnostics: Bool = false
 
     public init(sampleCount: Int = 120) {
         for scope in Scope.allCases {
@@ -252,24 +267,253 @@ public final class RendererProfiler {
         return result
     }
 
-    public func beginGpuFrame(_ frameId: UInt64) {
-        queue.async {
-            self.gpuFrameTotals[frameId] = 0.0
-        }
+    public func gpuCounterSamplingSupported(device: MTLDevice) -> Bool {
+        guard #available(macOS 11.0, *) else { return false }
+        updateGpuCounterSupport(device: device)
+        return gpuCounterSupported
     }
 
-    public func addGpuFrameTime(_ frameId: UInt64, seconds: Double) {
-        queue.async {
-            let current = self.gpuFrameTotals[frameId] ?? 0.0
-            self.gpuFrameTotals[frameId] = current + seconds
+    public func prepareGpuCounterSampling(device: MTLDevice, inFlightFrames: Int) -> Bool {
+        guard gpuCounterSamplingSupported(device: device) else { return false }
+        guard #available(macOS 11.0, *) else { return false }
+        let passCount = GpuPass.allCases.count
+        let samplesPerFrame = passCount * 2
+        let totalSamples = samplesPerFrame * max(1, inFlightFrames)
+        if gpuCounterSampleBuffer != nil,
+           gpuCounterSamplesPerFrame == samplesPerFrame,
+           gpuCounterInFlightFrames == inFlightFrames {
+            return true
         }
+
+        guard let counterSet = resolveTimestampCounterSet(device: device) else { return false }
+        let descriptor = MTLCounterSampleBufferDescriptor()
+        descriptor.counterSet = counterSet
+        descriptor.sampleCount = totalSamples
+        descriptor.storageMode = .shared
+        descriptor.label = "GpuPassCounters"
+        let sampleBuffer: MTLCounterSampleBuffer
+        do {
+            sampleBuffer = try device.makeCounterSampleBuffer(descriptor: descriptor)
+        } catch {
+            return false
+        }
+
+        let bytesPerSample = counterBytesPerSample(counterSet: counterSet)
+        let bytesPerFrame = bytesPerSample * samplesPerFrame
+        let totalBytes = bytesPerFrame * max(1, inFlightFrames)
+        guard let resolveBuffer = device.makeBuffer(length: totalBytes, options: .storageModeShared) else { return false }
+        resolveBuffer.label = "GpuPassCounters.Resolve"
+
+        gpuCounterLock.lock()
+        gpuCounterSampleBuffer = sampleBuffer
+        gpuCounterResolveBuffer = resolveBuffer
+        gpuCounterSamplesPerFrame = samplesPerFrame
+        gpuCounterBytesPerSample = bytesPerSample
+        gpuCounterBytesPerFrame = bytesPerFrame
+        gpuCounterInFlightFrames = inFlightFrames
+        gpuCounterBeginMask = Array(repeating: 0, count: inFlightFrames)
+        gpuCounterEndMask = Array(repeating: 0, count: inFlightFrames)
+        gpuCounterFrameIds = Array(repeating: 0, count: inFlightFrames)
+        gpuCounterLock.unlock()
+        logGpuCounterDiagnosticsIfNeeded()
+        return true
     }
 
-    public func endGpuFrame(_ frameId: UInt64) {
-        queue.async {
-            if let totalSeconds = self.gpuFrameTotals.removeValue(forKey: frameId) {
-                self.averages[.gpu]?.add(totalSeconds * 1000.0)
+    public func beginGpuCounterFrame(frameIndex: Int, frameId: UInt64) {
+        gpuCounterLock.lock()
+        guard gpuCounterSampleBuffer != nil,
+              gpuCounterInFlightFrames > 0,
+              frameIndex < gpuCounterInFlightFrames else {
+            gpuCounterLock.unlock()
+            return
+        }
+        gpuCounterBeginMask[frameIndex] = 0
+        gpuCounterEndMask[frameIndex] = 0
+        gpuCounterFrameIds[frameIndex] = frameId
+        gpuCounterLock.unlock()
+    }
+
+    public func sampleGpuPassBegin(_ pass: GpuPass, encoder: MTLRenderCommandEncoder, frameIndex: Int) {
+        guard #available(macOS 11.0, *) else { return }
+        guard let sampleBuffer = gpuCounterSampleBuffer,
+              gpuCounterInFlightFrames > 0,
+              frameIndex < gpuCounterInFlightFrames else { return }
+        let passIndex = gpuPassIndex(pass)
+        let sampleIndex = frameIndex * gpuCounterSamplesPerFrame + (passIndex * 2)
+        encoder.sampleCounters(sampleBuffer: sampleBuffer, sampleIndex: sampleIndex, barrier: true)
+        gpuCounterLock.lock()
+        gpuCounterBeginMask[frameIndex] |= UInt32(1 << passIndex)
+        gpuCounterLock.unlock()
+    }
+
+    public func sampleGpuPassEnd(_ pass: GpuPass, encoder: MTLRenderCommandEncoder, frameIndex: Int) {
+        guard #available(macOS 11.0, *) else { return }
+        guard let sampleBuffer = gpuCounterSampleBuffer,
+              gpuCounterInFlightFrames > 0,
+              frameIndex < gpuCounterInFlightFrames else { return }
+        let passIndex = gpuPassIndex(pass)
+        let sampleIndex = frameIndex * gpuCounterSamplesPerFrame + (passIndex * 2) + 1
+        encoder.sampleCounters(sampleBuffer: sampleBuffer, sampleIndex: sampleIndex, barrier: true)
+        gpuCounterLock.lock()
+        gpuCounterEndMask[frameIndex] |= UInt32(1 << passIndex)
+        gpuCounterLock.unlock()
+    }
+
+    public func encodeGpuCounterResolve(commandBuffer: MTLCommandBuffer, frameIndex: Int) {
+        guard #available(macOS 11.0, *) else { return }
+        guard let sampleBuffer = gpuCounterSampleBuffer,
+              let resolveBuffer = gpuCounterResolveBuffer,
+              gpuCounterSamplesPerFrame > 0,
+              gpuCounterInFlightFrames > 0,
+              frameIndex < gpuCounterInFlightFrames else { return }
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        let startSample = frameIndex * gpuCounterSamplesPerFrame
+        let destinationOffset = frameIndex * gpuCounterBytesPerFrame
+        let range = startSample..<(startSample + gpuCounterSamplesPerFrame)
+        blit.resolveCounters(sampleBuffer, range: range, destinationBuffer: resolveBuffer, destinationOffset: destinationOffset)
+        blit.endEncoding()
+    }
+
+    public func processResolvedGpuCounters(frameIndex: Int, frameId: UInt64, commandBuffer: MTLCommandBuffer) {
+        guard let resolveBuffer = gpuCounterResolveBuffer,
+              gpuCounterSamplesPerFrame > 0,
+              gpuCounterBytesPerSample > 0,
+              gpuCounterInFlightFrames > 0,
+              frameIndex < gpuCounterInFlightFrames else { return }
+
+        var beginMask: UInt32 = 0
+        var endMask: UInt32 = 0
+        gpuCounterLock.lock()
+        if gpuCounterFrameIds[frameIndex] == frameId {
+            beginMask = gpuCounterBeginMask[frameIndex]
+            endMask = gpuCounterEndMask[frameIndex]
+        }
+        gpuCounterLock.unlock()
+
+        let activeMask = beginMask & endMask
+        if activeMask == 0 { return }
+
+        let basePointer = resolveBuffer.contents().advanced(by: frameIndex * gpuCounterBytesPerFrame)
+        var earliest: UInt64 = .max
+        var latest: UInt64 = 0
+        let passCount = GpuPass.allCases.count
+
+        for passIndex in 0..<passCount {
+            let mask = UInt32(1 << passIndex)
+            if activeMask & mask == 0 { continue }
+            let begin = readCounterSample(basePointer: basePointer, sampleIndex: passIndex * 2)
+            let end = readCounterSample(basePointer: basePointer, sampleIndex: passIndex * 2 + 1)
+            if end >= begin {
+                earliest = min(earliest, begin)
+                latest = max(latest, end)
             }
         }
+
+        let gpuDuration = max(0.0, commandBuffer.gpuEndTime - commandBuffer.gpuStartTime)
+        if gpuDuration > 0 {
+            record(.gpu, seconds: gpuDuration)
+        }
+        guard earliest != .max, latest > earliest, gpuDuration > 0 else { return }
+
+        let scale = gpuDuration / Double(latest - earliest)
+        for passIndex in 0..<passCount {
+            let mask = UInt32(1 << passIndex)
+            if activeMask & mask == 0 { continue }
+            let begin = readCounterSample(basePointer: basePointer, sampleIndex: passIndex * 2)
+            let end = readCounterSample(basePointer: basePointer, sampleIndex: passIndex * 2 + 1)
+            if end >= begin {
+                let seconds = Double(end - begin) * scale
+                recordGpuPass(GpuPass.allCases[passIndex], seconds: seconds)
+            }
+        }
+    }
+
+    @available(macOS 11.0, *)
+    private func resolveTimestampCounterSet(device: MTLDevice) -> MTLCounterSet? {
+        guard let counterSets = device.counterSets else { return nil }
+        return counterSets.first(where: { $0.name.localizedCaseInsensitiveContains("timestamp") })
+    }
+
+    @available(macOS 11.0, *)
+    private func counterBytesPerSample(counterSet: MTLCounterSet) -> Int {
+        let counterCount = max(1, counterSet.counters.count)
+        return counterCount * MemoryLayout<UInt64>.stride
+    }
+
+    private func readCounterSample(basePointer: UnsafeMutableRawPointer, sampleIndex: Int) -> UInt64 {
+        let offset = sampleIndex * gpuCounterBytesPerSample
+        return basePointer.advanced(by: offset).bindMemory(to: UInt64.self, capacity: 1).pointee
+    }
+
+    private func gpuPassIndex(_ pass: GpuPass) -> Int {
+        return GpuPass.allCases.firstIndex(of: pass) ?? 0
+    }
+
+    public func gpuCounterSupportInfo() -> (supported: Bool, reason: String, counterSet: String, samplingPoint: String) {
+        gpuCounterLock.lock()
+        let info = (gpuCounterSupported, gpuCounterSupportReason, gpuCounterSetName, gpuCounterSamplingPointName)
+        gpuCounterLock.unlock()
+        return info
+    }
+
+    public func gpuCounterDebugInfo() -> String {
+        let info = gpuCounterSupportInfo()
+        if info.supported {
+            return "GPU counters: supported (\(info.counterSet), \(info.samplingPoint))."
+        }
+        if info.reason.isEmpty {
+            return "GPU counters: unsupported."
+        }
+        return "GPU counters: unsupported (\(info.reason))."
+    }
+
+    private func updateGpuCounterSupport(device: MTLDevice) {
+        guard #available(macOS 11.0, *) else {
+            setGpuCounterSupport(false, reason: "Requires macOS 11.0+.", counterSet: "", samplingPoint: "")
+            return
+        }
+        guard let counterSets = device.counterSets else {
+            setGpuCounterSupport(false, reason: "Device exposes no counter sets.", counterSet: "", samplingPoint: "")
+            return
+        }
+        guard let timestampSet = counterSets.first(where: { $0.name.localizedCaseInsensitiveContains("timestamp") }) else {
+            setGpuCounterSupport(false, reason: "No timestamp counter set available.", counterSet: "", samplingPoint: "")
+            return
+        }
+        guard device.supportsCounterSampling(.atDrawBoundary) else {
+            setGpuCounterSupport(false, reason: "Device does not support counter sampling at draw boundary.", counterSet: timestampSet.name, samplingPoint: "")
+            return
+        }
+        setGpuCounterSupport(true, reason: "", counterSet: timestampSet.name, samplingPoint: "draw boundary")
+    }
+
+    private func setGpuCounterSupport(_ supported: Bool, reason: String, counterSet: String, samplingPoint: String) {
+        gpuCounterLock.lock()
+        gpuCounterSupported = supported
+        gpuCounterSupportReason = reason
+        gpuCounterSetName = counterSet
+        gpuCounterSamplingPointName = samplingPoint
+        gpuCounterLock.unlock()
+    }
+
+    private func logGpuCounterDiagnosticsIfNeeded() {
+        #if DEBUG
+        gpuCounterLock.lock()
+        if gpuCounterLoggedDiagnostics {
+            gpuCounterLock.unlock()
+            return
+        }
+        gpuCounterLoggedDiagnostics = true
+        let supported = gpuCounterSupported
+        let reason = gpuCounterSupportReason
+        let counterSet = gpuCounterSetName
+        let samplingPoint = gpuCounterSamplingPointName
+        gpuCounterLock.unlock()
+        if supported {
+            print("GPU pass timings: supported (\(counterSet), \(samplingPoint)).")
+        } else {
+            print("GPU pass timings: unsupported (\(reason)).")
+        }
+        #endif
     }
 }

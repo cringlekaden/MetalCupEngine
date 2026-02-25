@@ -51,8 +51,15 @@ public final class ResourceRegistry {
     }
 
     public func resolveFunction(_ name: String, device: MTLDevice, fallbackLibrary: MTLLibrary?) -> MTLFunction? {
+        return resolveFunction(name, device: device, fallbackLibrary: fallbackLibrary, constants: nil)
+    }
+
+    public func resolveFunction(_ name: String,
+                                device: MTLDevice,
+                                fallbackLibrary: MTLLibrary?,
+                                constants: MTLFunctionConstantValues?) -> MTLFunction? {
         let primary = defaultLibrary ?? fallbackLibrary
-        if let fn = primary?.makeFunction(name: name) {
+        if let fn = makeFunction(from: primary, name: name, constants: constants) {
             return fn
         }
 
@@ -62,7 +69,7 @@ public final class ResourceRegistry {
         }
 
         let fallback = defaultLibrary ?? fallbackLibrary
-        return fallback?.makeFunction(name: name)
+        return makeFunction(from: fallback, name: name, constants: constants)
     }
 
     private func buildLibraryFromResources(device: MTLDevice) -> MTLLibrary? {
@@ -211,5 +218,13 @@ public final class ResourceRegistry {
             }
         }
         return nil
+    }
+
+    private func makeFunction(from library: MTLLibrary?, name: String, constants: MTLFunctionConstantValues?) -> MTLFunction? {
+        guard let library else { return nil }
+        if let constants {
+            return try? library.makeFunction(name: name, constantValues: constants)
+        }
+        return library.makeFunction(name: name)
     }
 }

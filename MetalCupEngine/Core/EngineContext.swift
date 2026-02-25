@@ -21,6 +21,7 @@ public final class EngineContext {
     public let debugDraw: DebugDraw
     public let pickingSystem: PickingSystem
     public var rendererSettings: RendererSettings = RendererSettings()
+    public var physicsSettings: PhysicsSettings = PhysicsSettings()
 
     public init(device: MTLDevice,
                 commandQueue: MTLCommandQueue,
@@ -50,5 +51,8 @@ public final class EngineContext {
         self.debugDraw = debugDraw ?? DebugDraw()
         self.pickingSystem = pickingSystem ?? PickingSystem()
         EngineLoggerContext.install(log)
+#if DEBUG
+        TransformMath.runTransformSanityOnce()
+#endif
     }
 }

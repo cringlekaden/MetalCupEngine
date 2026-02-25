@@ -7,6 +7,7 @@ import MetalKit
 public enum VertexDescriptorType {
     case Default
     case Simple
+    case DebugLine
 }
 
 public class VertexDescriptorLibrary: Library<VertexDescriptorType, MTLVertexDescriptor> {
@@ -16,6 +17,7 @@ public class VertexDescriptorLibrary: Library<VertexDescriptorType, MTLVertexDes
     override func fillLibrary() {
         _library[.Default] = DefaultVertexDescriptor()
         _library[.Simple] = SimpleVertexDescriptor()
+        _library[.DebugLine] = DebugLineVertexDescriptor()
     }
     
     override subscript(_ type: VertexDescriptorType)->MTLVertexDescriptor {
@@ -61,6 +63,23 @@ struct SimpleVertexDescriptor: VertexDescriptor {
         vertexDescriptor.attributes[0].bufferIndex = 0
         vertexDescriptor.attributes[0].offset = 0
         vertexDescriptor.layouts[0].stride = SimpleVertex.stride
+        vertexDescriptor.layouts[0].stepRate = 1
+        vertexDescriptor.layouts[0].stepFunction = .perVertex
+    }
+}
+
+struct DebugLineVertexDescriptor: VertexDescriptor {
+    var name: String = "Debug Line Vertex Descriptor"
+    var vertexDescriptor: MTLVertexDescriptor!
+    init() {
+        vertexDescriptor = MTLVertexDescriptor()
+        vertexDescriptor.attributes[0].format = .float3
+        vertexDescriptor.attributes[0].bufferIndex = 0
+        vertexDescriptor.attributes[0].offset = MemoryLayout<DebugLineVertex>.offset(of: \DebugLineVertex.position) ?? 0
+        vertexDescriptor.attributes[1].format = .float4
+        vertexDescriptor.attributes[1].bufferIndex = 0
+        vertexDescriptor.attributes[1].offset = MemoryLayout<DebugLineVertex>.offset(of: \DebugLineVertex.color) ?? 0
+        vertexDescriptor.layouts[0].stride = DebugLineVertex.stride
         vertexDescriptor.layouts[0].stepRate = 1
         vertexDescriptor.layouts[0].stepFunction = .perVertex
     }

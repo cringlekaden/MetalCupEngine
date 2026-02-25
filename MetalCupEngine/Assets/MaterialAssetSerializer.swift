@@ -12,11 +12,14 @@ public struct MaterialAssetDocument: Codable {
     public var version: Int?
 
     public var baseColorFactor: Vector3DTO?
+    public var baseColorAlpha: Float?
     public var metallicFactor: Float?
     public var roughnessFactor: Float?
     public var aoFactor: Float?
     public var emissiveColor: Vector3DTO?
     public var emissiveIntensity: Float?
+    public var uvTiling: Vector2DTO?
+    public var uvOffset: Vector2DTO?
 
     public var alphaMode: MaterialAlphaMode?
     public var alphaCutoff: Float?
@@ -94,18 +97,24 @@ public enum MaterialAssetSerializer {
 
         let name = document.name ?? url.deletingPathExtension().lastPathComponent
         let baseColor = document.baseColorFactor?.toSIMD() ?? SIMD3<Float>(1.0, 1.0, 1.0)
+        let baseColorAlpha = document.baseColorAlpha ?? 1.0
         let emissiveColor = document.emissiveColor?.toSIMD() ?? SIMD3<Float>(0.0, 0.0, 0.0)
+        let uvTiling = document.uvTiling?.toSIMD() ?? SIMD2<Float>(1.0, 1.0)
+        let uvOffset = document.uvOffset?.toSIMD() ?? SIMD2<Float>(0.0, 0.0)
 
         return MaterialAsset(
             handle: fallbackHandle ?? resolvedHandle,
             name: name,
             version: document.version ?? 1,
             baseColorFactor: baseColor,
+            baseColorAlpha: baseColorAlpha,
             metallicFactor: document.metallicFactor ?? 1.0,
             roughnessFactor: document.roughnessFactor ?? 1.0,
             aoFactor: document.aoFactor ?? 1.0,
             emissiveColor: emissiveColor,
             emissiveIntensity: document.emissiveIntensity ?? 1.0,
+            uvTiling: uvTiling,
+            uvOffset: uvOffset,
             alphaMode: document.alphaMode ?? .opaque,
             alphaCutoff: document.alphaCutoff ?? 0.5,
             doubleSided: document.doubleSided ?? false,
@@ -122,11 +131,14 @@ public enum MaterialAssetSerializer {
         document.name = asset.name
         document.version = asset.version
         document.baseColorFactor = Vector3DTO(asset.baseColorFactor)
+        document.baseColorAlpha = asset.baseColorAlpha
         document.metallicFactor = asset.metallicFactor
         document.roughnessFactor = asset.roughnessFactor
         document.aoFactor = asset.aoFactor
         document.emissiveColor = Vector3DTO(asset.emissiveColor)
         document.emissiveIntensity = asset.emissiveIntensity
+        document.uvTiling = Vector2DTO(asset.uvTiling)
+        document.uvOffset = Vector2DTO(asset.uvOffset)
         document.alphaMode = asset.alphaMode
         document.alphaCutoff = asset.alphaCutoff
         document.doubleSided = asset.doubleSided

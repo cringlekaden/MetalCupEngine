@@ -806,6 +806,27 @@ public func MCERendererGetGpuPassTimingsEnabled(_ contextPtr: UnsafeRawPointer?)
     profiler(contextPtr)?.gpuPassTimingsEnabled() == true ? 1 : 0
 }
 
+@_cdecl("MCERendererGetGpuPassTimingsSupported")
+public func MCERendererGetGpuPassTimingsSupported(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    guard let engineContext = resolveEngineContext(contextPtr),
+          let rendererProfiler = engineContext.renderer?.profiler else { return 0 }
+    return rendererProfiler.gpuCounterSamplingSupported(device: engineContext.device) ? 1 : 0
+}
+
+@_cdecl("MCERendererCopyGpuPassTimingDebugInfo")
+public func MCERendererCopyGpuPassTimingDebugInfo(
+    _ contextPtr: UnsafeRawPointer?,
+    _ buffer: UnsafeMutablePointer<CChar>?,
+    _ bufferLength: Int32
+) {
+    guard let buffer, bufferLength > 0 else { return }
+    let info = profiler(contextPtr)?.gpuCounterDebugInfo() ?? "GPU counters: unavailable."
+    info.withCString { cString in
+        strncpy(buffer, cString, Int(bufferLength - 1))
+        buffer[Int(bufferLength - 1)] = 0
+    }
+}
+
 @_cdecl("MCERendererSetGpuPassTimingsEnabled")
 public func MCERendererSetGpuPassTimingsEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
     profiler(contextPtr)?.setGpuPassTimingsEnabled(value != 0)

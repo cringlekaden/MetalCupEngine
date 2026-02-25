@@ -26,6 +26,10 @@ public struct RendererFrameContext {
         storage.currentFrameCounter()
     }
 
+    public func maxFramesInFlight() -> Int {
+        storage.maxFramesInFlightValue()
+    }
+
     public func updateBatchStats(_ stats: RendererBatchStats) {
         storage.updateBatchStats(stats)
     }
@@ -204,6 +208,10 @@ public final class RendererFrameContextStorage {
         frameCounter
     }
 
+    fileprivate func maxFramesInFlightValue() -> Int {
+        maxFramesInFlight
+    }
+
     fileprivate func updateBatchStats(_ stats: RendererBatchStats) {
         batchStats = stats
     }
@@ -236,6 +244,8 @@ public final class RendererFrameContextStorage {
 
     fileprivate func uploadInstanceData(_ data: [InstanceData]) -> MTLBuffer? {
         guard !data.isEmpty else { return nil }
+        MC_ASSERT(InstanceData.stride == InstanceData.expectedMetalStride,
+                  "InstanceData stride mismatch. Keep Swift and Metal layouts in sync.")
         let requiredBytes = InstanceData.stride(data.count)
         ensureInstanceBufferCapacity(requiredBytes)
         guard let buffer = instanceBuffers[frameIndex] else { return nil }

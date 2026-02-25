@@ -107,7 +107,7 @@ public final class PrefabSystem {
                 if let transform = prefabEntity.components.transform {
                     ecs.add(TransformComponent(
                         position: transform.position.toSIMD(),
-                        rotation: transform.rotation.toSIMD(),
+                        rotation: transform.rotationQuat.toSIMD(),
                         scale: transform.scale.toSIMD()
                     ), to: entity)
                 } else {
@@ -140,7 +140,7 @@ public final class PrefabSystem {
             if let transform = prefabEntity.components.transform {
                 ecs.add(TransformComponent(
                     position: transform.position.toSIMD(),
-                    rotation: transform.rotation.toSIMD(),
+                    rotation: transform.rotationQuat.toSIMD(),
                     scale: transform.scale.toSIMD()
                 ), to: entity)
             } else {
@@ -182,6 +182,22 @@ public final class PrefabSystem {
                 ecs.add(MaterialComponent(materialHandle: materialComponent.materialHandle), to: entity)
             } else {
                 ecs.remove(MaterialComponent.self, from: entity)
+            }
+        }
+
+        if !isOverridden(.rigidbody) {
+            if let rigidbody = prefabEntity.components.rigidbody {
+                ecs.add(rigidbody.toComponent(), to: entity)
+            } else {
+                ecs.remove(RigidbodyComponent.self, from: entity)
+            }
+        }
+
+        if !isOverridden(.collider) {
+            if let collider = prefabEntity.components.collider {
+                ecs.add(collider.toComponent(), to: entity)
+            } else {
+                ecs.remove(ColliderComponent.self, from: entity)
             }
         }
 

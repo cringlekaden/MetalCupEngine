@@ -77,7 +77,17 @@ public final class AssetManager {
             options[.SRGB] = false
             options[.generateMipmaps] = false
         case .texture:
-            options[.SRGB] = AssetManager.isColorTexture(path: sourcePath)
+            if let explicitSRGB = AssetManager.explicitSRGBOverride(metadata: metadata) {
+                let expectedSRGB = AssetManager.expectedSRGB(metadata: metadata, sourcePath: sourcePath)
+                if explicitSRGB != expectedSRGB {
+                    EngineLoggerContext.log(
+                        "Texture sRGB mismatch for \(sourcePath) (\(handle.rawValue.uuidString)): expected \(expectedSRGB), got \(explicitSRGB).",
+                        level: .warning,
+                        category: .assets
+                    )
+                }
+            }
+            options[.SRGB] = AssetManager.shouldUseSRGB(metadata: metadata, sourcePath: sourcePath)
             let shouldMipmap = AssetManager.shouldGenerateMipmaps(path: sourcePath)
             options[.generateMipmaps] = false
             options[.allocateMipmaps] = shouldMipmap
@@ -190,6 +200,9 @@ public final class AssetManager {
         if name.contains("normal")
             || name.contains("rough")
             || name.contains("metal")
+            || name.contains("orm")
+            || name.contains("rma")
+            || name.contains("arm")
             || name.contains("ao")
             || name.contains("occlusion")
             || name.contains("height")
@@ -203,6 +216,34 @@ public final class AssetManager {
             return true
         }
         return true
+    }
+
+    public static func explicitSRGBOverride(metadata: AssetMetadata?) -> Bool? {
+        guard let raw = metadata?.importSettings["srgb"]?.lowercased() else { return nil }
+        if raw == "true" || raw == "1" || raw == "yes" { return true }
+        if raw == "false" || raw == "0" || raw == "no" { return false }
+        return nil
+    }
+
+    public static func expectedSRGB(metadata: AssetMetadata?, sourcePath: String) -> Bool {
+        if let semantic = (metadata?.importSettings["semantic"] ?? metadata?.importSettings["meshTextureSemantic"])?.lowercased() {
+            switch semantic {
+            case "basecolor", "albedo", "diffuse", "diff", "emissive":
+                return true
+            case "normal", "roughness", "metallic", "ao", "occlusion", "height", "mask", "orm", "rma", "arm":
+                return false
+            default:
+                break
+            }
+        }
+        return isColorTexture(path: sourcePath)
+    }
+
+    public static func shouldUseSRGB(metadata: AssetMetadata?, sourcePath: String) -> Bool {
+        if let explicit = explicitSRGBOverride(metadata: metadata) {
+            return explicit
+        }
+        return expectedSRGB(metadata: metadata, sourcePath: sourcePath)
     }
 
     public static func shouldFlipNormalY(path: String) -> Bool {
