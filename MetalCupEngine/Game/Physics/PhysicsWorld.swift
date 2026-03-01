@@ -902,13 +902,23 @@ public struct PhysicsRaycastHit {
     public var distance: Float
     public var bodyId: UInt64
     public var entityId: UUID?
+    public var shapeIndex: Int32?
+    public var subShapeId: UInt32?
 
-    public init(position: SIMD3<Float>, normal: SIMD3<Float>, distance: Float, bodyId: UInt64, entityId: UUID?) {
+    public init(position: SIMD3<Float>,
+                normal: SIMD3<Float>,
+                distance: Float,
+                bodyId: UInt64,
+                entityId: UUID?,
+                shapeIndex: Int32? = nil,
+                subShapeId: UInt32? = nil) {
         self.position = position
         self.normal = normal
         self.distance = distance
         self.bodyId = bodyId
         self.entityId = entityId
+        self.shapeIndex = shapeIndex
+        self.subShapeId = subShapeId
     }
 }
 

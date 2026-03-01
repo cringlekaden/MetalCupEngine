@@ -253,6 +253,14 @@ public final class PrefabSystem {
             }
         }
 
+        if !isOverridden(.script) {
+            if let script = prefabEntity.components.script {
+                ecs.add(script.toComponent(), to: entity)
+            } else {
+                ecs.remove(ScriptComponent.self, from: entity)
+            }
+        }
+
         if !isOverridden(.sky) {
             if let sky = prefabEntity.components.sky {
                 ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)

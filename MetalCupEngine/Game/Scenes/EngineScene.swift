@@ -45,6 +45,7 @@ public class EngineScene {
     public func onUpdate(frame: FrameContext, isPlaying: Bool = true, isPaused: Bool = false) {
         debugFrameCounter &+= 1
         lastFrameContext = frame
+        dispatchScriptChanges()
         // Update order: camera -> scene constants -> sky system -> scene update -> light sync.
         ensureCameraEntity()
         updateCamera(isPlaying: isPlaying, frame: frame)
@@ -64,9 +65,16 @@ public class EngineScene {
         let iblIntensity = (hasEnvironment && settings.iblEnabled != 0) ? settings.iblIntensity * skyIntensity : 0.0
         _sceneConstants.cameraPositionAndIBL.w = iblIntensity
         SkySystem.update(scene: ecs)
+        let shouldRunScripts = (isPlaying && !isPaused) || (!isPlaying && physicsSystem != nil)
+        if shouldRunScripts {
+            engineContext?.scriptRuntime.onUpdate(dt: frame.time.deltaTime)
+        }
         if isPlaying && !isPaused {
             updateLightOrbits(totalTime: frame.time.totalTime)
             doUpdate()
+        }
+        if shouldRunScripts {
+            engineContext?.scriptRuntime.onLateUpdate(dt: frame.time.deltaTime)
         }
         syncLights()
     }
@@ -123,15 +131,27 @@ public class EngineScene {
                         direction: SIMD3<Float>,
                         mask: LayerMask = .all,
                         includeTriggers: Bool = true) -> Entity? {
-        guard let physicsSystem else { return nil }
-        guard let hit = physicsSystem.raycast(origin: origin,
-                                              direction: direction,
-                                              maxDistance: 1000.0,
-                                              layerMask: mask,
-                                              includeTriggers: includeTriggers),
+        guard let hit = raycastHit(origin: origin,
+                                   direction: direction,
+                                   maxDistance: 1000.0,
+                                   mask: mask,
+                                   includeTriggers: includeTriggers),
               let entityId = hit.entityId,
               let entity = ecs.entity(with: entityId) else { return nil }
         return entity
+    }
+
+    public func raycastHit(origin: SIMD3<Float>,
+                           direction: SIMD3<Float>,
+                           maxDistance: Float = 1000.0,
+                           mask: LayerMask = .all,
+                           includeTriggers: Bool = true) -> PhysicsRaycastHit? {
+        guard let physicsSystem else { return nil }
+        return physicsSystem.raycast(origin: origin,
+                                     direction: direction,
+                                     maxDistance: maxDistance,
+                                     layerMask: mask,
+                                     includeTriggers: includeTriggers)
     }
 
     public func raycastForEditorPicking(origin: SIMD3<Float>,
@@ -171,7 +191,47 @@ public class EngineScene {
         let fixedDelta = engineContext?.physicsSettings.fixedDeltaTime
             ?? lastFrameContext?.time.fixedDeltaTime
             ?? defaultDelta
+        engineContext?.scriptRuntime.onFixedUpdate(dt: fixedDelta)
         physicsSystem?.fixedUpdate(scene: self, fixedDeltaTime: fixedDelta)
+        if let events = physicsSystem?.drainEvents(), !events.isEmpty {
+            engineContext?.scriptRuntime.onPhysicsEvents(events: events)
+        }
+    }
+
+    private func dispatchScriptChanges() {
+        guard let runtime = engineContext?.scriptRuntime else {
+            _ = ecs.drainChanges()
+            return
+        }
+        let changes = ecs.drainChangesDeterministic()
+        guard !changes.isEmpty else { return }
+        for change in changes {
+            switch change.kind {
+            case .entityCreated:
+                runtime.onEntityCreated(entityId: change.entityId)
+            case .entityDestroyed:
+                runtime.onEntityDestroyed(entityId: change.entityId)
+            case .componentAdded:
+                if let type = change.componentType {
+                    runtime.onComponentAdded(entityId: change.entityId, type: type)
+                }
+            case .componentRemoved:
+                if let type = change.componentType {
+                    runtime.onComponentRemoved(entityId: change.entityId, type: type)
+                }
+            case .componentEnabled, .componentDisabled:
+                continue
+            }
+        }
+    }
+
+    public func notifyScriptSceneStart() {
+        engineContext?.scriptRuntime.onSceneStart(scene: self)
+        dispatchScriptChanges()
+    }
+
+    public func notifyScriptSceneStop() {
+        engineContext?.scriptRuntime.onSceneStop(scene: self)
     }
 
     public func startPhysics(settings: PhysicsSettings) {
@@ -308,6 +368,9 @@ public class EngineScene {
                     camera: shouldSerializeOverride(.camera, for: entity)
                         ? ecs.get(CameraComponent.self, for: entity).map { CameraComponentDTO(component: $0) }
                         : nil,
+                    script: shouldSerializeOverride(.script, for: entity)
+                        ? ecs.get(ScriptComponent.self, for: entity).map { ScriptComponentDTO(component: $0) }
+                        : nil,
                     sky: shouldSerializeOverride(.sky, for: entity)
                         ? ecs.get(SkyComponent.self, for: entity).map { SkyComponentDTO(environmentMapHandle: $0.environmentMapHandle) }
                         : nil,
@@ -414,6 +477,9 @@ public class EngineScene {
                 },
                 camera: ecs.get(CameraComponent.self, for: entity).map { component in
                     CameraComponentDTO(component: component)
+                },
+                script: ecs.get(ScriptComponent.self, for: entity).map { component in
+                    ScriptComponentDTO(component: component)
                 },
                 sky: ecs.get(SkyComponent.self, for: entity).map { component in
                     SkyComponentDTO(environmentMapHandle: component.environmentMapHandle)
@@ -553,6 +619,9 @@ public class EngineScene {
                 if let camera = entityDoc.components.camera {
                     ecs.add(camera.toComponent(), to: entity)
                 }
+                if let script = entityDoc.components.script {
+                    ecs.add(script.toComponent(), to: entity)
+                }
                 if let sky = entityDoc.components.sky {
                     ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
                 }
@@ -653,6 +722,15 @@ public class EngineScene {
             }
             if let camera = entityDoc.components.camera {
                 ecs.add(camera.toComponent(), to: entity)
+            }
+            if let rigidbody = entityDoc.components.rigidbody {
+                ecs.add(rigidbody.toComponent(), to: entity)
+            }
+            if let collider = entityDoc.components.collider {
+                ecs.add(collider.toComponent(), to: entity)
+            }
+            if let script = entityDoc.components.script {
+                ecs.add(script.toComponent(), to: entity)
             }
             if let sky = entityDoc.components.sky {
                 ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
@@ -795,6 +873,9 @@ public class EngineScene {
             if let camera = entityDoc.components.camera {
                 ecs.add(camera.toComponent(), to: entity)
             }
+            if let script = entityDoc.components.script {
+                ecs.add(script.toComponent(), to: entity)
+            }
             if let sky = entityDoc.components.sky {
                 ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
             }
@@ -860,7 +941,7 @@ public class EngineScene {
     }
 
     private func ensureCameraEntity() {
-        if ecs.activeCamera() != nil { return }
+        if findEditorCamera() != nil { return }
         let entity = ecs.createEntity(name: "Editor Camera")
         ecs.add(TransformComponent(position: SIMD3<Float>(0, 3, 10)), to: entity)
         ecs.add(CameraComponent(isPrimary: true, isEditor: true), to: entity)

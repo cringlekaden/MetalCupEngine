@@ -229,6 +229,26 @@ public struct LayerComponent {
     }
 }
 
+public struct ScriptComponent {
+    public var enabled: Bool
+    public var scriptAssetHandle: AssetHandle?
+    public var typeName: String
+    public var fieldData: Data
+    public var fieldDataVersion: UInt32
+
+    public init(enabled: Bool = true,
+                scriptAssetHandle: AssetHandle? = nil,
+                typeName: String = "",
+                fieldData: Data = Data(),
+                fieldDataVersion: UInt32 = 1) {
+        self.enabled = enabled
+        self.scriptAssetHandle = scriptAssetHandle
+        self.typeName = typeName
+        self.fieldData = fieldData
+        self.fieldDataVersion = fieldDataVersion
+    }
+}
+
 public enum PrefabOverrideType: String, Codable, CaseIterable {
     case name
     case hierarchy
@@ -240,6 +260,7 @@ public enum PrefabOverrideType: String, Codable, CaseIterable {
     case light
     case lightOrbit
     case camera
+    case script
     case sky
     case skyLight
     case skyLightTag

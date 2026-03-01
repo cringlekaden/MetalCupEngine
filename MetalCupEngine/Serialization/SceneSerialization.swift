@@ -59,6 +59,7 @@ public struct ComponentsDocument: Codable {
     public var light: LightComponentDTO?
     public var lightOrbit: LightOrbitComponentDTO?
     public var camera: CameraComponentDTO?
+    public var script: ScriptComponentDTO?
     public var sky: SkyComponentDTO?
     public var skyLight: SkyLightComponentDTO?
     public var skyLightTag: TagComponentDTO?
@@ -77,6 +78,7 @@ public struct ComponentsDocument: Codable {
         light: LightComponentDTO? = nil,
         lightOrbit: LightOrbitComponentDTO? = nil,
         camera: CameraComponentDTO? = nil,
+        script: ScriptComponentDTO? = nil,
         sky: SkyComponentDTO? = nil,
         skyLight: SkyLightComponentDTO? = nil,
         skyLightTag: TagComponentDTO? = nil,
@@ -94,6 +96,7 @@ public struct ComponentsDocument: Codable {
         self.light = light
         self.lightOrbit = lightOrbit
         self.camera = camera
+        self.script = script
         self.sky = sky
         self.skyLight = skyLight
         self.skyLightTag = skyLightTag
@@ -647,6 +650,47 @@ public struct CameraComponentDTO: Codable {
             isPrimary: isPrimary,
             isEditor: isEditor
         )
+    }
+}
+
+public struct ScriptComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var scriptAssetHandle: AssetHandle?
+    public var typeName: String
+    public var fieldDataBase64: String
+    public var fieldDataVersion: UInt32
+
+    public init(schemaVersion: Int = 1,
+                enabled: Bool,
+                scriptAssetHandle: AssetHandle?,
+                typeName: String,
+                fieldDataBase64: String,
+                fieldDataVersion: UInt32 = 1) {
+        self.schemaVersion = schemaVersion
+        self.enabled = enabled
+        self.scriptAssetHandle = scriptAssetHandle
+        self.typeName = typeName
+        self.fieldDataBase64 = fieldDataBase64
+        self.fieldDataVersion = fieldDataVersion
+    }
+
+    public init(component: ScriptComponent) {
+        self.schemaVersion = 1
+        self.enabled = component.enabled
+        self.scriptAssetHandle = component.scriptAssetHandle
+        self.typeName = component.typeName
+        self.fieldDataBase64 = component.fieldData.base64EncodedString()
+        self.fieldDataVersion = component.fieldDataVersion
+    }
+
+    public func toComponent() -> ScriptComponent {
+        let decoded = Data(base64Encoded: fieldDataBase64) ?? Data()
+        return ScriptComponent(enabled: enabled,
+                               scriptAssetHandle: scriptAssetHandle,
+                               typeName: typeName,
+                               fieldData: decoded,
+                               fieldDataVersion: fieldDataVersion)
     }
 }
 

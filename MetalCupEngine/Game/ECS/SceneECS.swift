@@ -13,6 +13,49 @@ public struct Entity: Hashable {
     }
 }
 
+public enum SceneECSChangeKind: Int32 {
+    case entityCreated = 0
+    case entityDestroyed = 1
+    case componentAdded = 2
+    case componentRemoved = 3
+    case componentEnabled = 4
+    case componentDisabled = 5
+}
+
+public enum SceneECSComponentType: Int32 {
+    case name = 0
+    case transform = 1
+    case layer = 2
+    case parent = 3
+    case children = 4
+    case rigidbody = 5
+    case collider = 6
+    case prefabInstance = 7
+    case prefabOverride = 8
+    case meshRenderer = 9
+    case material = 10
+    case camera = 11
+    case script = 12
+    case light = 13
+    case lightOrbit = 14
+    case sky = 15
+    case skyLight = 16
+    case skyLightTag = 17
+    case skySunTag = 18
+}
+
+public struct SceneECSChange {
+    public let kind: SceneECSChangeKind
+    public let entityId: UUID
+    public let componentType: SceneECSComponentType?
+
+    public init(kind: SceneECSChangeKind, entityId: UUID, componentType: SceneECSComponentType? = nil) {
+        self.kind = kind
+        self.entityId = entityId
+        self.componentType = componentType
+    }
+}
+
 public final class SceneECS {
     private var aliveEntities: Set<Entity> = []
 
@@ -26,6 +69,7 @@ public final class SceneECS {
     private var meshRendererComponents: [Entity: MeshRendererComponent] = [:]
     private var materialComponents: [Entity: MaterialComponent] = [:]
     private var cameraComponents: [Entity: CameraComponent] = [:]
+    private var scriptComponents: [Entity: ScriptComponent] = [:]
     private var lightComponents: [Entity: LightComponent] = [:]
     private var lightOrbitComponents: [Entity: LightOrbitComponent] = [:]
     private var skyComponents: [Entity: SkyComponent] = [:]
@@ -38,19 +82,28 @@ public final class SceneECS {
     private var rootEntities: [Entity] = []
     private var orderedEntitiesCache: [Entity] = []
     private var orderedEntitiesDirty = true
+    private var stableOrderedEntitiesCache: [Entity] = []
+    private var stableOrderedEntitiesDirty = true
 
     private var worldMatrixCache: [Entity: matrix_float4x4] = [:]
     private var dirtyTransforms: Set<Entity> = []
+    private var changeQueue: [SceneECSChange] = []
 
-    public init() {}
+    public init() {
+        changeQueue.reserveCapacity(256)
+    }
 
     public func createEntity(name: String) -> Entity {
         let entity = Entity()
         aliveEntities.insert(entity)
+        enqueueChange(.entityCreated, entity: entity)
 
         nameComponents[entity] = NameComponent(name: name)
+        enqueueChange(.componentAdded, entity: entity, componentType: .name)
         transformComponents[entity] = TransformComponent()
+        enqueueChange(.componentAdded, entity: entity, componentType: .transform)
         layerComponents[entity] = LayerComponent()
+        enqueueChange(.componentAdded, entity: entity, componentType: .layer)
         rootEntities.append(entity)
         orderedEntitiesDirty = true
         markTransformDirty(entity)
@@ -60,10 +113,13 @@ public final class SceneECS {
     public func createEntity(id: UUID, name: String? = nil) -> Entity {
         let entity = Entity(id: id)
         aliveEntities.insert(entity)
+        enqueueChange(.entityCreated, entity: entity)
         if let name {
             nameComponents[entity] = NameComponent(name: name)
+            enqueueChange(.componentAdded, entity: entity, componentType: .name)
         }
         layerComponents[entity] = LayerComponent()
+        enqueueChange(.componentAdded, entity: entity, componentType: .layer)
         rootEntities.append(entity)
         orderedEntitiesDirty = true
         markTransformDirty(entity)
@@ -92,6 +148,7 @@ public final class SceneECS {
         meshRendererComponents.removeAll()
         materialComponents.removeAll()
         cameraComponents.removeAll()
+        scriptComponents.removeAll()
         lightComponents.removeAll()
         lightOrbitComponents.removeAll()
         skyComponents.removeAll()
@@ -103,8 +160,11 @@ public final class SceneECS {
         rootEntities.removeAll()
         orderedEntitiesCache.removeAll()
         orderedEntitiesDirty = true
+        stableOrderedEntitiesCache.removeAll()
+        stableOrderedEntitiesDirty = true
         worldMatrixCache.removeAll()
         dirtyTransforms.removeAll()
+        changeQueue.removeAll(keepingCapacity: true)
     }
 
     public func allEntities() -> [Entity] {
@@ -122,15 +182,89 @@ public final class SceneECS {
         }
     }
 
+    public func forEachEntityDeterministic(_ body: (Entity) -> Void) {
+        for entity in deterministicOrderedEntities() {
+            body(entity)
+        }
+    }
+
+    public func viewDeterministic<A>(_ a: A.Type, _ body: (Entity, A) -> Void) {
+        for entity in deterministicOrderedEntities() {
+            guard let componentA = get(a, for: entity) else { continue }
+            body(entity, componentA)
+        }
+    }
+
+    public func viewDeterministic<A, B>(_ a: A.Type, _ b: B.Type, _ body: (Entity, A, B) -> Void) {
+        for entity in deterministicOrderedEntities() {
+            guard let componentA = get(a, for: entity),
+                  let componentB = get(b, for: entity) else { continue }
+            body(entity, componentA, componentB)
+        }
+    }
+
+    public func viewDeterministic<A, B, C>(_ a: A.Type, _ b: B.Type, _ c: C.Type, _ body: (Entity, A, B, C) -> Void) {
+        for entity in deterministicOrderedEntities() {
+            guard let componentA = get(a, for: entity),
+                  let componentB = get(b, for: entity),
+                  let componentC = get(c, for: entity) else { continue }
+            body(entity, componentA, componentB, componentC)
+        }
+    }
+
+    public func drainChanges() -> [SceneECSChange] {
+        guard !changeQueue.isEmpty else { return [] }
+        let drained = changeQueue
+        changeQueue.removeAll(keepingCapacity: true)
+        return drained
+    }
+
+    public func drainChangesDeterministic() -> [SceneECSChange] {
+        guard !changeQueue.isEmpty else { return [] }
+        var drained = changeQueue
+        changeQueue.removeAll(keepingCapacity: true)
+        drained.sort { lhs, rhs in
+            if lhs.entityId != rhs.entityId {
+                return lhs.entityId.uuidString < rhs.entityId.uuidString
+            }
+            if lhs.kind != rhs.kind {
+                return lhs.kind.rawValue < rhs.kind.rawValue
+            }
+            return (lhs.componentType?.rawValue ?? -1) < (rhs.componentType?.rawValue ?? -1)
+        }
+        return drained
+    }
+
+    public func consumeChanges(_ body: (SceneECSChange) -> Void) {
+        guard !changeQueue.isEmpty else { return }
+        for change in changeQueue {
+            body(change)
+        }
+        changeQueue.removeAll(keepingCapacity: true)
+    }
+
     public func add<T>(_ component: T, to entity: Entity) {
+        guard aliveEntities.contains(entity) else { return }
         switch component {
         case let value as NameComponent:
+            let existed = nameComponents[entity] != nil
             nameComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .name)
+            }
         case let value as TransformComponent:
+            let existed = transformComponents[entity] != nil
             transformComponents[entity] = value
             markTransformDirty(entity)
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .transform)
+            }
         case let value as LayerComponent:
+            let existed = layerComponents[entity] != nil
             layerComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .layer)
+            }
         case let value as ParentComponent:
             if let parent = self.entity(with: value.parent) {
                 _ = setParent(entity, parent, keepWorldTransform: false)
@@ -140,45 +274,118 @@ public final class SceneECS {
         case let value as ChildrenComponent:
             setChildrenOrder(from: value, for: entity)
         case let value as RigidbodyComponent:
+            let previousEnabled = rigidbodyComponents[entity]?.isEnabled
+            let existed = rigidbodyComponents[entity] != nil
             rigidbodyComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .rigidbody)
+            }
+            enqueueEnabledChangedIfNeeded(previous: previousEnabled, current: value.isEnabled, entity: entity, componentType: .rigidbody)
         case let value as ColliderComponent:
+            let previousEnabled = colliderComponents[entity]?.isEnabled
+            let existed = colliderComponents[entity] != nil
             colliderComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .collider)
+            }
+            enqueueEnabledChangedIfNeeded(previous: previousEnabled, current: value.isEnabled, entity: entity, componentType: .collider)
         case let value as PrefabInstanceComponent:
+            let existed = prefabInstanceComponents[entity] != nil
             prefabInstanceComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .prefabInstance)
+            }
         case let value as PrefabOverrideComponent:
+            let existed = prefabOverrideComponents[entity] != nil
             prefabOverrideComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .prefabOverride)
+            }
         case let value as MeshRendererComponent:
+            let existed = meshRendererComponents[entity] != nil
             meshRendererComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .meshRenderer)
+            }
         case let value as MaterialComponent:
+            let existed = materialComponents[entity] != nil
             materialComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .material)
+            }
         case let value as CameraComponent:
+            let existed = cameraComponents[entity] != nil
             cameraComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .camera)
+            }
+        case let value as ScriptComponent:
+            let previousEnabled = scriptComponents[entity]?.enabled
+            let existed = scriptComponents[entity] != nil
+            scriptComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .script)
+            }
+            enqueueEnabledChangedIfNeeded(previous: previousEnabled, current: value.enabled, entity: entity, componentType: .script)
         case let value as LightComponent:
+            let existed = lightComponents[entity] != nil
             lightComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .light)
+            }
         case let value as LightOrbitComponent:
+            let existed = lightOrbitComponents[entity] != nil
             lightOrbitComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .lightOrbit)
+            }
         case let value as SkyComponent:
+            let existed = skyComponents[entity] != nil
             skyComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .sky)
+            }
         case let value as SkyLightComponent:
+            let previousEnabled = skyLightComponents[entity]?.enabled
+            let existed = skyLightComponents[entity] != nil
             skyLightComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .skyLight)
+            }
+            enqueueEnabledChangedIfNeeded(previous: previousEnabled, current: value.enabled, entity: entity, componentType: .skyLight)
         case let value as SkyLightTag:
+            let existed = skyLightTags[entity] != nil
             skyLightTags[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .skyLightTag)
+            }
         case let value as SkySunTag:
+            let existed = skySunTags[entity] != nil
             skySunTags[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .skySunTag)
+            }
         default:
             return
         }
     }
 
     public func remove<T>(_ type: T.Type, from entity: Entity) {
+        guard aliveEntities.contains(entity) else { return }
         switch type {
         case is NameComponent.Type:
-            nameComponents.removeValue(forKey: entity)
+            if nameComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .name)
+            }
         case is TransformComponent.Type:
-            transformComponents.removeValue(forKey: entity)
+            if transformComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .transform)
+            }
             markTransformDirty(entity)
         case is LayerComponent.Type:
-            layerComponents.removeValue(forKey: entity)
+            if layerComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .layer)
+            }
         case is ParentComponent.Type:
             _ = setParent(entity, nil, keepWorldTransform: false)
         case is ChildrenComponent.Type:
@@ -186,31 +393,61 @@ public final class SceneECS {
                 _ = setParent(child, nil, keepWorldTransform: false)
             }
         case is RigidbodyComponent.Type:
-            rigidbodyComponents.removeValue(forKey: entity)
+            if rigidbodyComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .rigidbody)
+            }
         case is ColliderComponent.Type:
-            colliderComponents.removeValue(forKey: entity)
+            if colliderComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .collider)
+            }
         case is PrefabInstanceComponent.Type:
-            prefabInstanceComponents.removeValue(forKey: entity)
+            if prefabInstanceComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .prefabInstance)
+            }
         case is PrefabOverrideComponent.Type:
-            prefabOverrideComponents.removeValue(forKey: entity)
+            if prefabOverrideComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .prefabOverride)
+            }
         case is MeshRendererComponent.Type:
-            meshRendererComponents.removeValue(forKey: entity)
+            if meshRendererComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .meshRenderer)
+            }
         case is MaterialComponent.Type:
-            materialComponents.removeValue(forKey: entity)
+            if materialComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .material)
+            }
         case is CameraComponent.Type:
-            cameraComponents.removeValue(forKey: entity)
+            if cameraComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .camera)
+            }
+        case is ScriptComponent.Type:
+            if scriptComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .script)
+            }
         case is LightComponent.Type:
-            lightComponents.removeValue(forKey: entity)
+            if lightComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .light)
+            }
         case is LightOrbitComponent.Type:
-            lightOrbitComponents.removeValue(forKey: entity)
+            if lightOrbitComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .lightOrbit)
+            }
         case is SkyComponent.Type:
-            skyComponents.removeValue(forKey: entity)
+            if skyComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .sky)
+            }
         case is SkyLightComponent.Type:
-            skyLightComponents.removeValue(forKey: entity)
+            if skyLightComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .skyLight)
+            }
         case is SkyLightTag.Type:
-            skyLightTags.removeValue(forKey: entity)
+            if skyLightTags.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .skyLightTag)
+            }
         case is SkySunTag.Type:
-            skySunTags.removeValue(forKey: entity)
+            if skySunTags.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .skySunTag)
+            }
         default:
             return
         }
@@ -243,6 +480,8 @@ public final class SceneECS {
             return materialComponents[entity] as? T
         case is CameraComponent.Type:
             return cameraComponents[entity] as? T
+        case is ScriptComponent.Type:
+            return scriptComponents[entity] as? T
         case is LightComponent.Type:
             return lightComponents[entity] as? T
         case is LightOrbitComponent.Type:
@@ -390,10 +629,7 @@ public final class SceneECS {
     }
 
     public func viewTransformMeshRenderer(_ body: (Entity, TransformComponent, MeshRendererComponent) -> Void) {
-        for (entity, transform) in transformComponents {
-            guard let meshRenderer = meshRendererComponents[entity] else { continue }
-            body(entity, transform, meshRenderer)
-        }
+        viewDeterministic(TransformComponent.self, MeshRendererComponent.self, body)
     }
 
     public func viewTransformMeshRendererArray() -> [(Entity, TransformComponent, MeshRendererComponent)] {
@@ -409,70 +645,85 @@ public final class SceneECS {
     }
 
     public func viewLights(_ body: (Entity, TransformComponent?, LightComponent) -> Void) {
-        for (entity, light) in lightComponents {
+        for entity in deterministicOrderedEntities() {
+            guard let light = lightComponents[entity] else { continue }
             let transform = transformComponents[entity]
             body(entity, transform, light)
         }
     }
 
     public func viewLightOrbits(_ body: (Entity, TransformComponent?, LightOrbitComponent) -> Void) {
-        for (entity, orbit) in lightOrbitComponents {
+        for entity in deterministicOrderedEntities() {
+            guard let orbit = lightOrbitComponents[entity] else { continue }
             let transform = transformComponents[entity]
             body(entity, transform, orbit)
         }
     }
 
     public func viewCameras(_ body: (Entity, TransformComponent?, CameraComponent) -> Void) {
-        for (entity, camera) in cameraComponents {
+        for entity in deterministicOrderedEntities() {
+            guard let camera = cameraComponents[entity] else { continue }
             let transform = transformComponents[entity]
             body(entity, transform, camera)
         }
     }
 
     public func activeCamera(allowEditor: Bool = true, preferEditor: Bool = false) -> (Entity, TransformComponent, CameraComponent)? {
-        let candidates = cameraComponents.filter { allowEditor || !$0.value.isEditor }
+        var candidates: [(Entity, CameraComponent)] = []
+        candidates.reserveCapacity(cameraComponents.count)
+        for entity in deterministicOrderedEntities() {
+            guard let camera = cameraComponents[entity] else { continue }
+            if !allowEditor && camera.isEditor { continue }
+            candidates.append((entity, camera))
+        }
         if preferEditor {
-            if let primaryEditor = candidates.first(where: { $0.value.isEditor && $0.value.isPrimary }),
-               let transform = transformComponents[primaryEditor.key] {
-                return (primaryEditor.key, transform, primaryEditor.value)
+            if let primaryEditor = candidates.first(where: { $0.1.isEditor && $0.1.isPrimary }),
+               let transform = transformComponents[primaryEditor.0] {
+                return (primaryEditor.0, transform, primaryEditor.1)
             }
-            if let editor = candidates.first(where: { $0.value.isEditor }),
-               let transform = transformComponents[editor.key] {
-                return (editor.key, transform, editor.value)
+            if let editor = candidates.first(where: { $0.1.isEditor }),
+               let transform = transformComponents[editor.0] {
+                return (editor.0, transform, editor.1)
             }
         }
-        if let primary = candidates.first(where: { $0.value.isPrimary }),
-           let transform = transformComponents[primary.key] {
-            return (primary.key, transform, primary.value)
+        if let primary = candidates.first(where: { $0.1.isPrimary }),
+           let transform = transformComponents[primary.0] {
+            return (primary.0, transform, primary.1)
         }
-        if let entry = candidates.first, let transform = transformComponents[entry.key] {
-            return (entry.key, transform, entry.value)
+        if let entry = candidates.first, let transform = transformComponents[entry.0] {
+            return (entry.0, transform, entry.1)
         }
         return nil
     }
 
     public func viewSky(_ body: (Entity, SkyComponent) -> Void) {
-        for (entity, sky) in skyComponents {
+        for entity in deterministicOrderedEntities() {
+            guard let sky = skyComponents[entity] else { continue }
             body(entity, sky)
         }
     }
 
     public func viewSkyLights(_ body: (Entity, SkyLightComponent) -> Void) {
-        for (entity, sky) in skyLightComponents {
+        for entity in deterministicOrderedEntities() {
+            guard let sky = skyLightComponents[entity] else { continue }
             body(entity, sky)
         }
     }
 
     public func firstEntity(with type: SkySunTag.Type) -> Entity? {
-        return skySunTags.first { _ in true }?.key
+        return deterministicOrderedEntities().first { skySunTags[$0] != nil }
     }
 
     public func activeSkyLight() -> (Entity, SkyLightComponent)? {
-        if let tagged = skyLightTags.first?.key, let sky = skyLightComponents[tagged] {
-            return (tagged, sky)
+        for entity in deterministicOrderedEntities() {
+            if skyLightTags[entity] != nil, let sky = skyLightComponents[entity] {
+                return (entity, sky)
+            }
         }
-        if let entry = skyLightComponents.first {
-            return (entry.key, entry.value)
+        for entity in deterministicOrderedEntities() {
+            if let sky = skyLightComponents[entity] {
+                return (entity, sky)
+            }
         }
         return nil
     }
@@ -507,22 +758,8 @@ public final class SceneECS {
         childrenByEntity.removeValue(forKey: e)
 
         aliveEntities.remove(e)
-        nameComponents.removeValue(forKey: e)
-        transformComponents.removeValue(forKey: e)
-        layerComponents.removeValue(forKey: e)
-        rigidbodyComponents.removeValue(forKey: e)
-        colliderComponents.removeValue(forKey: e)
-        prefabInstanceComponents.removeValue(forKey: e)
-        prefabOverrideComponents.removeValue(forKey: e)
-        meshRendererComponents.removeValue(forKey: e)
-        materialComponents.removeValue(forKey: e)
-        cameraComponents.removeValue(forKey: e)
-        lightComponents.removeValue(forKey: e)
-        lightOrbitComponents.removeValue(forKey: e)
-        skyComponents.removeValue(forKey: e)
-        skyLightComponents.removeValue(forKey: e)
-        skyLightTags.removeValue(forKey: e)
-        skySunTags.removeValue(forKey: e)
+        removeAllComponents(for: e)
+        enqueueChange(.entityDestroyed, entity: e)
         worldMatrixCache.removeValue(forKey: e)
         dirtyTransforms.remove(e)
     }
@@ -549,12 +786,27 @@ public final class SceneECS {
         }
         // Fallback for older/invalid data where an alive entity isn't rooted.
         if ordered.count != aliveEntities.count {
+            var unrooted: [Entity] = []
+            unrooted.reserveCapacity(aliveEntities.count - ordered.count)
             for entity in aliveEntities where !ordered.contains(entity) {
+                unrooted.append(entity)
+            }
+            unrooted.sort(by: stableEntityCompare)
+            for entity in unrooted {
                 ordered.append(entity)
             }
         }
         orderedEntitiesCache = ordered
         orderedEntitiesDirty = false
+    }
+
+    private func deterministicOrderedEntities() -> [Entity] {
+        guard stableOrderedEntitiesDirty else { return stableOrderedEntitiesCache }
+        var ordered = Array(aliveEntities)
+        ordered.sort(by: stableEntityCompare)
+        stableOrderedEntitiesCache = ordered
+        stableOrderedEntitiesDirty = false
+        return ordered
     }
 
     private func appendSubtree(_ entity: Entity, to list: inout [Entity]) {
@@ -588,5 +840,74 @@ public final class SceneECS {
         }
         childrenByEntity[parent] = reordered
         orderedEntitiesDirty = true
+    }
+
+    private func removeAllComponents(for entity: Entity) {
+        if nameComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .name)
+        }
+        if transformComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .transform)
+        }
+        if layerComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .layer)
+        }
+        if rigidbodyComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .rigidbody)
+        }
+        if colliderComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .collider)
+        }
+        if prefabInstanceComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .prefabInstance)
+        }
+        if prefabOverrideComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .prefabOverride)
+        }
+        if meshRendererComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .meshRenderer)
+        }
+        if materialComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .material)
+        }
+        if cameraComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .camera)
+        }
+        if scriptComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .script)
+        }
+        if lightComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .light)
+        }
+        if lightOrbitComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .lightOrbit)
+        }
+        if skyComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .sky)
+        }
+        if skyLightComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .skyLight)
+        }
+        if skyLightTags.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .skyLightTag)
+        }
+        if skySunTags.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .skySunTag)
+        }
+    }
+
+    private func enqueueEnabledChangedIfNeeded(previous: Bool?, current: Bool, entity: Entity, componentType: SceneECSComponentType) {
+        guard let previous else { return }
+        if previous == current { return }
+        enqueueChange(current ? .componentEnabled : .componentDisabled, entity: entity, componentType: componentType)
+    }
+
+    private func enqueueChange(_ kind: SceneECSChangeKind, entity: Entity, componentType: SceneECSComponentType? = nil) {
+        stableOrderedEntitiesDirty = true
+        changeQueue.append(SceneECSChange(kind: kind, entityId: entity.id, componentType: componentType))
+    }
+
+    private func stableEntityCompare(_ lhs: Entity, _ rhs: Entity) -> Bool {
+        lhs.id.uuidString < rhs.id.uuidString
     }
 }

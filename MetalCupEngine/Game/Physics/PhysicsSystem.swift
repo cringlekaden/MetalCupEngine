@@ -21,6 +21,7 @@ public final class PhysicsSystem {
     private var activeOverlaps: Set<OverlapKey> = []
     private var collisionEvents: [PhysicsCollisionEvent] = []
     private var activeCollisionPairs: Set<OverlapKey> = []
+    private var scriptEvents: [PhysicsScriptEvent] = []
     private var sensorBodyIdsByEntity: [UUID: [UInt64]] = [:]
     private var runtimeSignatureByEntity: [UUID: Int] = [:]
     private var runtimeWorldScaleByEntity: [UUID: SIMD3<Float>] = [:]
@@ -78,6 +79,7 @@ public final class PhysicsSystem {
             activeOverlaps.removeAll(keepingCapacity: true)
             collisionEvents.removeAll(keepingCapacity: true)
             activeCollisionPairs.removeAll(keepingCapacity: true)
+            scriptEvents.removeAll(keepingCapacity: true)
         }
         if previous.ccdEnabled != latest.ccdEnabled {
             rebuildAllBodiesPreservingMotion(scene: scene)
@@ -94,6 +96,7 @@ public final class PhysicsSystem {
         activeOverlaps.removeAll(keepingCapacity: true)
         activeCollisionPairs.removeAll(keepingCapacity: true)
         collisionEvents.removeAll(keepingCapacity: true)
+        scriptEvents.removeAll(keepingCapacity: true)
         sensorBodyIdsByEntity.removeAll(keepingCapacity: true)
         runtimeSignatureByEntity.removeAll(keepingCapacity: true)
         runtimeWorldScaleByEntity.removeAll(keepingCapacity: true)
@@ -139,6 +142,7 @@ public final class PhysicsSystem {
         activeOverlaps.removeAll(keepingCapacity: true)
         activeCollisionPairs.removeAll(keepingCapacity: true)
         collisionEvents.removeAll(keepingCapacity: true)
+        scriptEvents.removeAll(keepingCapacity: true)
     }
 
     public func fixedUpdate(scene: EngineScene, fixedDeltaTime: Float) {
@@ -326,6 +330,13 @@ public final class PhysicsSystem {
 
     public func recentCollisionEvents() -> [PhysicsCollisionEvent] {
         collisionEvents
+    }
+
+    public func drainEvents() -> [PhysicsScriptEvent] {
+        guard !scriptEvents.isEmpty else { return [] }
+        let drained = scriptEvents
+        scriptEvents.removeAll(keepingCapacity: true)
+        return drained
     }
 
     public func activeOverlapPairs() -> [OverlapPair] {
@@ -721,39 +732,91 @@ public final class PhysicsSystem {
 
     private func updateOverlapEvents() {
         overlapEvents = world.overlapEvents()
+        let previousTriggerPairs = activeOverlaps
+        let previousCollisionPairs = activeCollisionPairs
+        var currentTriggerPairs = previousTriggerPairs
+        var currentCollisionPairs = previousCollisionPairs
+
         collisionEvents.removeAll(keepingCapacity: true)
-        if overlapEvents.isEmpty { return }
+        scriptEvents.removeAll(keepingCapacity: true)
+        if overlapEvents.isEmpty {
+            activeOverlaps.removeAll(keepingCapacity: true)
+            activeCollisionPairs.removeAll(keepingCapacity: true)
+            return
+        }
+
         for event in overlapEvents {
             guard let entityA = event.entityIdA, let entityB = event.entityIdB else { continue }
             let key = OverlapKey(a: entityA, b: entityB)
             let isTriggerPair = world.isTriggerBody(event.bodyIdA) || world.isTriggerBody(event.bodyIdB)
             if isTriggerPair {
                 if event.isBegin {
-                    activeOverlaps.insert(key)
+                    currentTriggerPairs.insert(key)
                 } else {
-                    activeOverlaps.remove(key)
+                    currentTriggerPairs.remove(key)
                 }
             } else {
                 if event.isBegin {
-                    activeCollisionPairs.insert(key)
-                    collisionEvents.append(
-                        PhysicsCollisionEvent(entityIdA: key.a,
-                                              entityIdB: key.b,
-                                              isBegin: true,
-                                              normal: nil,
-                                              position: nil)
-                    )
+                    currentCollisionPairs.insert(key)
                 } else {
-                    activeCollisionPairs.remove(key)
-                    collisionEvents.append(
-                        PhysicsCollisionEvent(entityIdA: key.a,
-                                              entityIdB: key.b,
-                                              isBegin: false,
-                                              normal: nil,
-                                              position: nil)
-                    )
+                    currentCollisionPairs.remove(key)
                 }
             }
+        }
+
+        activeOverlaps = currentTriggerPairs
+        activeCollisionPairs = currentCollisionPairs
+
+        let triggerEnter = currentTriggerPairs.subtracting(previousTriggerPairs).sorted(by: OverlapKey.lessThan)
+        let triggerStay = currentTriggerPairs.intersection(previousTriggerPairs).sorted(by: OverlapKey.lessThan)
+        let triggerExit = previousTriggerPairs.subtracting(currentTriggerPairs).sorted(by: OverlapKey.lessThan)
+        let collisionEnter = currentCollisionPairs.subtracting(previousCollisionPairs).sorted(by: OverlapKey.lessThan)
+        let collisionStay = currentCollisionPairs.intersection(previousCollisionPairs).sorted(by: OverlapKey.lessThan)
+        let collisionExit = previousCollisionPairs.subtracting(currentCollisionPairs).sorted(by: OverlapKey.lessThan)
+
+        scriptEvents.reserveCapacity(triggerEnter.count +
+                                     triggerStay.count +
+                                     triggerExit.count +
+                                     collisionEnter.count +
+                                     collisionStay.count +
+                                     collisionExit.count)
+        appendScriptEvents(keys: triggerEnter, type: .triggerEnter)
+        appendScriptEvents(keys: triggerStay, type: .triggerStay)
+        appendScriptEvents(keys: triggerExit, type: .triggerExit)
+        appendScriptEvents(keys: collisionEnter, type: .collisionEnter)
+        appendScriptEvents(keys: collisionStay, type: .collisionStay)
+        appendScriptEvents(keys: collisionExit, type: .collisionExit)
+
+        collisionEvents.reserveCapacity(collisionEnter.count + collisionExit.count)
+        for key in collisionEnter {
+            collisionEvents.append(
+                PhysicsCollisionEvent(entityIdA: key.a,
+                                      entityIdB: key.b,
+                                      isBegin: true,
+                                      normal: nil,
+                                      position: nil)
+            )
+        }
+        for key in collisionExit {
+            collisionEvents.append(
+                PhysicsCollisionEvent(entityIdA: key.a,
+                                      entityIdB: key.b,
+                                      isBegin: false,
+                                      normal: nil,
+                                      position: nil)
+            )
+        }
+    }
+
+    private func appendScriptEvents(keys: [OverlapKey], type: PhysicsScriptEventType) {
+        for key in keys {
+            scriptEvents.append(
+                PhysicsScriptEvent(type: type,
+                                   entityA: key.a,
+                                   entityB: key.b,
+                                   shapeA: nil,
+                                   shapeB: nil)
+            )
         }
     }
 
@@ -842,6 +905,23 @@ public struct PhysicsCollisionEvent {
     public let position: SIMD3<Float>?
 }
 
+public enum PhysicsScriptEventType: Int32 {
+    case collisionEnter = 0
+    case collisionStay = 1
+    case collisionExit = 2
+    case triggerEnter = 3
+    case triggerStay = 4
+    case triggerExit = 5
+}
+
+public struct PhysicsScriptEvent {
+    public let type: PhysicsScriptEventType
+    public let entityA: UUID
+    public let entityB: UUID
+    public let shapeA: Int32?
+    public let shapeB: Int32?
+}
+
 private struct OverlapKey: Hashable {
     let a: UUID
     let b: UUID
@@ -854,6 +934,13 @@ private struct OverlapKey: Hashable {
             self.a = b
             self.b = a
         }
+    }
+
+    static func lessThan(_ lhs: OverlapKey, _ rhs: OverlapKey) -> Bool {
+        if lhs.a != rhs.a {
+            return lhs.a.uuidString < rhs.a.uuidString
+        }
+        return lhs.b.uuidString < rhs.b.uuidString
     }
 }
 

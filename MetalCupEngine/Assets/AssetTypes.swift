@@ -42,6 +42,7 @@ public enum AssetType: String, Codable {
     case environment
     case scene
     case prefab
+    case script
     case unknown
 }
 
@@ -50,6 +51,8 @@ public struct AssetMetadata: Codable {
     public var type: AssetType
     public var sourcePath: String
     public var importSettings: [String: String]
+    public var scriptLanguage: String?
+    public var entryTypeName: String?
     public var dependencies: [AssetHandle]
     public var lastModified: TimeInterval
 
@@ -57,12 +60,16 @@ public struct AssetMetadata: Codable {
                 type: AssetType,
                 sourcePath: String,
                 importSettings: [String: String] = [:],
+                scriptLanguage: String? = nil,
+                entryTypeName: String? = nil,
                 dependencies: [AssetHandle] = [],
                 lastModified: TimeInterval = 0) {
         self.handle = handle
         self.type = type
         self.sourcePath = sourcePath
         self.importSettings = importSettings
+        self.scriptLanguage = scriptLanguage
+        self.entryTypeName = entryTypeName
         self.dependencies = dependencies
         self.lastModified = lastModified
     }
@@ -73,6 +80,8 @@ public struct AssetMetadata: Codable {
         type = try container.decode(AssetType.self, forKey: .type)
         sourcePath = try container.decode(String.self, forKey: .sourcePath)
         importSettings = try container.decodeIfPresent([String: String].self, forKey: .importSettings) ?? [:]
+        scriptLanguage = try container.decodeIfPresent(String.self, forKey: .scriptLanguage)
+        entryTypeName = try container.decodeIfPresent(String.self, forKey: .entryTypeName)
         dependencies = try container.decodeIfPresent([AssetHandle].self, forKey: .dependencies) ?? []
         lastModified = try container.decodeIfPresent(TimeInterval.self, forKey: .lastModified) ?? 0
     }
@@ -83,6 +92,8 @@ public struct AssetMetadata: Codable {
         try container.encode(type, forKey: .type)
         try container.encode(sourcePath, forKey: .sourcePath)
         try container.encode(importSettings, forKey: .importSettings)
+        try container.encodeIfPresent(scriptLanguage, forKey: .scriptLanguage)
+        try container.encodeIfPresent(entryTypeName, forKey: .entryTypeName)
         try container.encode(dependencies, forKey: .dependencies)
         try container.encode(lastModified, forKey: .lastModified)
     }
@@ -92,6 +103,8 @@ public struct AssetMetadata: Codable {
         case type
         case sourcePath
         case importSettings
+        case scriptLanguage
+        case entryTypeName
         case dependencies
         case lastModified
     }

@@ -20,6 +20,7 @@ public final class EngineContext {
     public let fallbackTextures: FallbackTextureLibrary
     public let debugDraw: DebugDraw
     public let pickingSystem: PickingSystem
+    public var scriptRuntime: ScriptRuntime
     public var rendererSettings: RendererSettings = RendererSettings()
     public private(set) var physicsSettingsVersion: UInt64 = 1
     public var physicsSettings: PhysicsSettings = PhysicsSettings() {
@@ -39,7 +40,8 @@ public final class EngineContext {
                 graphics: Graphics? = nil,
                 preferences: Preferences? = nil,
                 debugDraw: DebugDraw? = nil,
-                pickingSystem: PickingSystem? = nil) {
+                pickingSystem: PickingSystem? = nil,
+                scriptRuntime: ScriptRuntime? = nil) {
         self.device = device
         self.commandQueue = commandQueue
         self.defaultLibrary = defaultLibrary
@@ -55,6 +57,7 @@ public final class EngineContext {
         self.fallbackTextures = FallbackTextureLibrary(device: device, preferences: self.preferences)
         self.debugDraw = debugDraw ?? DebugDraw()
         self.pickingSystem = pickingSystem ?? PickingSystem()
+        self.scriptRuntime = scriptRuntime ?? NullScriptRuntime()
         EngineLoggerContext.install(log)
 #if DEBUG
         TransformMath.runTransformSanityOnce()
