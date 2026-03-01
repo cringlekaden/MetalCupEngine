@@ -3980,6 +3980,7 @@
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/Vendor/Sol2",
 					"$(SRCROOT)/Vendor/JoltPhysics",
+					"$(SRCROOT)/Vendor/Lua/lua-5.5.0",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -4029,6 +4030,7 @@
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/Vendor/Sol2",
 					"$(SRCROOT)/Vendor/JoltPhysics",
+					"$(SRCROOT)/Vendor/Lua/lua-5.5.0",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";

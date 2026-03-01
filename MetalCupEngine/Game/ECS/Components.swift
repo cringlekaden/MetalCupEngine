@@ -230,22 +230,41 @@ public struct LayerComponent {
 }
 
 public struct ScriptComponent {
+    public enum RuntimeState: UInt32 {
+        case unloaded = 0
+        case loaded = 1
+        case error = 2
+        case disabled = 3
+    }
+
     public var enabled: Bool
     public var scriptAssetHandle: AssetHandle?
     public var typeName: String
     public var fieldData: Data
     public var fieldDataVersion: UInt32
+    public var runtimeState: RuntimeState
+    public var instanceHandle: UInt64
+    public var hasInstance: Bool
+    public var lastError: String
 
     public init(enabled: Bool = true,
                 scriptAssetHandle: AssetHandle? = nil,
                 typeName: String = "",
                 fieldData: Data = Data(),
-                fieldDataVersion: UInt32 = 1) {
+                fieldDataVersion: UInt32 = 1,
+                runtimeState: RuntimeState = .unloaded,
+                instanceHandle: UInt64 = 0,
+                hasInstance: Bool = false,
+                lastError: String = "") {
         self.enabled = enabled
         self.scriptAssetHandle = scriptAssetHandle
         self.typeName = typeName
         self.fieldData = fieldData
         self.fieldDataVersion = fieldDataVersion
+        self.runtimeState = runtimeState
+        self.instanceHandle = instanceHandle
+        self.hasInstance = hasInstance
+        self.lastError = lastError
     }
 }
 

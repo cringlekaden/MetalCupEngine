@@ -47,9 +47,18 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
+#include <sstream>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 #include <thread>
+
+extern "C" {
+#include "lua.h"
+#include "lauxlib.h"
+#include "lualib.h"
+}
 
 namespace {
     using namespace JPH;
@@ -861,4 +870,635 @@ extern "C" uint32_t MCEPhysicsCopyOverlapEvents(void *worldPtr,
         isBeginOut[i] = event.isBegin;
     }
     return count;
+}
+
+namespace {
+    using LuaLogCallback = void (*)(void *hostContext, int32_t level, const char *message);
+    using LuaEntityExistsCallback = uint32_t (*)(void *hostContext, const char *entityId);
+    using LuaEntityGetNameCallback = uint32_t (*)(void *hostContext, const char *entityId, char *buffer, int32_t bufferSize);
+    using LuaEntityGetTransformCallback = uint32_t (*)(void *hostContext, const char *entityId, float *positionOut, float *rotationEulerOut, float *scaleOut);
+    using LuaEntitySetTransformCallback = uint32_t (*)(void *hostContext, const char *entityId, const float *position, const float *rotationEuler, const float *scale);
+
+    static constexpr int kEntityIdBufferSize = 64;
+
+    struct LuaScriptHost;
+
+    struct LuaScriptInstance {
+        std::string scriptPath;
+        int selfRef = LUA_NOREF;
+        int onCreateRef = LUA_NOREF;
+        int onStartRef = LUA_NOREF;
+        int onUpdateRef = LUA_NOREF;
+        int onFixedUpdateRef = LUA_NOREF;
+        int onDestroyRef = LUA_NOREF;
+        bool faulted = false;
+        std::string lastError;
+    };
+
+    struct LuaScriptHost {
+        void *hostContext = nullptr;
+        LuaLogCallback logCallback = nullptr;
+        LuaEntityExistsCallback entityExistsCallback = nullptr;
+        LuaEntityGetNameCallback entityGetNameCallback = nullptr;
+        LuaEntityGetTransformCallback entityGetTransformCallback = nullptr;
+        LuaEntitySetTransformCallback entitySetTransformCallback = nullptr;
+        lua_State *L = nullptr;
+        std::unordered_map<std::string, LuaScriptInstance> instances;
+    };
+
+    static void WriteCString(const std::string &text, char *buffer, int32_t size) {
+        if (!buffer || size <= 0) { return; }
+        const int32_t maxCount = size - 1;
+        const int32_t count = std::min<int32_t>(maxCount, static_cast<int32_t>(text.size()));
+        if (count > 0) {
+            memcpy(buffer, text.data(), static_cast<size_t>(count));
+        }
+        buffer[count] = 0;
+    }
+
+    static void UnrefIfValid(lua_State *L, int &ref) {
+        if (!L || ref == LUA_NOREF) { return; }
+        luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        ref = LUA_NOREF;
+    }
+
+    static void ClearInstanceRefs(lua_State *L, LuaScriptInstance &instance) {
+        UnrefIfValid(L, instance.selfRef);
+        UnrefIfValid(L, instance.onCreateRef);
+        UnrefIfValid(L, instance.onStartRef);
+        UnrefIfValid(L, instance.onUpdateRef);
+        UnrefIfValid(L, instance.onFixedUpdateRef);
+        UnrefIfValid(L, instance.onDestroyRef);
+    }
+
+    static void LogMessage(LuaScriptHost *host, int32_t level, const std::string &text) {
+        if (!host || !host->logCallback) { return; }
+        host->logCallback(host->hostContext, level, text.c_str());
+    }
+
+    static void LogInfo(LuaScriptHost *host, const std::string &text) { LogMessage(host, 0, text); }
+    static void LogWarning(LuaScriptHost *host, const std::string &text) { LogMessage(host, 1, text); }
+    static void LogError(LuaScriptHost *host, const std::string &text) { LogMessage(host, 2, text); }
+
+    static std::string FormatLuaError(const std::string &entityId,
+                                      const std::string &scriptPath,
+                                      const std::string &phase,
+                                      const std::string &details) {
+        std::ostringstream stream;
+        stream << phase << " failed for entity " << entityId << " (" << scriptPath << "): " << details;
+        return stream.str();
+    }
+
+    static bool ReadVec3FromLuaTable(lua_State *L, int index, float outVec[3], const float fallback[3]) {
+        if (!lua_istable(L, index)) { return false; }
+        outVec[0] = fallback[0];
+        outVec[1] = fallback[1];
+        outVec[2] = fallback[2];
+
+        lua_rawgeti(L, index, 1);
+        if (lua_isnumber(L, -1)) { outVec[0] = static_cast<float>(lua_tonumber(L, -1)); }
+        lua_pop(L, 1);
+        lua_rawgeti(L, index, 2);
+        if (lua_isnumber(L, -1)) { outVec[1] = static_cast<float>(lua_tonumber(L, -1)); }
+        lua_pop(L, 1);
+        lua_rawgeti(L, index, 3);
+        if (lua_isnumber(L, -1)) { outVec[2] = static_cast<float>(lua_tonumber(L, -1)); }
+        lua_pop(L, 1);
+
+        // Prefer named fields over array slots so scripts that mutate p.x/p.y/p.z
+        // are not overwritten by stale [1]/[2]/[3] values.
+        lua_getfield(L, index, "x");
+        if (lua_isnumber(L, -1)) { outVec[0] = static_cast<float>(lua_tonumber(L, -1)); }
+        lua_pop(L, 1);
+        lua_getfield(L, index, "y");
+        if (lua_isnumber(L, -1)) { outVec[1] = static_cast<float>(lua_tonumber(L, -1)); }
+        lua_pop(L, 1);
+        lua_getfield(L, index, "z");
+        if (lua_isnumber(L, -1)) { outVec[2] = static_cast<float>(lua_tonumber(L, -1)); }
+        lua_pop(L, 1);
+        return true;
+    }
+
+    static void PushVec3Table(lua_State *L, const float vec[3]) {
+        lua_createtable(L, 3, 3);
+        lua_pushnumber(L, vec[0]); lua_setfield(L, -2, "x");
+        lua_pushnumber(L, vec[1]); lua_setfield(L, -2, "y");
+        lua_pushnumber(L, vec[2]); lua_setfield(L, -2, "z");
+        lua_pushnumber(L, vec[0]); lua_rawseti(L, -2, 1);
+        lua_pushnumber(L, vec[1]); lua_rawseti(L, -2, 2);
+        lua_pushnumber(L, vec[2]); lua_rawseti(L, -2, 3);
+    }
+
+    static LuaScriptHost *BoundHostOrNil(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host) { return nullptr; }
+        if (!host->entityExistsCallback) { return nullptr; }
+        const char *entityId = lua_tostring(L, lua_upvalueindex(2));
+        if (!entityId || host->entityExistsCallback(host->hostContext, entityId) == 0) {
+            if (entityId) {
+                LogWarning(host, std::string("Lua entity binding lost target entity: ") + entityId);
+            } else {
+                LogWarning(host, "Lua entity binding missing entity id.");
+            }
+            return nullptr;
+        }
+        return host;
+    }
+
+    static const char *BoundEntityId(lua_State *L) {
+        const char *entityId = lua_tostring(L, lua_upvalueindex(2));
+        return entityId ? entityId : "";
+    }
+
+    static int VecInputArgIndex(lua_State *L) {
+        if (lua_istable(L, 2)) { return 2; }
+        if (lua_istable(L, 1)) { return 1; }
+        return 0;
+    }
+
+    static int LuaEntityGetName(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entityGetNameCallback) {
+            lua_pushliteral(L, "");
+            return 1;
+        }
+        char nameBuffer[512] = {0};
+        if (host->entityGetNameCallback(host->hostContext, BoundEntityId(L), nameBuffer, static_cast<int32_t>(sizeof(nameBuffer))) == 0) {
+            lua_pushliteral(L, "");
+            return 1;
+        }
+        lua_pushstring(L, nameBuffer);
+        return 1;
+    }
+
+    static int LuaEntityGetID(lua_State *L) {
+        lua_pushstring(L, BoundEntityId(L));
+        return 1;
+    }
+
+    static int LuaEntityGetPosition(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        float position[3] = {0, 0, 0};
+        float rotation[3] = {0, 0, 0};
+        float scale[3] = {1, 1, 1};
+        if (host && host->entityGetTransformCallback) {
+            host->entityGetTransformCallback(host->hostContext, BoundEntityId(L), position, rotation, scale);
+        }
+        PushVec3Table(L, position);
+        return 1;
+    }
+
+    static int LuaEntityGetRotationEuler(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        float position[3] = {0, 0, 0};
+        float rotation[3] = {0, 0, 0};
+        float scale[3] = {1, 1, 1};
+        if (host && host->entityGetTransformCallback) {
+            host->entityGetTransformCallback(host->hostContext, BoundEntityId(L), position, rotation, scale);
+        }
+        PushVec3Table(L, rotation);
+        return 1;
+    }
+
+    static int LuaEntityGetScale(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        float position[3] = {0, 0, 0};
+        float rotation[3] = {0, 0, 0};
+        float scale[3] = {1, 1, 1};
+        if (host && host->entityGetTransformCallback) {
+            host->entityGetTransformCallback(host->hostContext, BoundEntityId(L), position, rotation, scale);
+        }
+        PushVec3Table(L, scale);
+        return 1;
+    }
+
+    static int LuaEntitySetPosition(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entityGetTransformCallback || !host->entitySetTransformCallback) {
+            if (host) {
+                LogWarning(host, std::string("SetPosition unavailable for entity ") + BoundEntityId(L));
+            }
+            return 0;
+        }
+        float position[3] = {0, 0, 0};
+        float rotation[3] = {0, 0, 0};
+        float scale[3] = {1, 1, 1};
+        const char *entityId = BoundEntityId(L);
+        if (host->entityGetTransformCallback(host->hostContext, entityId, position, rotation, scale) == 0) {
+            LogWarning(host, std::string("SetPosition failed to read transform for entity ") + entityId);
+            return 0;
+        }
+        float updated[3] = {position[0], position[1], position[2]};
+        const int valueIndex = VecInputArgIndex(L);
+        if (valueIndex != 0 && ReadVec3FromLuaTable(L, valueIndex, updated, position)) {
+            if (host->entitySetTransformCallback(host->hostContext, entityId, updated, rotation, scale) == 0) {
+                LogWarning(host, std::string("SetPosition failed to write transform for entity ") + entityId);
+            }
+        }
+        return 0;
+    }
+
+    static int LuaEntitySetRotationEuler(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entityGetTransformCallback || !host->entitySetTransformCallback) {
+            if (host) {
+                LogWarning(host, std::string("SetRotationEuler unavailable for entity ") + BoundEntityId(L));
+            }
+            return 0;
+        }
+        float position[3] = {0, 0, 0};
+        float rotation[3] = {0, 0, 0};
+        float scale[3] = {1, 1, 1};
+        const char *entityId = BoundEntityId(L);
+        if (host->entityGetTransformCallback(host->hostContext, entityId, position, rotation, scale) == 0) {
+            LogWarning(host, std::string("SetRotationEuler failed to read transform for entity ") + entityId);
+            return 0;
+        }
+        float updated[3] = {rotation[0], rotation[1], rotation[2]};
+        const int valueIndex = VecInputArgIndex(L);
+        if (valueIndex != 0 && ReadVec3FromLuaTable(L, valueIndex, updated, rotation)) {
+            if (host->entitySetTransformCallback(host->hostContext, entityId, position, updated, scale) == 0) {
+                LogWarning(host, std::string("SetRotationEuler failed to write transform for entity ") + entityId);
+            }
+        }
+        return 0;
+    }
+
+    static int LuaEntitySetScale(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entityGetTransformCallback || !host->entitySetTransformCallback) {
+            if (host) {
+                LogWarning(host, std::string("SetScale unavailable for entity ") + BoundEntityId(L));
+            }
+            return 0;
+        }
+        float position[3] = {0, 0, 0};
+        float rotation[3] = {0, 0, 0};
+        float scale[3] = {1, 1, 1};
+        const char *entityId = BoundEntityId(L);
+        if (host->entityGetTransformCallback(host->hostContext, entityId, position, rotation, scale) == 0) {
+            LogWarning(host, std::string("SetScale failed to read transform for entity ") + entityId);
+            return 0;
+        }
+        float updated[3] = {scale[0], scale[1], scale[2]};
+        const int valueIndex = VecInputArgIndex(L);
+        if (valueIndex != 0 && ReadVec3FromLuaTable(L, valueIndex, updated, scale)) {
+            if (host->entitySetTransformCallback(host->hostContext, entityId, position, rotation, updated) == 0) {
+                LogWarning(host, std::string("SetScale failed to write transform for entity ") + entityId);
+            }
+        }
+        return 0;
+    }
+
+    static int LuaPrint(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host) { return 0; }
+        const int top = lua_gettop(L);
+        std::ostringstream stream;
+        for (int i = 1; i <= top; ++i) {
+            if (i > 1) {
+                stream << " ";
+            }
+            size_t length = 0;
+            const char *text = luaL_tolstring(L, i, &length);
+            if (text) {
+                stream.write(text, static_cast<std::streamsize>(length));
+            }
+            lua_pop(L, 1);
+        }
+        LogInfo(host, stream.str());
+        return 0;
+    }
+
+    static int LuaLogInfo(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host) { return 0; }
+        const char *message = luaL_optstring(L, 1, "");
+        LogInfo(host, message);
+        return 0;
+    }
+
+    static int LuaLogWarn(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host) { return 0; }
+        const char *message = luaL_optstring(L, 1, "");
+        LogWarning(host, message);
+        return 0;
+    }
+
+    static int LuaLogError(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host) { return 0; }
+        const char *message = luaL_optstring(L, 1, "");
+        LogError(host, message);
+        return 0;
+    }
+
+    static void RegisterGlobals(LuaScriptHost *host) {
+        if (!host || !host->L) { return; }
+        lua_State *L = host->L;
+        lua_createtable(L, 0, 1);
+        lua_pushnumber(L, 0.0);
+        lua_setfield(L, -2, "deltaTime");
+        lua_setglobal(L, "Time");
+
+        lua_createtable(L, 0, 3);
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaLogInfo, 1);
+        lua_setfield(L, -2, "Info");
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaLogWarn, 1);
+        lua_setfield(L, -2, "Warn");
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaLogError, 1);
+        lua_setfield(L, -2, "Error");
+        lua_setglobal(L, "Log");
+
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaPrint, 1);
+        lua_setglobal(L, "print");
+    }
+
+    static void SetDeltaTime(LuaScriptHost *host, float dt) {
+        if (!host || !host->L) { return; }
+        lua_getglobal(host->L, "Time");
+        if (lua_istable(host->L, -1)) {
+            lua_pushnumber(host->L, dt);
+            lua_setfield(host->L, -2, "deltaTime");
+        }
+        lua_pop(host->L, 1);
+    }
+
+    static int FunctionRefFromField(lua_State *L, int tableIndex, const char *name) {
+        lua_getfield(L, tableIndex, name);
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 1);
+            return LUA_NOREF;
+        }
+        return luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    static bool CallInstanceFunction(LuaScriptHost *host,
+                                     const std::string &entityId,
+                                     LuaScriptInstance &instance,
+                                     int functionRef,
+                                     const char *phase,
+                                     float dt,
+                                     bool passDelta,
+                                     std::string &outError) {
+        if (!host || !host->L || functionRef == LUA_NOREF || instance.faulted) {
+            return true;
+        }
+        lua_State *L = host->L;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, functionRef);
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 1);
+            return true;
+        }
+        lua_rawgeti(L, LUA_REGISTRYINDEX, instance.selfRef);
+        if (passDelta) {
+            lua_pushnumber(L, dt);
+        }
+        const int argCount = passDelta ? 2 : 1;
+        if (lua_pcall(L, argCount, 0, 0) == LUA_OK) {
+            return true;
+        }
+        const char *errorText = lua_tostring(L, -1);
+        outError = FormatLuaError(entityId, instance.scriptPath, phase, errorText ? errorText : "Unknown Lua error.");
+        lua_pop(L, 1);
+        instance.lastError = outError;
+        instance.faulted = true;
+        LogError(host, outError);
+        return false;
+    }
+
+    static bool DestroyInstanceInternal(LuaScriptHost *host, const std::string &entityId, std::string *outError) {
+        if (!host || !host->L) { return false; }
+        auto it = host->instances.find(entityId);
+        if (it == host->instances.end()) { return true; }
+
+        std::string callbackError;
+        LuaScriptInstance &instance = it->second;
+        if (!instance.faulted) {
+            CallInstanceFunction(host, entityId, instance, instance.onDestroyRef, "OnDestroy", 0.0f, false, callbackError);
+        }
+        ClearInstanceRefs(host->L, instance);
+        host->instances.erase(it);
+        if (outError && !callbackError.empty()) {
+            *outError = callbackError;
+        }
+        return callbackError.empty();
+    }
+
+    static bool InstantiateInternal(LuaScriptHost *host,
+                                    const std::string &entityId,
+                                    const std::string &scriptPath,
+                                    std::string &outError) {
+        if (!host || !host->L) { return false; }
+        DestroyInstanceInternal(host, entityId, nullptr);
+        lua_State *L = host->L;
+
+        if (luaL_loadfile(L, scriptPath.c_str()) != LUA_OK) {
+            const char *errorText = lua_tostring(L, -1);
+            outError = FormatLuaError(entityId, scriptPath, "Load", errorText ? errorText : "Unable to load file.");
+            lua_pop(L, 1);
+            LogError(host, outError);
+            return false;
+        }
+        if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+            const char *errorText = lua_tostring(L, -1);
+            outError = FormatLuaError(entityId, scriptPath, "Execute", errorText ? errorText : "Unable to execute chunk.");
+            lua_pop(L, 1);
+            LogError(host, outError);
+            return false;
+        }
+        if (!lua_istable(L, -1)) {
+            outError = FormatLuaError(entityId, scriptPath, "Load", "Script must return a table.");
+            lua_pop(L, 1);
+            LogError(host, outError);
+            return false;
+        }
+
+        const int moduleIndex = lua_gettop(L);
+        LuaScriptInstance instance;
+        instance.scriptPath = scriptPath;
+        instance.onCreateRef = FunctionRefFromField(L, moduleIndex, "OnCreate");
+        instance.onStartRef = FunctionRefFromField(L, moduleIndex, "OnStart");
+        instance.onUpdateRef = FunctionRefFromField(L, moduleIndex, "OnUpdate");
+        instance.onFixedUpdateRef = FunctionRefFromField(L, moduleIndex, "OnFixedUpdate");
+        instance.onDestroyRef = FunctionRefFromField(L, moduleIndex, "OnDestroy");
+
+        lua_createtable(L, 0, 1);
+        lua_createtable(L, 0, 8);
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId.c_str()); lua_pushcclosure(L, LuaEntityGetName, 2); lua_setfield(L, -2, "GetName");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId.c_str()); lua_pushcclosure(L, LuaEntityGetID, 2); lua_setfield(L, -2, "GetID");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId.c_str()); lua_pushcclosure(L, LuaEntityGetPosition, 2); lua_setfield(L, -2, "GetPosition");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId.c_str()); lua_pushcclosure(L, LuaEntitySetPosition, 2); lua_setfield(L, -2, "SetPosition");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId.c_str()); lua_pushcclosure(L, LuaEntityGetRotationEuler, 2); lua_setfield(L, -2, "GetRotationEuler");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId.c_str()); lua_pushcclosure(L, LuaEntitySetRotationEuler, 2); lua_setfield(L, -2, "SetRotationEuler");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId.c_str()); lua_pushcclosure(L, LuaEntityGetScale, 2); lua_setfield(L, -2, "GetScale");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId.c_str()); lua_pushcclosure(L, LuaEntitySetScale, 2); lua_setfield(L, -2, "SetScale");
+        lua_setfield(L, -2, "entity");
+        instance.selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
+        lua_pop(L, 1);
+
+        host->instances[entityId] = std::move(instance);
+        LuaScriptInstance &stored = host->instances[entityId];
+        if (!CallInstanceFunction(host, entityId, stored, stored.onCreateRef, "OnCreate", 0.0f, false, outError)) {
+            return false;
+        }
+        if (!CallInstanceFunction(host, entityId, stored, stored.onStartRef, "OnStart", 0.0f, false, outError)) {
+            return false;
+        }
+        return true;
+    }
+}
+
+extern "C" void *MCELuaRuntimeCreate(void *hostContext,
+                                     LuaLogCallback logCallback,
+                                     LuaEntityExistsCallback entityExistsCallback,
+                                     LuaEntityGetNameCallback entityGetNameCallback,
+                                     LuaEntityGetTransformCallback entityGetTransformCallback,
+                                     LuaEntitySetTransformCallback entitySetTransformCallback) {
+    LuaScriptHost *host = new LuaScriptHost();
+    host->hostContext = hostContext;
+    host->logCallback = logCallback;
+    host->entityExistsCallback = entityExistsCallback;
+    host->entityGetNameCallback = entityGetNameCallback;
+    host->entityGetTransformCallback = entityGetTransformCallback;
+    host->entitySetTransformCallback = entitySetTransformCallback;
+    host->L = luaL_newstate();
+    if (!host->L) {
+        delete host;
+        return nullptr;
+    }
+    luaL_requiref(host->L, "_G", luaopen_base, 1);
+    lua_pop(host->L, 1);
+    luaL_requiref(host->L, LUA_TABLIBNAME, luaopen_table, 1);
+    lua_pop(host->L, 1);
+    luaL_requiref(host->L, LUA_STRLIBNAME, luaopen_string, 1);
+    lua_pop(host->L, 1);
+    luaL_requiref(host->L, LUA_MATHLIBNAME, luaopen_math, 1);
+    lua_pop(host->L, 1);
+    RegisterGlobals(host);
+    return host;
+}
+
+extern "C" void MCELuaRuntimeDestroy(void *runtimePtr) {
+    LuaScriptHost *host = static_cast<LuaScriptHost *>(runtimePtr);
+    if (!host) { return; }
+    if (host->L) {
+        for (auto &entry : host->instances) {
+            ClearInstanceRefs(host->L, entry.second);
+        }
+        host->instances.clear();
+        lua_close(host->L);
+        host->L = nullptr;
+    }
+    delete host;
+}
+
+extern "C" uint32_t MCELuaRuntimeInstantiate(void *runtimePtr,
+                                             const char *entityId,
+                                             const char *scriptPath,
+                                             char *errorBuffer,
+                                             int32_t errorBufferSize) {
+    LuaScriptHost *host = static_cast<LuaScriptHost *>(runtimePtr);
+    if (!host || !entityId || !scriptPath) { return 0; }
+    std::string error;
+    const bool ok = InstantiateInternal(host, entityId, scriptPath, error);
+    if (!ok) {
+        WriteCString(error, errorBuffer, errorBufferSize);
+    }
+    return ok ? 1u : 0u;
+}
+
+extern "C" uint32_t MCELuaRuntimeReload(void *runtimePtr,
+                                        const char *entityId,
+                                        const char *scriptPath,
+                                        char *errorBuffer,
+                                        int32_t errorBufferSize) {
+    LuaScriptHost *host = static_cast<LuaScriptHost *>(runtimePtr);
+    if (!host || !entityId || !scriptPath) { return 0; }
+    std::string ignored;
+    DestroyInstanceInternal(host, entityId, &ignored);
+    std::string error;
+    const bool ok = InstantiateInternal(host, entityId, scriptPath, error);
+    if (!ok) {
+        WriteCString(error, errorBuffer, errorBufferSize);
+    }
+    return ok ? 1u : 0u;
+}
+
+extern "C" uint32_t MCELuaRuntimeUpdate(void *runtimePtr,
+                                        const char *entityId,
+                                        float dt,
+                                        char *errorBuffer,
+                                        int32_t errorBufferSize) {
+    LuaScriptHost *host = static_cast<LuaScriptHost *>(runtimePtr);
+    if (!host || !entityId || !host->L) { return 0; }
+    auto it = host->instances.find(entityId);
+    if (it == host->instances.end()) { return 1; }
+    SetDeltaTime(host, dt);
+    std::string error;
+    const bool ok = CallInstanceFunction(host,
+                                         entityId,
+                                         it->second,
+                                         it->second.onUpdateRef,
+                                         "OnUpdate",
+                                         dt,
+                                         true,
+                                         error);
+    if (!ok) {
+        WriteCString(error, errorBuffer, errorBufferSize);
+    }
+    return ok ? 1u : 0u;
+}
+
+extern "C" uint32_t MCELuaRuntimeFixedUpdate(void *runtimePtr,
+                                             const char *entityId,
+                                             float dt,
+                                             char *errorBuffer,
+                                             int32_t errorBufferSize) {
+    LuaScriptHost *host = static_cast<LuaScriptHost *>(runtimePtr);
+    if (!host || !entityId || !host->L) { return 0; }
+    auto it = host->instances.find(entityId);
+    if (it == host->instances.end()) { return 1; }
+    SetDeltaTime(host, dt);
+    std::string error;
+    const bool ok = CallInstanceFunction(host,
+                                         entityId,
+                                         it->second,
+                                         it->second.onFixedUpdateRef,
+                                         "OnFixedUpdate",
+                                         dt,
+                                         true,
+                                         error);
+    if (!ok) {
+        WriteCString(error, errorBuffer, errorBufferSize);
+    }
+    return ok ? 1u : 0u;
+}
+
+extern "C" uint32_t MCELuaRuntimeDestroyInstance(void *runtimePtr,
+                                                 const char *entityId,
+                                                 char *errorBuffer,
+                                                 int32_t errorBufferSize) {
+    LuaScriptHost *host = static_cast<LuaScriptHost *>(runtimePtr);
+    if (!host || !entityId) { return 0; }
+    std::string error;
+    const bool ok = DestroyInstanceInternal(host, entityId, &error);
+    if (!ok) {
+        WriteCString(error, errorBuffer, errorBufferSize);
+    }
+    return ok ? 1u : 0u;
+}
+
+extern "C" uint32_t MCELuaRuntimeHasInstance(void *runtimePtr,
+                                             const char *entityId) {
+    LuaScriptHost *host = static_cast<LuaScriptHost *>(runtimePtr);
+    if (!host || !entityId) { return 0; }
+    auto it = host->instances.find(entityId);
+    if (it == host->instances.end()) { return 0; }
+    return it->second.faulted ? 0u : 1u;
 }

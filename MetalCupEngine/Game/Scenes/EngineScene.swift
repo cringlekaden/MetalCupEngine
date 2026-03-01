@@ -65,7 +65,7 @@ public class EngineScene {
         let iblIntensity = (hasEnvironment && settings.iblEnabled != 0) ? settings.iblIntensity * skyIntensity : 0.0
         _sceneConstants.cameraPositionAndIBL.w = iblIntensity
         SkySystem.update(scene: ecs)
-        let shouldRunScripts = (isPlaying && !isPaused) || (!isPlaying && physicsSystem != nil)
+        let shouldRunScripts = isPlaying && !isPaused
         if shouldRunScripts {
             engineContext?.scriptRuntime.onUpdate(dt: frame.time.deltaTime)
         }
