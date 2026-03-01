@@ -65,6 +65,12 @@ final class ShadowRenderer {
         constants.depthBias = settings.depthBias
         constants.normalBias = settings.normalBias
         constants.pcfRadius = settings.pcfRadius
+        constants.pcfTapCounts = SIMD4<Float>(
+            Float(max(1, min(25, settings.pcfTapsCascade0))),
+            Float(max(1, min(25, settings.pcfTapsCascade1))),
+            Float(max(1, min(25, settings.pcfTapsCascade2))),
+            Float(max(1, min(25, settings.pcfTapsCascade3)))
+        )
         constants.filterMode = settings.filterMode
         constants.maxShadowDistance = farDistance
         constants.fadeOutDistance = max(0.0, settings.fadeOutDistance)
@@ -85,6 +91,7 @@ final class ShadowRenderer {
         var lightProjections: [matrix_float4x4] = Array(repeating: matrix_identity_float4x4, count: cascadeCount)
         var lightViewProjs: [matrix_float4x4] = Array(repeating: matrix_identity_float4x4, count: cascadeCount)
         var cascadeWorldUnitsPerTexel: [Float] = Array(repeating: 0.0, count: cascadeCount)
+        var cascadeHalfExtents: [Float] = Array(repeating: 0.0, count: cascadeCount)
         var cascadeNearZ: [Float] = Array(repeating: 0.0, count: cascadeCount)
         var cascadeFarZ: [Float] = Array(repeating: 0.0, count: cascadeCount)
         var disableFrame = false
@@ -109,6 +116,7 @@ final class ShadowRenderer {
                 resolution: resolution
             )
             cascadeWorldUnitsPerTexel[cascadeIndex] = (2.0 * extent) / max(Float(resolution), 1.0)
+            cascadeHalfExtents[cascadeIndex] = extent
             let centerLS = stabilizedView * SIMD4<Float>(centerWS, 1.0)
             let casterDepthExtension = farDistance
             let (nearZ, farZ) = computeLightNearFar(centerZ: centerLS.z, radius: extent, extraDepth: casterDepthExtension)
@@ -194,7 +202,13 @@ final class ShadowRenderer {
                     into: encoder,
                     scene: scene,
                     frameContext: frame.frameContext,
-                    sceneConstantsBuffer: constantsBuffer
+                    sceneConstantsBuffer: constantsBuffer,
+                    shadowCullVolume: SceneRenderer.ShadowCullVolume(
+                        lightView: lightViews[cascadeIndex],
+                        halfExtent: cascadeHalfExtents[cascadeIndex],
+                        nearZ: cascadeNearZ[cascadeIndex],
+                        farZ: cascadeFarZ[cascadeIndex]
+                    )
                 )
             }
             encoder.popDebugGroup()
@@ -213,11 +227,11 @@ final class ShadowRenderer {
 
     private func resolveDirectionalShadowLight(in scene: EngineScene) -> SIMD3<Float>? {
         var direction: SIMD3<Float>?
-        scene.ecs.viewLights { _, _, light in
+        scene.ecs.viewLights { entity, _, light in
             if direction != nil { return }
             guard light.type == .directional, light.castsShadows else { return }
-            let dir = simd_length_squared(light.direction) > 0 ? simd_normalize(light.direction) : SIMD3<Float>(0, -1, 0)
-            direction = dir
+            let worldTransform = scene.ecs.worldTransform(for: entity)
+            direction = TransformMath.directionalLightDirection(from: worldTransform.rotation)
         }
         return direction
     }

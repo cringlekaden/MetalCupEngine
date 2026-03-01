@@ -53,22 +53,23 @@ public enum SceneRenderer {
                               cameraEntity: Entity,
                               viewportSize: SIMD2<Float>,
                               frameContext: RendererFrameContext) {
-        guard let transform = scene.ecs.get(TransformComponent.self, for: cameraEntity),
+        guard scene.ecs.get(TransformComponent.self, for: cameraEntity) != nil,
               let camera = scene.ecs.get(CameraComponent.self, for: cameraEntity),
               viewportSize.x > 1, viewportSize.y > 1 else { return }
+        let worldTransform = scene.ecs.worldTransform(for: cameraEntity)
         let previousPass = frameContext.currentRenderPass()
         let previousUsePrepass = frameContext.useDepthPrepass()
         let aspect = max(0.01, viewportSize.x / viewportSize.y)
         let sceneConstants = scene.getSceneConstants()
         var previewConstants = sceneConstants
-        previewConstants.viewMatrix = viewMatrix(from: transform)
+        previewConstants.viewMatrix = viewMatrix(from: worldTransform)
         previewConstants.skyViewMatrix = previewConstants.viewMatrix
         previewConstants.skyViewMatrix[3][0] = 0
         previewConstants.skyViewMatrix[3][1] = 0
         previewConstants.skyViewMatrix[3][2] = 0
         previewConstants.projectionMatrix = projectionMatrix(from: camera, aspectRatio: aspect)
         previewConstants.inverseProjectionMatrix = simd_inverse(previewConstants.projectionMatrix)
-        previewConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, sceneConstants.cameraPositionAndIBL.w)
+        previewConstants.cameraPositionAndIBL = SIMD4<Float>(worldTransform.position, sceneConstants.cameraPositionAndIBL.w)
         let previewConstantsBuffer = frameContext.makeSceneConstantsBuffer(
             previewConstants,
             label: "SceneConstants.Preview"
@@ -151,7 +152,8 @@ public enum SceneRenderer {
                                      scene: EngineScene,
                                      pass: RenderPassType,
                                      frameContext: RendererFrameContext,
-                                     sceneConstantsBuffer: MTLBuffer? = nil) {
+                                     sceneConstantsBuffer: MTLBuffer? = nil,
+                                     shadowCullVolume: ShadowCullVolume? = nil) {
         let batchResult = currentBatchResult(scene: scene, frameContext: frameContext)
         guard let instanceBuffer = batchResult.instanceBuffer else { return }
         bindSceneConstants(encoder, scene: scene, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
@@ -160,8 +162,52 @@ public enum SceneRenderer {
             let instanceCount = batch.instanceRange.count
             if instanceCount == 0 { continue }
             MC_ASSERT(batch.instanceRange.upperBound <= batchResult.instances.count, "Batch instance range out of bounds.")
-            let instanceOffset = batch.instanceRange.lowerBound * instanceStride
             applyPerDrawState(encoder, pass: pass, cullMode: batch.bindings.cullMode, frameContext: frameContext)
+            if pass == .shadow, let shadowCullVolume {
+                if !batch.bindings.passKey.castsShadows { continue }
+                var visibleStart = -1
+                for instanceIndex in batch.instanceRange {
+                    MC_ASSERT(instanceIndex < batchResult.instanceBounds.count, "Batch bounds range out of bounds.")
+                    let bounds = batchResult.instanceBounds[instanceIndex]
+                    let isVisible = intersects(bounds: bounds, volume: shadowCullVolume)
+                    if isVisible {
+                        if visibleStart < 0 {
+                            visibleStart = instanceIndex
+                        }
+                    } else if visibleStart >= 0 {
+                        encodeShadowDrawRange(
+                            encoder,
+                            scene: scene,
+                            batch: batch,
+                            batchResult: batchResult,
+                            instanceBuffer: instanceBuffer,
+                            startIndex: visibleStart,
+                            endIndex: instanceIndex,
+                            instanceStride: instanceStride,
+                            sceneConstantsBuffer: sceneConstantsBuffer,
+                            frameContext: frameContext
+                        )
+                        visibleStart = -1
+                    }
+                }
+                if visibleStart >= 0 {
+                    encodeShadowDrawRange(
+                        encoder,
+                        scene: scene,
+                        batch: batch,
+                        batchResult: batchResult,
+                        instanceBuffer: instanceBuffer,
+                        startIndex: visibleStart,
+                        endIndex: batch.instanceRange.upperBound,
+                        instanceStride: instanceStride,
+                        sceneConstantsBuffer: sceneConstantsBuffer,
+                        frameContext: frameContext
+                    )
+                }
+                continue
+            }
+
+            let instanceOffset = batch.instanceRange.lowerBound * instanceStride
             switch pass {
             case .depthPrepass:
                 encodeDepthPrepass(
@@ -176,6 +222,7 @@ public enum SceneRenderer {
                     frameContext: frameContext
                 )
             case .shadow:
+                if !batch.bindings.passKey.castsShadows { continue }
                 encodeShadowPass(
                     encoder,
                     scene: scene,
@@ -261,11 +308,8 @@ public enum SceneRenderer {
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
-        let engineContext = frameContext.engineContext()
-        let useAlphaClip = batch.bindings.isAlphaMasked
-        let pipeline = useAlphaClip
-            ? engineContext.graphics.renderPipelineStates[.DepthPrepassAlphaInstanced]
-            : engineContext.graphics.renderPipelineStates[.DepthPrepassInstanced]
+        let pipeline = pipelineState(for: .depthPrepass, key: batch.bindings.passKey, frameContext: frameContext)
+        let useAlphaClip = batch.bindings.passKey.alphaMode == .alphaClip
         encodeMeshBatch(
             encoder,
             scene: scene,
@@ -292,11 +336,8 @@ public enum SceneRenderer {
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
-        let engineContext = frameContext.engineContext()
-        let useAlphaClip = batch.bindings.isAlphaMasked
-        let pipeline = useAlphaClip
-            ? engineContext.graphics.renderPipelineStates[.ShadowAlphaInstanced]
-            : engineContext.graphics.renderPipelineStates[.DepthPrepassInstanced]
+        let pipeline = pipelineState(for: .shadow, key: batch.bindings.passKey, frameContext: frameContext)
+        let useAlphaClip = batch.bindings.passKey.alphaMode == .alphaClip
         encodeMeshBatch(
             encoder,
             scene: scene,
@@ -341,8 +382,7 @@ public enum SceneRenderer {
         sceneConstantsBuffer: MTLBuffer?,
         frameContext: RendererFrameContext
     ) {
-        let engineContext = frameContext.engineContext()
-        let pipelineState = engineContext.graphics.renderPipelineStates.hdrInstancedPipeline(settings: frameContext.rendererSettings())
+        let pipelineState = pipelineState(for: .main, key: batch.bindings.passKey, frameContext: frameContext)
         encodeMeshBatch(
             encoder,
             scene: scene,
@@ -456,12 +496,40 @@ public enum SceneRenderer {
 
     }
 
+    private static func pipelineState(for pass: RenderPassType, key: MaterialPassKey, frameContext: RendererFrameContext) -> MTLRenderPipelineState {
+        let engineContext = frameContext.engineContext()
+        switch pass {
+        case .main:
+            return engineContext.graphics.renderPipelineStates.hdrInstancedPipeline(settings: frameContext.rendererSettings())
+        case .depthPrepass:
+            if key.alphaMode == .alphaClip {
+                return engineContext.graphics.renderPipelineStates[.DepthPrepassAlphaInstanced]
+            }
+            return engineContext.graphics.renderPipelineStates[.DepthPrepassInstanced]
+        case .shadow:
+            if key.alphaMode == .alphaClip {
+                return engineContext.graphics.renderPipelineStates[.ShadowAlphaInstanced]
+            }
+            return engineContext.graphics.renderPipelineStates[.DepthPrepassInstanced]
+        case .picking:
+            return engineContext.graphics.renderPipelineStates[.PickID]
+        }
+    }
+
 
     static func renderShadowCasters(into encoder: MTLRenderCommandEncoder,
                                     scene: EngineScene,
                                     frameContext: RendererFrameContext,
-                                    sceneConstantsBuffer: MTLBuffer?) {
-        renderMeshes(encoder, scene: scene, pass: .shadow, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
+                                    sceneConstantsBuffer: MTLBuffer?,
+                                    shadowCullVolume: ShadowCullVolume? = nil) {
+        renderMeshes(
+            encoder,
+            scene: scene,
+            pass: .shadow,
+            frameContext: frameContext,
+            sceneConstantsBuffer: sceneConstantsBuffer,
+            shadowCullVolume: shadowCullVolume
+        )
     }
 
 
@@ -484,7 +552,7 @@ public enum SceneRenderer {
         var aoMapHandle: AssetHandle?
         var emissiveMapHandle: AssetHandle?
         var cullMode: MTLCullMode
-        var isAlphaMasked: Bool
+        var passKey: MaterialPassKey
     }
 
     private struct RenderItem {
@@ -493,6 +561,7 @@ public enum SceneRenderer {
         let mesh: MCMesh
         let transform: TransformComponent
         let bindings: MaterialBindings
+        let bounds: InstanceBounds
     }
 
     private struct MaterialBatchKey: Hashable {
@@ -505,12 +574,17 @@ public enum SceneRenderer {
         let materialKey: MaterialBatchKey
         let pipeline: RenderPipelineStateType
         let cullModeKey: Int
+        let alphaModeKey: Int32
+        let unlitKey: Int32
+        let castsShadowsKey: Int32
+        let receivesShadowsKey: Int32
     }
 
     private struct RenderBatchBuilder {
         var mesh: MCMesh
         var bindings: MaterialBindings
         var instances: [InstanceData]
+        var bounds: [InstanceBounds]
     }
 
     private struct RenderBatch {
@@ -521,8 +595,21 @@ public enum SceneRenderer {
 
     private struct RenderBatchResult {
         let instances: [InstanceData]
+        let instanceBounds: [InstanceBounds]
         let batches: [RenderBatch]
         let instanceBuffer: MTLBuffer?
+    }
+
+    struct ShadowCullVolume {
+        let lightView: matrix_float4x4
+        let halfExtent: Float
+        let nearZ: Float
+        let farZ: Float
+    }
+
+    private struct InstanceBounds {
+        var center: SIMD3<Float>
+        var radius: Float
     }
 
     private static func currentBatchResult(scene: EngineScene, frameContext: RendererFrameContext) -> RenderBatchResult {
@@ -544,20 +631,23 @@ public enum SceneRenderer {
         var renderItems: [RenderItem] = []
         renderItems.reserveCapacity(items.count)
 
-        for (entity, transform, meshRenderer) in items {
+        for (entity, _, meshRenderer) in items {
             guard let meshHandle = meshRenderer.meshHandle,
                   let mesh = engineContext.assets.mesh(handle: meshHandle) else { continue }
             let layer = scene.ecs.get(LayerComponent.self, for: entity)?.index ?? LayerCatalog.defaultLayerIndex
             if !frameContext.layerFilterMask().contains(layerIndex: layer) {
                 continue
             }
+            let transform = scene.ecs.worldTransform(for: entity)
             let bindings = resolveMaterialBindings(scene: scene, entity: entity, meshRenderer: meshRenderer, engineContext: engineContext)
+            let worldBounds = worldBounds(for: mesh, transform: transform)
             renderItems.append(RenderItem(
                 entity: entity,
                 meshHandle: meshHandle,
                 mesh: mesh,
                 transform: transform,
-                bindings: bindings
+                bindings: bindings,
+                bounds: worldBounds
             ))
         }
 
@@ -580,20 +670,27 @@ public enum SceneRenderer {
                 meshHandle: item.meshHandle,
                 materialKey: materialKey,
                 pipeline: .HDRInstanced,
-                cullModeKey: bindings.cullMode == .none ? 0 : 1
+                cullModeKey: bindings.cullMode == .none ? 0 : 1,
+                alphaModeKey: bindings.passKey.alphaMode.rawValue,
+                unlitKey: bindings.passKey.isUnlit ? 1 : 0,
+                castsShadowsKey: bindings.passKey.castsShadows ? 1 : 0,
+                receivesShadowsKey: bindings.passKey.receivesShadows ? 1 : 0
             )
-            var builder = builders[key] ?? RenderBatchBuilder(mesh: item.mesh, bindings: bindings, instances: [])
+            var builder = builders[key] ?? RenderBatchBuilder(mesh: item.mesh, bindings: bindings, instances: [], bounds: [])
             let pickId = engineContext.pickingSystem.assignPickId(for: item.entity)
             var instance = InstanceData()
             instance.modelMatrix = modelMatrix(for: item.transform)
             instance.entityID = pickId
             builder.instances.append(instance)
+            builder.bounds.append(item.bounds)
             builders[key] = builder
             uniqueMeshes.insert(item.meshHandle)
         }
 
         var instances: [InstanceData] = []
+        var instanceBounds: [InstanceBounds] = []
         instances.reserveCapacity(items.count)
+        instanceBounds.reserveCapacity(items.count)
         var batches: [RenderBatch] = []
         batches.reserveCapacity(builders.count)
         var instancedDrawCalls = 0
@@ -601,6 +698,7 @@ public enum SceneRenderer {
         for builder in builders.values {
             let start = instances.count
             instances.append(contentsOf: builder.instances)
+            instanceBounds.append(contentsOf: builder.bounds)
             let end = instances.count
             batches.append(RenderBatch(mesh: builder.mesh, bindings: builder.bindings, instanceRange: start..<end))
             instancedDrawCalls += 1
@@ -641,7 +739,7 @@ public enum SceneRenderer {
         if let profiler {
             profiler.record(.renderBatches, seconds: CACurrentMediaTime() - buildStart)
         }
-        return RenderBatchResult(instances: instances, batches: batches, instanceBuffer: instanceBuffer)
+        return RenderBatchResult(instances: instances, instanceBounds: instanceBounds, batches: batches, instanceBuffer: instanceBuffer)
     }
 
     private static func resolveMaterialBindings(scene: EngineScene,
@@ -659,8 +757,14 @@ public enum SceneRenderer {
         var ormMapHandle = meshRenderer.ormMapHandle
         var aoMapHandle = meshRenderer.aoMapHandle
         var emissiveMapHandle = meshRenderer.emissiveMapHandle
-        var cullMode: MTLCullMode = .back
-        var isAlphaMasked = false
+        // Cull mode is derived from material state only (never from entity naming hacks).
+        var passKey = MaterialPassKey(
+            alphaMode: .opaque,
+            doubleSided: false,
+            isUnlit: false,
+            castsShadows: true,
+            receivesShadows: true
+        )
 
         let usesSubmeshMaterials = submeshMaterialHandles?.contains(where: { $0 != nil }) == true
         if !usesSubmeshMaterials,
@@ -676,27 +780,45 @@ public enum SceneRenderer {
             aoMapHandle = materialAsset.textures.ao
             emissiveMapHandle = materialAsset.textures.emissive
             if (materialOverride?.flags ?? 0) & MetalCupMaterialFlags.isDoubleSided.rawValue != 0 {
-                cullMode = .none
+                passKey.doubleSided = true
             }
-            isAlphaMasked = materialAsset.alphaMode == .masked
+            switch materialAsset.alphaMode {
+            case .opaque:
+                passKey.alphaMode = .opaque
+            case .masked:
+                passKey.alphaMode = .alphaClip
+            case .blended:
+                passKey.alphaMode = .alphaBlend
+            }
+            passKey.isUnlit = materialAsset.unlit
         }
         if let overrideFlags = materialOverride?.flags {
             if (overrideFlags & MetalCupMaterialFlags.alphaMasked.rawValue) != 0 {
-                isAlphaMasked = true
+                passKey.alphaMode = .alphaClip
+            } else if (overrideFlags & MetalCupMaterialFlags.alphaBlended.rawValue) != 0 {
+                passKey.alphaMode = .alphaBlend
+            }
+            if (overrideFlags & MetalCupMaterialFlags.isDoubleSided.rawValue) != 0 {
+                passKey.doubleSided = true
+            }
+            if (overrideFlags & MetalCupMaterialFlags.isUnlit.rawValue) != 0 {
+                passKey.isUnlit = true
             }
         }
         if usesSubmeshMaterials, let handles = submeshMaterialHandles {
             for handle in handles {
                 guard let handle,
                       let submeshMaterial = engineContext.assets.material(handle: handle) else { continue }
-                if submeshMaterial.alphaMode == .masked {
-                    isAlphaMasked = true
-                    break
+                if submeshMaterial.doubleSided {
+                    passKey.doubleSided = true
                 }
+                if submeshMaterial.alphaMode == .masked {
+                    passKey.alphaMode = .alphaClip
+                } else if submeshMaterial.alphaMode == .blended, passKey.alphaMode != .alphaClip {
+                    passKey.alphaMode = .alphaBlend
+                }
+                passKey.isUnlit = passKey.isUnlit || submeshMaterial.unlit
             }
-        }
-        if let name = scene.ecs.get(NameComponent.self, for: entity), name.name == "Ground" {
-            cullMode = .none
         }
         if let normalHandle = normalMapHandle,
            let metadata = engineContext.assetDatabase?.metadata(for: normalHandle) {
@@ -708,6 +830,7 @@ public enum SceneRenderer {
             }
         }
 
+        let cullMode: MTLCullMode = passKey.doubleSided ? .none : .back
         return MaterialBindings(
             materialHandle: materialHandle,
             submeshMaterialHandles: submeshMaterialHandles,
@@ -721,7 +844,7 @@ public enum SceneRenderer {
             aoMapHandle: aoMapHandle,
             emissiveMapHandle: emissiveMapHandle,
             cullMode: cullMode,
-            isAlphaMasked: isAlphaMasked
+            passKey: passKey
         )
     }
 
@@ -761,6 +884,60 @@ public enum SceneRenderer {
             }
             return hash
         }
+    }
+
+    private static func encodeShadowDrawRange(
+        _ encoder: MTLRenderCommandEncoder,
+        scene: EngineScene,
+        batch: RenderBatch,
+        batchResult: RenderBatchResult,
+        instanceBuffer: MTLBuffer,
+        startIndex: Int,
+        endIndex: Int,
+        instanceStride: Int,
+        sceneConstantsBuffer: MTLBuffer?,
+        frameContext: RendererFrameContext
+    ) {
+        let visibleCount = endIndex - startIndex
+        if visibleCount <= 0 { return }
+        let instanceOffset = startIndex * instanceStride
+        encodeShadowPass(
+            encoder,
+            scene: scene,
+            batch: batch,
+            batchResult: batchResult,
+            instanceBuffer: instanceBuffer,
+            instanceOffset: instanceOffset,
+            instanceCount: visibleCount,
+            sceneConstantsBuffer: sceneConstantsBuffer,
+            frameContext: frameContext
+        )
+    }
+
+    private static func worldBounds(for mesh: MCMesh, transform: TransformComponent) -> InstanceBounds {
+        let centerWS4 = TransformMath.makeMatrix(
+            position: transform.position,
+            rotation: transform.rotation,
+            scale: transform.scale
+        ) * SIMD4<Float>(mesh.boundsCenter, 1.0)
+        let center = SIMD3<Float>(centerWS4.x, centerWS4.y, centerWS4.z)
+        let absScale = SIMD3<Float>(abs(transform.scale.x), abs(transform.scale.y), abs(transform.scale.z))
+        let maxScale = max(absScale.x, max(absScale.y, absScale.z))
+        return InstanceBounds(
+            center: center,
+            radius: max(0.001, mesh.boundsRadius * max(maxScale, 0.001))
+        )
+    }
+
+    private static func intersects(bounds: InstanceBounds, volume: ShadowCullVolume) -> Bool {
+        let centerLS4 = volume.lightView * SIMD4<Float>(bounds.center, 1.0)
+        if !isFinite(centerLS4) { return true }
+        let center = SIMD3<Float>(centerLS4.x, centerLS4.y, centerLS4.z)
+        let r = bounds.radius
+        if center.x + r < -volume.halfExtent || center.x - r > volume.halfExtent { return false }
+        if center.y + r < -volume.halfExtent || center.y - r > volume.halfExtent { return false }
+        if center.z + r < volume.farZ || center.z - r > volume.nearZ { return false }
+        return true
     }
 
     private static func modelMatrix(for transform: TransformComponent) -> matrix_float4x4 {
@@ -835,3 +1012,16 @@ public enum SceneRenderer {
         }
     }
 }
+    private enum MaterialAlphaModeKey: Int32, Hashable {
+        case opaque = 0
+        case alphaClip = 1
+        case alphaBlend = 2
+    }
+
+    private struct MaterialPassKey: Hashable {
+        var alphaMode: MaterialAlphaModeKey
+        var doubleSided: Bool
+        var isUnlit: Bool
+        var castsShadows: Bool
+        var receivesShadows: Bool
+    }

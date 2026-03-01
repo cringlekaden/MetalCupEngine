@@ -4,10 +4,28 @@
 
 import Foundation
 import MetalKit
+import ImageIO
+import CoreGraphics
 
 /// Engine-side runtime cache for GPU assets resolved via an AssetDatabase.
 public final class AssetManager {
+    private struct TextureFailureRecord {
+        let reason: String
+        let lastModified: TimeInterval
+    }
+
+    private struct DecodedImageInfo {
+        let width: Int
+        let height: Int
+        let bitsPerComponent: Int
+        let bitsPerPixel: Int
+        let channelCount: Int
+        let alphaInfo: String
+    }
+
     private var textureCache: [AssetHandle: MTLTexture] = [:]
+    private var textureFailureCacheByPath: [String: TextureFailureRecord] = [:]
+    private var textureFailureLoggedPaths: Set<String> = []
     private var meshCache: [AssetHandle: MCMesh] = [:]
     private var materialCache: [AssetHandle: MaterialAsset] = [:]
     private var materialCacheModified: [AssetHandle: TimeInterval] = [:]
@@ -18,10 +36,14 @@ public final class AssetManager {
     public weak var assetDatabase: AssetDatabase?
     private let device: MTLDevice
     private let graphics: Graphics
+    private let textureWorkQueue: MTLCommandQueue?
+    private let errorTexture: MTLTexture
 
     public init(device: MTLDevice, graphics: Graphics) {
         self.device = device
         self.graphics = graphics
+        self.textureWorkQueue = device.makeCommandQueue()
+        self.errorTexture = AssetManager.makeErrorTexture(device: device)
     }
 
     public func handle(forSourcePath sourcePath: String) -> AssetHandle? {
@@ -61,10 +83,24 @@ public final class AssetManager {
               let url = database.assetURL(for: handle) else { return nil }
         let loader = MTKTextureLoader(device: device)
         let metadata = database.metadata(for: handle)
+        let sourcePath = metadata?.sourcePath ?? url.lastPathComponent
+        let sourceKey = url.standardizedFileURL.path
+        let lastModified = metadata?.lastModified ?? 0
+        let isTextureAsset = metadata?.type == .texture
+        if isTextureAsset {
+            cacheLock.lock()
+            let failedRecord = textureFailureCacheByPath[sourceKey]
+            cacheLock.unlock()
+            if let failedRecord, failedRecord.lastModified == lastModified {
+                cacheLock.lock()
+                textureCache[handle] = errorTexture
+                cacheLock.unlock()
+                return errorTexture
+            }
+        }
         var options: [MTKTextureLoader.Option: Any] = [
             .origin: MTKTextureLoader.Origin.topLeft
         ]
-        let sourcePath = metadata?.sourcePath ?? url.lastPathComponent
         if let origin = metadata?.importSettings["origin"] {
             if origin == "bottomLeft" {
                 options[.origin] = MTKTextureLoader.Origin.bottomLeft
@@ -74,6 +110,13 @@ public final class AssetManager {
         }
         switch metadata?.type {
         case .environment:
+            if let explicitSRGB = AssetManager.explicitSRGBOverride(metadata: metadata), explicitSRGB {
+                EngineLoggerContext.log(
+                    "Environment texture \(sourcePath) requested sRGB; forcing linear sampling.",
+                    level: .warning,
+                    category: .assets
+                )
+            }
             options[.SRGB] = false
             options[.generateMipmaps] = false
         case .texture:
@@ -102,15 +145,46 @@ public final class AssetManager {
             }
             cacheLock.lock()
             textureCache[handle] = texture
+            textureFailureCacheByPath.removeValue(forKey: sourceKey)
             cacheLock.unlock()
             return texture
         } catch {
-            EngineLoggerContext.log(
-                "Texture load failed \(url.lastPathComponent): \(error)",
-                level: .error,
-                category: .assets
+            let ext = url.pathExtension.lowercased()
+            let shouldUseSRGB = AssetManager.shouldUseSRGB(metadata: metadata, sourcePath: sourcePath)
+            let shouldMipmap = metadata?.type == .texture && AssetManager.shouldGenerateMipmaps(path: sourcePath)
+            let origin = options[.origin] as? MTKTextureLoader.Origin ?? .topLeft
+
+            if isTextureAsset,
+               let (decodedTexture, decodedInfo) = loadTextureWithImageIOFallback(
+                    url: url,
+                    srgb: shouldUseSRGB,
+                    shouldMipmap: shouldMipmap,
+                    origin: origin
+               ) {
+                cacheLock.lock()
+                textureCache[handle] = decodedTexture
+                textureFailureCacheByPath.removeValue(forKey: sourceKey)
+                cacheLock.unlock()
+                logTextureFailureOnce(
+                    sourceKey: sourceKey,
+                    message: "Texture decode fallback used path=\(sourcePath) ext=\(ext) mtkDecodeFailed=true fallbackDecodeSucceeded=true requestedSRGB=\(shouldUseSRGB) detected=\(decodedInfo.width)x\(decodedInfo.height) bpc=\(decodedInfo.bitsPerComponent) bpp=\(decodedInfo.bitsPerPixel) channels=\(decodedInfo.channelCount) alpha=\(decodedInfo.alphaInfo) outputPixelFormat=\(decodedTexture.pixelFormat)",
+                    level: .warning
+                )
+                return decodedTexture
+            }
+
+            if isTextureAsset {
+                cacheLock.lock()
+                textureFailureCacheByPath[sourceKey] = TextureFailureRecord(reason: "\(error)", lastModified: lastModified)
+                textureCache[handle] = errorTexture
+                cacheLock.unlock()
+            }
+            logTextureFailureOnce(
+                sourceKey: sourceKey,
+                message: "Texture load failed path=\(sourcePath) ext=\(ext) mtkDecodeFailed=true fallbackDecodeSucceeded=false requestedSRGB=\(shouldUseSRGB) error=\(error)",
+                level: .error
             )
-            return nil
+            return isTextureAsset ? errorTexture : nil
         }
     }
 
@@ -189,6 +263,8 @@ public final class AssetManager {
     public func clearCache() {
         cacheLock.lock()
         textureCache = textureCache.filter { runtimeTextureHandles.contains($0.key) }
+        textureFailureCacheByPath.removeAll()
+        textureFailureLoggedPaths.removeAll()
         meshCache = meshCache.filter { runtimeMeshHandles.contains($0.key) }
         materialCache.removeAll()
         materialCacheModified.removeAll()
@@ -225,21 +301,51 @@ public final class AssetManager {
         return nil
     }
 
+    private static func normalizedSemantic(metadata: AssetMetadata?) -> String? {
+        (metadata?.importSettings["semantic"] ?? metadata?.importSettings["meshTextureSemantic"])?.lowercased()
+    }
+
+    private static func semanticIsColor(_ semantic: String) -> Bool {
+        switch semantic {
+        case "basecolor", "albedo", "diffuse", "diff", "emissive":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func semanticIsData(_ semantic: String) -> Bool {
+        switch semantic {
+        case "normal", "roughness", "metallic", "ao", "occlusion", "height", "mask", "orm", "rma", "arm":
+            return true
+        default:
+            return false
+        }
+    }
+
     public static func expectedSRGB(metadata: AssetMetadata?, sourcePath: String) -> Bool {
-        if let semantic = (metadata?.importSettings["semantic"] ?? metadata?.importSettings["meshTextureSemantic"])?.lowercased() {
-            switch semantic {
-            case "basecolor", "albedo", "diffuse", "diff", "emissive":
+        if metadata?.type == .environment {
+            return false
+        }
+        if let semantic = normalizedSemantic(metadata: metadata) {
+            if semanticIsColor(semantic) {
                 return true
-            case "normal", "roughness", "metallic", "ao", "occlusion", "height", "mask", "orm", "rma", "arm":
+            }
+            if semanticIsData(semantic) {
                 return false
-            default:
-                break
             }
         }
         return isColorTexture(path: sourcePath)
     }
 
     public static func shouldUseSRGB(metadata: AssetMetadata?, sourcePath: String) -> Bool {
+        if metadata?.type == .environment {
+            return false
+        }
+        if let semantic = normalizedSemantic(metadata: metadata),
+           semanticIsData(semantic) {
+            return false
+        }
         if let explicit = explicitSRGBOverride(metadata: metadata) {
             return explicit
         }
@@ -295,8 +401,7 @@ public final class AssetManager {
 #endif
             return
         }
-        guard let commandQueue = device.makeCommandQueue() else { return }
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+        guard let commandBuffer = textureWorkQueue?.makeCommandBuffer() else { return }
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
         blit.generateMipmaps(for: texture)
         blit.endEncoding()
@@ -316,8 +421,7 @@ public final class AssetManager {
         descriptor.usage = texture.usage
         descriptor.storageMode = texture.storageMode
         guard let mipTexture = device.makeTexture(descriptor: descriptor) else { return nil }
-        guard let commandQueue = device.makeCommandQueue(),
-              let commandBuffer = commandQueue.makeCommandBuffer(),
+        guard let commandBuffer = textureWorkQueue?.makeCommandBuffer(),
               let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
         let size = MTLSize(width: texture.width, height: texture.height, depth: 1)
         blit.copy(from: texture,
@@ -333,6 +437,111 @@ public final class AssetManager {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         return mipTexture
+    }
+
+    private func logTextureFailureOnce(sourceKey: String, message: String, level: MCLogLevel) {
+        var shouldLog = false
+        cacheLock.lock()
+        if !textureFailureLoggedPaths.contains(sourceKey) {
+            textureFailureLoggedPaths.insert(sourceKey)
+            shouldLog = true
+        }
+        cacheLock.unlock()
+        if shouldLog {
+            EngineLoggerContext.log(message, level: level, category: .assets)
+        }
+    }
+
+    private static func makeErrorTexture(device: MTLDevice) -> MTLTexture {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: 2,
+            height: 2,
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            fatalError("Failed to create error texture.")
+        }
+        texture.label = "Fallback.ErrorTexture"
+        let pixels: [UInt8] = [
+            255,   0, 255, 255,   0,   0,   0, 255,
+              0,   0,   0, 255, 255,   0, 255, 255
+        ]
+        pixels.withUnsafeBytes { bytes in
+            let region = MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0), size: MTLSize(width: 2, height: 2, depth: 1))
+            texture.replace(region: region, mipmapLevel: 0, withBytes: bytes.baseAddress!, bytesPerRow: 2 * 4)
+        }
+        return texture
+    }
+
+    private func loadTextureWithImageIOFallback(
+        url: URL,
+        srgb: Bool,
+        shouldMipmap: Bool,
+        origin: MTKTextureLoader.Origin
+    ) -> (MTLTexture, DecodedImageInfo)? {
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            return nil
+        }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        guard width > 0, height > 0 else { return nil }
+
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var rgbaData = [UInt8](repeating: 0, count: bytesPerRow * height)
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        guard let context = CGContext(
+            data: &rgbaData,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        if origin == .topLeft {
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
+        }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        let pixelFormat: MTLPixelFormat = srgb ? .rgba8Unorm_srgb : .rgba8Unorm
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: pixelFormat,
+            width: width,
+            height: height,
+            mipmapped: shouldMipmap
+        )
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        texture.label = "Asset.Texture.FallbackDecode.\(url.lastPathComponent)"
+        rgbaData.withUnsafeBytes { bytes in
+            let region = MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0), size: MTLSize(width: width, height: height, depth: 1))
+            texture.replace(region: region, mipmapLevel: 0, withBytes: bytes.baseAddress!, bytesPerRow: bytesPerRow)
+        }
+        let finalTexture = shouldMipmap ? ensureMipmaps(texture) : texture
+        let alphaInfo = String(describing: cgImage.alphaInfo)
+        let bitsPerComponent = cgImage.bitsPerComponent
+        let bitsPerPixel = cgImage.bitsPerPixel
+        let channelCount = max(1, bitsPerPixel / max(bitsPerComponent, 1))
+        let decodedInfo = DecodedImageInfo(
+            width: width,
+            height: height,
+            bitsPerComponent: bitsPerComponent,
+            bitsPerPixel: bitsPerPixel,
+            channelCount: channelCount,
+            alphaInfo: alphaInfo
+        )
+        return (finalTexture, decodedInfo)
     }
 
 }

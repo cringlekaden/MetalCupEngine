@@ -21,7 +21,12 @@ public final class EngineContext {
     public let debugDraw: DebugDraw
     public let pickingSystem: PickingSystem
     public var rendererSettings: RendererSettings = RendererSettings()
-    public var physicsSettings: PhysicsSettings = PhysicsSettings()
+    public private(set) var physicsSettingsVersion: UInt64 = 1
+    public var physicsSettings: PhysicsSettings = PhysicsSettings() {
+        didSet {
+            physicsSettingsVersion &+= 1
+        }
+    }
 
     public init(device: MTLDevice,
                 commandQueue: MTLCommandQueue,

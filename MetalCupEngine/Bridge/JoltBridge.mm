@@ -39,11 +39,13 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
+#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
@@ -52,63 +54,77 @@
 namespace {
     using namespace JPH;
 
-    namespace Layers {
-        static constexpr ObjectLayer NON_MOVING = 0;
-        static constexpr ObjectLayer MOVING = 1;
-        static constexpr ObjectLayer NUM_LAYERS = 2;
-    }
-
-    namespace BroadPhaseLayers {
-        static constexpr BroadPhaseLayer NON_MOVING(0);
-        static constexpr BroadPhaseLayer MOVING(1);
-        static constexpr uint NUM_LAYERS = 2;
-    }
+    static constexpr uint32_t kMaxCollisionLayers = 16;
 
     class BroadPhaseLayerInterfaceImpl final : public BroadPhaseLayerInterface {
     public:
-        BroadPhaseLayerInterfaceImpl() {
-            mLayers[Layers::NON_MOVING] = BroadPhaseLayers::NON_MOVING;
-            mLayers[Layers::MOVING] = BroadPhaseLayers::MOVING;
+        explicit BroadPhaseLayerInterfaceImpl(uint32_t layerCount) {
+            mLayerCount = std::max(1u, std::min(layerCount, kMaxCollisionLayers));
+            for (uint32_t i = 0; i < mLayerCount; ++i) {
+                mLayers[i] = BroadPhaseLayer(i);
+            }
         }
 
         uint GetNumBroadPhaseLayers() const override {
-            return BroadPhaseLayers::NUM_LAYERS;
+            return mLayerCount;
         }
 
         BroadPhaseLayer GetBroadPhaseLayer(ObjectLayer inLayer) const override {
+            if (inLayer >= mLayerCount) {
+                return BroadPhaseLayer(0);
+            }
             return mLayers[inLayer];
         }
 
 #if defined(JPH_EXTERNAL_PROFILE) || defined(JPH_PROFILE_ENABLED)
         const char *GetBroadPhaseLayerName(BroadPhaseLayer inLayer) const override {
-            if (inLayer == BroadPhaseLayers::NON_MOVING) { return "NON_MOVING"; }
-            if (inLayer == BroadPhaseLayers::MOVING) { return "MOVING"; }
-            return "UNKNOWN";
+            (void)inLayer;
+            return "PHYS_LAYER";
         }
 #endif
 
     private:
-        BroadPhaseLayer mLayers[Layers::NUM_LAYERS];
+        uint32_t mLayerCount = 1;
+        BroadPhaseLayer mLayers[kMaxCollisionLayers];
     };
 
     class ObjectVsBroadPhaseLayerFilterImpl final : public ObjectVsBroadPhaseLayerFilter {
     public:
+        explicit ObjectVsBroadPhaseLayerFilterImpl(const uint32_t *matrixRows, uint32_t layerCount)
+        : mMatrixRows(matrixRows)
+        , mLayerCount(std::max(1u, std::min(layerCount, kMaxCollisionLayers))) {}
+
         bool ShouldCollide(ObjectLayer inLayer1, BroadPhaseLayer inLayer2) const override {
-            if (inLayer1 == Layers::NON_MOVING) {
-                return inLayer2 == BroadPhaseLayers::MOVING;
-            }
-            return true;
+            if (inLayer1 >= mLayerCount) { return false; }
+            const uint32_t broadPhaseLayer = inLayer2.GetValue();
+            if (broadPhaseLayer >= mLayerCount) { return false; }
+            const uint32_t row = mMatrixRows[inLayer1];
+            return (row & (1u << broadPhaseLayer)) != 0;
         }
+
+    private:
+        const uint32_t *mMatrixRows = nullptr;
+        uint32_t mLayerCount = 1;
     };
 
     class ObjectLayerPairFilterImpl final : public ObjectLayerPairFilter {
     public:
+        explicit ObjectLayerPairFilterImpl(const uint32_t *matrixRows, uint32_t layerCount)
+        : mMatrixRows(matrixRows)
+        , mLayerCount(std::max(1u, std::min(layerCount, kMaxCollisionLayers))) {}
+
         bool ShouldCollide(ObjectLayer inObject1, ObjectLayer inObject2) const override {
-            if (inObject1 == Layers::NON_MOVING && inObject2 == Layers::NON_MOVING) {
-                return false;
-            }
-            return true;
+            if (inObject1 >= mLayerCount || inObject2 >= mLayerCount) { return false; }
+            const uint32_t row1 = mMatrixRows[inObject1];
+            const uint32_t row2 = mMatrixRows[inObject2];
+            const uint32_t mask1 = 1u << inObject2;
+            const uint32_t mask2 = 1u << inObject1;
+            return (row1 & mask1) != 0 && (row2 & mask2) != 0;
         }
+
+    private:
+        const uint32_t *mMatrixRows = nullptr;
+        uint32_t mLayerCount = 1;
     };
 
     struct ContactSample {
@@ -138,12 +154,14 @@ namespace {
                                   std::atomic<uint32_t> *writeIndex,
                                   OverlapEvent *overlapEvents,
                                   std::atomic<uint32_t> *overlapWriteIndex,
+                                  std::atomic<uint32_t> *activeOverlapCount,
                                   std::unordered_map<uint64_t, OverlapEvent> *activeOverlaps,
                                   std::mutex *overlapMutex)
         : mSamples(samples)
         , mWriteIndex(writeIndex)
         , mOverlapEvents(overlapEvents)
         , mOverlapWriteIndex(overlapWriteIndex)
+        , mActiveOverlapCount(activeOverlapCount)
         , mActiveOverlaps(activeOverlaps)
         , mOverlapMutex(overlapMutex) {}
 
@@ -166,6 +184,7 @@ namespace {
 
         void OnContactRemoved(const SubShapeIDPair &inSubShapePair) override {
             if (!mOverlapEvents || !mOverlapWriteIndex || !mActiveOverlaps || !mOverlapMutex) { return; }
+            if (!mActiveOverlapCount || mActiveOverlapCount->load(std::memory_order_relaxed) == 0) { return; }
             const uint64_t bodyA = static_cast<uint64_t>(inSubShapePair.GetBody1ID().GetIndexAndSequenceNumber());
             const uint64_t bodyB = static_cast<uint64_t>(inSubShapePair.GetBody2ID().GetIndexAndSequenceNumber());
             const uint64_t key = MakePairKey(bodyA, bodyB);
@@ -176,6 +195,9 @@ namespace {
                 if (it == mActiveOverlaps->end()) { return; }
                 cached = it->second;
                 mActiveOverlaps->erase(it);
+                if (mActiveOverlapCount->load(std::memory_order_relaxed) > 0) {
+                    mActiveOverlapCount->fetch_sub(1, std::memory_order_relaxed);
+                }
             }
             const uint32_t writeIndex = mOverlapWriteIndex->fetch_add(1, std::memory_order_relaxed);
             const uint32_t index = writeIndex % kMaxOverlapEventsPerStep;
@@ -194,6 +216,7 @@ namespace {
         }
         void RecordContact(const Body &inBody1, const Body &inBody2, const ContactManifold &inManifold) {
             if (!mSamples || !mWriteIndex) { return; }
+            if (inBody1.GetUserData() != 0 && inBody1.GetUserData() == inBody2.GetUserData()) { return; }
             const uint32_t writeIndex = mWriteIndex->fetch_add(1, std::memory_order_relaxed);
             const uint32_t index = writeIndex % kMaxContactsPerStep;
 
@@ -220,8 +243,9 @@ namespace {
         }
 
         void RecordOverlap(const Body &inBody1, const Body &inBody2, bool isBegin) {
-            if (!mOverlapEvents || !mOverlapWriteIndex || !mActiveOverlaps || !mOverlapMutex) { return; }
+            if (!mOverlapEvents || !mOverlapWriteIndex || !mActiveOverlaps || !mOverlapMutex || !mActiveOverlapCount) { return; }
             if (!inBody1.IsSensor() && !inBody2.IsSensor()) { return; }
+            if (inBody1.GetUserData() != 0 && inBody1.GetUserData() == inBody2.GetUserData()) { return; }
             const uint64_t bodyA = static_cast<uint64_t>(inBody1.GetID().GetIndexAndSequenceNumber());
             const uint64_t bodyB = static_cast<uint64_t>(inBody2.GetID().GetIndexAndSequenceNumber());
             const uint64_t key = MakePairKey(bodyA, bodyB);
@@ -235,7 +259,12 @@ namespace {
             event.isBegin = isBegin ? 1 : 0;
             if (isBegin) {
                 std::lock_guard<std::mutex> guard(*mOverlapMutex);
-                (*mActiveOverlaps)[key] = event;
+                auto insertResult = mActiveOverlaps->emplace(key, event);
+                if (!insertResult.second) {
+                    insertResult.first->second = event;
+                } else {
+                    mActiveOverlapCount->fetch_add(1, std::memory_order_relaxed);
+                }
             }
         }
 
@@ -243,11 +272,14 @@ namespace {
         std::atomic<uint32_t> *mWriteIndex = nullptr;
         OverlapEvent *mOverlapEvents = nullptr;
         std::atomic<uint32_t> *mOverlapWriteIndex = nullptr;
+        std::atomic<uint32_t> *mActiveOverlapCount = nullptr;
         std::unordered_map<uint64_t, OverlapEvent> *mActiveOverlaps = nullptr;
         std::mutex *mOverlapMutex = nullptr;
     };
 
     struct JoltWorld {
+        uint32_t layerCount;
+        std::array<uint32_t, kMaxCollisionLayers> collisionMatrix;
         PhysicsSystem physicsSystem;
         TempAllocatorImpl tempAllocator;
         JobSystemThreadPool jobSystem;
@@ -259,6 +291,7 @@ namespace {
         std::atomic<uint32_t> contactWriteIndex;
         OverlapEvent overlapEvents[kMaxOverlapEventsPerStep];
         std::atomic<uint32_t> overlapWriteIndex;
+        std::atomic<uint32_t> activeOverlapCount;
         std::unordered_map<uint64_t, OverlapEvent> activeOverlaps;
         std::mutex overlapMutex;
         ContactCollector contactCollector;
@@ -268,14 +301,30 @@ namespace {
                   uint32_t maxJobs,
                   uint32_t maxBarriers,
                   uint32_t numThreads,
+                  uint32_t collisionLayerCount,
+                  const uint32_t *collisionMatrixRows,
                   bool singleThreaded)
-        : tempAllocator(tempAllocatorBytes)
+        : layerCount(std::max(1u, std::min(collisionLayerCount, kMaxCollisionLayers)))
+        , collisionMatrix{}
+        , tempAllocator(tempAllocatorBytes)
         , jobSystem()
         , jobSystemSingleThreaded()
+        , broadPhase(layerCount)
+        , objectVsBroadPhaseLayerFilter(collisionMatrix.data(), layerCount)
+        , objectLayerPairFilter(collisionMatrix.data(), layerCount)
         , contactWriteIndex(0)
         , overlapWriteIndex(0)
-        , contactCollector(contacts, &contactWriteIndex, overlapEvents, &overlapWriteIndex, &activeOverlaps, &overlapMutex)
+        , activeOverlapCount(0)
+        , contactCollector(contacts, &contactWriteIndex, overlapEvents, &overlapWriteIndex, &activeOverlapCount, &activeOverlaps, &overlapMutex)
         , useSingleThreaded(singleThreaded) {
+            const uint32_t fullMask = layerCount >= 32 ? 0xffffffffu : ((1u << layerCount) - 1u);
+            for (uint32_t row = 0; row < layerCount; ++row) {
+                const uint32_t source = collisionMatrixRows ? collisionMatrixRows[row] : fullMask;
+                collisionMatrix[row] = source & fullMask;
+            }
+            for (uint32_t row = layerCount; row < kMaxCollisionLayers; ++row) {
+                collisionMatrix[row] = 0;
+            }
             if (useSingleThreaded) {
                 jobSystemSingleThreaded.Init(maxJobs);
             } else {
@@ -359,6 +408,44 @@ namespace {
         return settings.Create().Get();
     }
 
+    static RefConst<Shape> BuildCompoundShape(uint32_t shapeCount,
+                                              const uint32_t *shapeTypes,
+                                              const float *boxHalfExtents,
+                                              const float *sphereRadii,
+                                              const float *capsuleHalfHeights,
+                                              const float *capsuleRadii,
+                                              const float *offsets,
+                                              const float *rotationOffsets) {
+        if (shapeCount == 0 || !shapeTypes || !boxHalfExtents || !sphereRadii || !capsuleHalfHeights || !capsuleRadii || !offsets || !rotationOffsets) {
+            return nullptr;
+        }
+        if (shapeCount == 1) {
+            return BuildShape(shapeTypes[0],
+                              boxHalfExtents[0], boxHalfExtents[1], boxHalfExtents[2],
+                              sphereRadii[0],
+                              capsuleHalfHeights[0],
+                              capsuleRadii[0],
+                              offsets[0], offsets[1], offsets[2],
+                              rotationOffsets[0], rotationOffsets[1], rotationOffsets[2], rotationOffsets[3]);
+        }
+
+        StaticCompoundShapeSettings compound;
+        for (uint32_t i = 0; i < shapeCount; ++i) {
+            const uint32_t boxBase = i * 3;
+            const uint32_t rotBase = i * 4;
+            const RefConst<Shape> shape = BuildShape(shapeTypes[i],
+                                                     boxHalfExtents[boxBase + 0], boxHalfExtents[boxBase + 1], boxHalfExtents[boxBase + 2],
+                                                     sphereRadii[i],
+                                                     capsuleHalfHeights[i],
+                                                     capsuleRadii[i],
+                                                     offsets[boxBase + 0], offsets[boxBase + 1], offsets[boxBase + 2],
+                                                     rotationOffsets[rotBase + 0], rotationOffsets[rotBase + 1], rotationOffsets[rotBase + 2], rotationOffsets[rotBase + 3]);
+            if (!shape) { continue; }
+            compound.AddShape(Vec3::sZero(), Quat::sIdentity(), shape);
+        }
+        return compound.Create().Get();
+    }
+
     static EMotionType MotionTypeFromUInt(uint32_t value) {
         switch (value) {
             case 2:
@@ -371,8 +458,9 @@ namespace {
         }
     }
 
-    static ObjectLayer ObjectLayerFromMotion(uint32_t motionType) {
-        return motionType == 0 ? Layers::NON_MOVING : Layers::MOVING;
+    static ObjectLayer ObjectLayerFromCollisionLayer(uint32_t collisionLayer, uint32_t layerCount) {
+        if (layerCount == 0) { return 0; }
+        return static_cast<ObjectLayer>(std::min(collisionLayer, layerCount - 1));
     }
 }
 
@@ -382,7 +470,9 @@ extern "C" void *MCEPhysicsCreateWorld(float gravityX,
                                        uint32_t maxBodies,
                                        uint32_t maxBodyPairs,
                                        uint32_t maxContactConstraints,
-                                       uint32_t singleThreaded) {
+                                       uint32_t singleThreaded,
+                                       uint32_t collisionLayerCount,
+                                       const uint32_t *collisionMatrixRows) {
     EnsureJoltInitialized();
 
     const uint32_t bodies = maxBodies > 0 ? maxBodies : 1024;
@@ -397,7 +487,13 @@ extern "C" void *MCEPhysicsCreateWorld(float gravityX,
     const uint32_t workerThreads = hardwareThreads > 1 ? hardwareThreads - 1 : 1;
     const bool useSingleThreaded = singleThreaded != 0;
 
-    JoltWorld *world = new JoltWorld(tempAllocatorBytes, maxJobs, maxBarriers, workerThreads, useSingleThreaded);
+    JoltWorld *world = new JoltWorld(tempAllocatorBytes,
+                                     maxJobs,
+                                     maxBarriers,
+                                     workerThreads,
+                                     collisionLayerCount,
+                                     collisionMatrixRows,
+                                     useSingleThreaded);
     world->physicsSystem.Init(bodies,
                               numMutexes,
                               bodyPairs,
@@ -435,17 +531,18 @@ extern "C" void MCEPhysicsStepWorld(void *worldPtr, float dt, uint32_t collision
     world->physicsSystem.Update(dt, steps, &world->tempAllocator, jobSystem);
 }
 
-extern "C" uint64_t MCEPhysicsCreateBody(void *worldPtr,
-                                         uint32_t shapeType,
+extern "C" uint64_t MCEPhysicsCreateBodyMulti(void *worldPtr,
+                                         uint32_t shapeCount,
+                                         const uint32_t *shapeTypes,
+                                         const float *boxHalfExtents,
+                                         const float *sphereRadii,
+                                         const float *capsuleHalfHeights,
+                                         const float *capsuleRadii,
+                                         const float *offsets,
+                                         const float *rotationOffsets,
                                          uint32_t motionType,
                                          float posX, float posY, float posZ,
                                          float rotX, float rotY, float rotZ, float rotW,
-                                         float boxHX, float boxHY, float boxHZ,
-                                         float sphereRadius,
-                                         float capsuleHalfHeight,
-                                         float capsuleRadius,
-                                         float offsetX, float offsetY, float offsetZ,
-                                         float rotOffsetX, float rotOffsetY, float rotOffsetZ, float rotOffsetW,
                                          float friction,
                                          float restitution,
                                          float linearDamping,
@@ -455,7 +552,8 @@ extern "C" uint64_t MCEPhysicsCreateBody(void *worldPtr,
                                          uint64_t userData,
                                          uint32_t ccdEnabled,
                                          uint32_t isSensor,
-                                         uint32_t allowSleeping) {
+                                         uint32_t allowSleeping,
+                                         uint32_t collisionLayer) {
     if (!worldPtr) { return 0; }
     JoltInitializeOnce();
 #if DEBUG
@@ -466,17 +564,18 @@ extern "C" uint64_t MCEPhysicsCreateBody(void *worldPtr,
 #endif
     JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
 
-    RefConst<Shape> shape = BuildShape(shapeType,
-                                       boxHX, boxHY, boxHZ,
-                                       sphereRadius,
-                                       capsuleHalfHeight,
-                                       capsuleRadius,
-                                       offsetX, offsetY, offsetZ,
-                                       rotOffsetX, rotOffsetY, rotOffsetZ, rotOffsetW);
+    RefConst<Shape> shape = BuildCompoundShape(shapeCount,
+                                               shapeTypes,
+                                               boxHalfExtents,
+                                               sphereRadii,
+                                               capsuleHalfHeights,
+                                               capsuleRadii,
+                                               offsets,
+                                               rotationOffsets);
     if (!shape) { return 0; }
 
     const EMotionType joltMotion = MotionTypeFromUInt(motionType);
-    const ObjectLayer layer = ObjectLayerFromMotion(motionType);
+    const ObjectLayer layer = ObjectLayerFromCollisionLayer(collisionLayer, world->layerCount);
 
     BodyCreationSettings settings(shape,
                                   RVec3(posX, posY, posZ),
@@ -523,13 +622,17 @@ extern "C" void MCEPhysicsDestroyBody(void *worldPtr, uint64_t bodyIdValue) {
 extern "C" void MCEPhysicsSetBodyTransform(void *worldPtr,
                                            uint64_t bodyIdValue,
                                            float posX, float posY, float posZ,
-                                           float rotX, float rotY, float rotZ, float rotW) {
+                                           float rotX, float rotY, float rotZ, float rotW,
+                                           uint32_t activate) {
     if (!worldPtr || bodyIdValue == 0) { return; }
     JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
     BodyInterface &bodyInterface = world->physicsSystem.GetBodyInterface();
     BodyID bodyId(bodyIdValue);
     if (!bodyInterface.IsAdded(bodyId)) { return; }
-    bodyInterface.SetPositionAndRotation(bodyId, RVec3(posX, posY, posZ), Quat(rotX, rotY, rotZ, rotW), EActivation::Activate);
+    bodyInterface.SetPositionAndRotation(bodyId,
+                                         RVec3(posX, posY, posZ),
+                                         Quat(rotX, rotY, rotZ, rotW),
+                                         activate != 0 ? EActivation::Activate : EActivation::DontActivate);
 }
 
 extern "C" uint32_t MCEPhysicsGetBodyTransform(void *worldPtr,
@@ -561,6 +664,51 @@ extern "C" void MCEPhysicsSetBodyMotionType(void *worldPtr, uint64_t bodyIdValue
     BodyID bodyId(bodyIdValue);
     if (!bodyInterface.IsAdded(bodyId)) { return; }
     bodyInterface.SetMotionType(bodyId, MotionTypeFromUInt(motionType), EActivation::Activate);
+}
+
+extern "C" void MCEPhysicsSetBodyLinearAndAngularVelocity(void *worldPtr,
+                                                           uint64_t bodyIdValue,
+                                                           float linearX, float linearY, float linearZ,
+                                                           float angularX, float angularY, float angularZ) {
+    if (!worldPtr || bodyIdValue == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    BodyInterface &bodyInterface = world->physicsSystem.GetBodyInterface();
+    BodyID bodyId(bodyIdValue);
+    if (!bodyInterface.IsAdded(bodyId)) { return; }
+    bodyInterface.SetLinearAndAngularVelocity(bodyId, Vec3(linearX, linearY, linearZ), Vec3(angularX, angularY, angularZ));
+}
+
+extern "C" uint32_t MCEPhysicsGetBodyLinearAndAngularVelocity(void *worldPtr,
+                                                               uint64_t bodyIdValue,
+                                                               float *linearOut,
+                                                               float *angularOut) {
+    if (!worldPtr || bodyIdValue == 0 || !linearOut || !angularOut) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    BodyLockRead lock(world->physicsSystem.GetBodyLockInterface(), BodyID(bodyIdValue));
+    if (!lock.Succeeded()) { return 0; }
+    const Body &body = lock.GetBody();
+    const Vec3 linear = body.GetLinearVelocity();
+    const Vec3 angular = body.GetAngularVelocity();
+    linearOut[0] = linear.GetX();
+    linearOut[1] = linear.GetY();
+    linearOut[2] = linear.GetZ();
+    angularOut[0] = angular.GetX();
+    angularOut[1] = angular.GetY();
+    angularOut[2] = angular.GetZ();
+    return 1;
+}
+
+extern "C" void MCEPhysicsSetBodyActivation(void *worldPtr, uint64_t bodyIdValue, uint32_t activate) {
+    if (!worldPtr || bodyIdValue == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    BodyInterface &bodyInterface = world->physicsSystem.GetBodyInterface();
+    BodyID bodyId(bodyIdValue);
+    if (!bodyInterface.IsAdded(bodyId)) { return; }
+    if (activate != 0) {
+        bodyInterface.ActivateBody(bodyId);
+    } else {
+        bodyInterface.DeactivateBody(bodyId);
+    }
 }
 
 extern "C" uint32_t MCEPhysicsCopyLastContacts(void *worldPtr, float *buffer, uint32_t maxContacts) {

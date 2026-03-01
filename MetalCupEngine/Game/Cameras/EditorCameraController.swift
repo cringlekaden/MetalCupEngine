@@ -19,6 +19,10 @@ public final class EditorCameraController {
 
     public init() {}
 
+    public func reset() {
+        lastInitialized = false
+    }
+
     public func update(transform: inout TransformComponent, frame: FrameContext) {
         if !lastInitialized {
             let rotation = simd_quatf(real: transform.rotation.w,
@@ -26,8 +30,8 @@ public final class EditorCameraController {
                                                         transform.rotation.y,
                                                         transform.rotation.z))
             let forward = simd_normalize(rotation.act(SIMD3<Float>(0, 0, -1)))
-            yaw = atan2(forward.x, -forward.z)
-            let clampedY = max(-1.0 as Float, min(1.0 as Float, -forward.y))
+            yaw = atan2(-forward.x, -forward.z)
+            let clampedY = max(-1.0 as Float, min(1.0 as Float, forward.y))
             pitch = asinf(clampedY)
             focalPoint = transform.position + forward * distance
             lastInitialized = true
@@ -44,20 +48,30 @@ public final class EditorCameraController {
         let mouseDelta = frame.input.mouseDelta
         let scrollDelta = frame.input.scrollDelta
         let dt = frame.time.deltaTime
+        var didChange = false
 
         if altDown && leftMouse && shiftDown {
             pan(delta: mouseDelta)
+            didChange = true
         } else if altDown && leftMouse {
             orbit(delta: mouseDelta)
+            didChange = true
         } else if altDown && rightMouse {
             dolly(delta: mouseDelta.y)
+            didChange = true
         } else if rightMouse {
             freeLook(delta: mouseDelta)
-            fly(dt: dt, keys: keys)
+            let moved = fly(dt: dt, keys: keys)
+            didChange = moved || simd_length_squared(mouseDelta) > 0.0
         } else {
             if scrollDelta != 0 {
                 zoom(delta: scrollDelta)
+                didChange = true
             }
+        }
+
+        if !didChange {
+            return
         }
 
         let basis = basisFromYawPitch()
@@ -97,7 +111,7 @@ public final class EditorCameraController {
         pitch = clampPitch(pitch)
     }
 
-    private func fly(dt: Float, keys: [Bool]) {
+    private func fly(dt: Float, keys: [Bool]) -> Bool {
         let basis = basisFromYawPitch()
         let forward = basis.forward
         let right = basis.right
@@ -111,7 +125,9 @@ public final class EditorCameraController {
         if simd_length_squared(move) > 0 {
             let delta = simd_normalize(move) * moveSpeed * dt
             focalPoint += delta
+            return true
         }
+        return false
     }
 
     private func keyDown(_ code: KeyCodes, keys: [Bool]) -> Bool {

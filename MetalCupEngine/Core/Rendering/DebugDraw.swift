@@ -7,13 +7,15 @@ import simd
 public final class DebugDraw {
     private var submittedGridParams: GridParams?
     private var submittedLines: [DebugLine] = []
-    public var lineThickness: Float = 0.08
+    private var submittedPolylines: [DebugPolyline] = []
+    public var lineThickness: Float = 0.05
 
     public init() {}
 
     public func beginFrame() {
         submittedGridParams = nil
         submittedLines.removeAll(keepingCapacity: true)
+        submittedPolylines.removeAll(keepingCapacity: true)
     }
 
     public func endFrame() {
@@ -28,6 +30,12 @@ public final class DebugDraw {
         submittedLines.append(DebugLine(start: start, end: end, color: color))
     }
 
+    public func submitPolyline(_ points: [SIMD3<Float>], color: SIMD4<Float>, closed: Bool = false) {
+        let minimumPoints = closed ? 3 : 2
+        guard points.count >= minimumPoints else { return }
+        submittedPolylines.append(DebugPolyline(points: points, color: color, closed: closed))
+    }
+
     public func submitWireBox(transform: matrix_float4x4, halfExtents: SIMD3<Float>, color: SIMD4<Float>) {
         let points: [SIMD3<Float>] = [
             SIMD3<Float>(-halfExtents.x, -halfExtents.y, -halfExtents.z),
@@ -39,15 +47,12 @@ public final class DebugDraw {
             SIMD3<Float>(halfExtents.x, halfExtents.y, halfExtents.z),
             SIMD3<Float>(-halfExtents.x, halfExtents.y, halfExtents.z)
         ]
-        let edges: [(Int, Int)] = [
-            (0, 1), (1, 2), (2, 3), (3, 0),
-            (4, 5), (5, 6), (6, 7), (7, 4),
-            (0, 4), (1, 5), (2, 6), (3, 7)
-        ]
-        for (a, b) in edges {
-            let start = transformPoint(transform, points[a])
-            let end = transformPoint(transform, points[b])
-            submitLine(start, end, color: color)
+        let world = points.map { transformPoint(transform, $0) }
+        submitPolyline([world[0], world[1], world[2], world[3]], color: color, closed: true)
+        submitPolyline([world[4], world[5], world[6], world[7]], color: color, closed: true)
+        let verticalEdges: [(Int, Int)] = [(0, 4), (1, 5), (2, 6), (3, 7)]
+        for (a, b) in verticalEdges {
+            submitLine(world[a], world[b], color: color)
         }
     }
 
@@ -85,15 +90,20 @@ public final class DebugDraw {
         submittedLines
     }
 
+    func polylines() -> [DebugPolyline] {
+        submittedPolylines
+    }
+
     private func submitCircle(transform: matrix_float4x4, radius: Float, axis: Int, color: SIMD4<Float>, segments: Int) {
         let twoPi = Float.pi * 2.0
+        var points: [SIMD3<Float>] = []
+        points.reserveCapacity(segments)
         for i in 0..<segments {
             let a0 = (Float(i) / Float(segments)) * twoPi
-            let a1 = (Float(i + 1) / Float(segments)) * twoPi
             let p0 = circlePoint(radius: radius, angle: a0, axis: axis)
-            let p1 = circlePoint(radius: radius, angle: a1, axis: axis)
-            submitLine(transformPoint(transform, p0), transformPoint(transform, p1), color: color)
+            points.append(transformPoint(transform, p0))
         }
+        submitPolyline(points, color: color, closed: true)
     }
 
     private func circlePoint(radius: Float, angle: Float, axis: Int) -> SIMD3<Float> {
@@ -120,6 +130,12 @@ public struct DebugLine {
     public var start: SIMD3<Float>
     public var end: SIMD3<Float>
     public var color: SIMD4<Float>
+}
+
+public struct DebugPolyline {
+    public var points: [SIMD3<Float>]
+    public var color: SIMD4<Float>
+    public var closed: Bool
 }
 
 extension matrix_float4x4 {

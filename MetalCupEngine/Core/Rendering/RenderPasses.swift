@@ -275,12 +275,16 @@ final class DebugDrawPass: RenderGraphPass {
     let gpuPass: RendererProfiler.GpuPass? = nil
 
     func execute(frame: RenderGraphFrame) {
+        let allowDebugDraw = RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView)
+            || (frame.engineContext.physicsSettings.debugDrawInPlay && !frame.sceneView.isEditorView)
         guard frame.engineContext.physicsSettings.debugDrawEnabled,
-              RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView),
+              allowDebugDraw,
               let scene = frame.delegate?.activeScene(),
               let grid = frame.resources.texture(.gridColor) else { return }
-        let lines = frame.engineContext.debugDraw.lines()
-        if lines.isEmpty {
+        let debugDraw = frame.engineContext.debugDraw
+        let lines = debugDraw.lines()
+        let polylines = debugDraw.polylines()
+        if lines.isEmpty && polylines.isEmpty {
             if frame.renderer.settings.gridEnabled == 0 {
                 let pass = RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
                 if let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) {
@@ -298,16 +302,11 @@ final class DebugDrawPass: RenderGraphPass {
         )
         let thickness = max(0.0001, frame.engineContext.debugDraw.lineThickness)
         var vertices: [DebugLineVertex] = []
-        vertices.reserveCapacity(lines.count * 6)
-        for line in lines {
-            let p0 = line.start
-            let p1 = line.end
-            let dir = p1 - p0
-            let length = simd_length(dir)
-            if length < 0.0001 { continue }
-            let lineDir = dir / length
-            let mid = (p0 + p1) * 0.5
-            var viewDir = cameraPosition - mid
+        vertices.reserveCapacity((lines.count + polylines.count * 2) * 6)
+
+        @inline(__always)
+        func resolveRight(lineDir: SIMD3<Float>, anchor: SIMD3<Float>) -> SIMD3<Float> {
+            var viewDir = cameraPosition - anchor
             if simd_length_squared(viewDir) < 0.0001 {
                 viewDir = SIMD3<Float>(0, 0, 1)
             }
@@ -319,19 +318,131 @@ final class DebugDrawPass: RenderGraphPass {
                     right = simd_cross(lineDir, SIMD3<Float>(1, 0, 0))
                 }
             }
-            right = simd_normalize(right)
+            return simd_normalize(right)
+        }
+
+        @inline(__always)
+        func appendQuad(v0: SIMD3<Float>, v1: SIMD3<Float>, v2: SIMD3<Float>, v3: SIMD3<Float>, color: SIMD4<Float>, u0: Float, u1: Float) {
+            vertices.append(DebugLineVertex(position: v0, color: color, uv: SIMD2<Float>(u0, 0)))
+            vertices.append(DebugLineVertex(position: v1, color: color, uv: SIMD2<Float>(u0, 1)))
+            vertices.append(DebugLineVertex(position: v2, color: color, uv: SIMD2<Float>(u1, 0)))
+            vertices.append(DebugLineVertex(position: v2, color: color, uv: SIMD2<Float>(u1, 0)))
+            vertices.append(DebugLineVertex(position: v1, color: color, uv: SIMD2<Float>(u0, 1)))
+            vertices.append(DebugLineVertex(position: v3, color: color, uv: SIMD2<Float>(u1, 1)))
+        }
+
+        for line in lines {
+            let p0 = line.start
+            let p1 = line.end
+            let dir = p1 - p0
+            let length = simd_length(dir)
+            if length < 0.0001 { continue }
+            let lineDir = dir / length
+            let right = resolveRight(lineDir: lineDir, anchor: (p0 + p1) * 0.5)
             let offset = right * (thickness * 0.5)
             let v0 = p0 - offset
             let v1 = p0 + offset
             let v2 = p1 - offset
             let v3 = p1 + offset
-            let color = line.color
-            vertices.append(DebugLineVertex(position: v0, color: color))
-            vertices.append(DebugLineVertex(position: v1, color: color))
-            vertices.append(DebugLineVertex(position: v2, color: color))
-            vertices.append(DebugLineVertex(position: v2, color: color))
-            vertices.append(DebugLineVertex(position: v1, color: color))
-            vertices.append(DebugLineVertex(position: v3, color: color))
+            appendQuad(v0: v0, v1: v1, v2: v2, v3: v3, color: line.color, u0: 0.0, u1: 1.0)
+        }
+
+        for polyline in polylines {
+            let points = polyline.points
+            let pointCount = points.count
+            if pointCount < 2 { continue }
+
+            let closed = polyline.closed
+            let segmentCount = closed ? pointCount : pointCount - 1
+            if segmentCount <= 0 { continue }
+
+            var segmentDirs = Array(repeating: SIMD3<Float>.zero, count: segmentCount)
+            var segmentRights = Array(repeating: SIMD3<Float>.zero, count: segmentCount)
+            var segmentLengths = Array(repeating: Float(0), count: segmentCount)
+            for segmentIndex in 0..<segmentCount {
+                let nextIndex = (segmentIndex + 1) % pointCount
+                let dir = points[nextIndex] - points[segmentIndex]
+                let len = simd_length(dir)
+                if len < 0.0001 { continue }
+                let lineDir = dir / len
+                segmentDirs[segmentIndex] = lineDir
+                segmentLengths[segmentIndex] = len
+                segmentRights[segmentIndex] = resolveRight(lineDir: lineDir, anchor: (points[segmentIndex] + points[nextIndex]) * 0.5)
+            }
+
+            var leftOffsets = Array(repeating: SIMD3<Float>.zero, count: pointCount)
+            var rightOffsets = Array(repeating: SIMD3<Float>.zero, count: pointCount)
+            for pointIndex in 0..<pointCount {
+                let prevSegment = (pointIndex - 1 + segmentCount) % segmentCount
+                let nextSegment = pointIndex % segmentCount
+
+                let right: SIMD3<Float>
+                if !closed && pointIndex == 0 {
+                    right = segmentRights[0]
+                } else if !closed && pointIndex == pointCount - 1 {
+                    right = segmentRights[segmentCount - 1]
+                } else {
+                    let rightPrev = segmentRights[prevSegment]
+                    let rightNext = segmentRights[nextSegment]
+                    if simd_length_squared(rightPrev) < 1e-8 {
+                        right = rightNext
+                    } else if simd_length_squared(rightNext) < 1e-8 {
+                        right = rightPrev
+                    } else {
+                        var miter = rightPrev + rightNext
+                        if simd_length_squared(miter) < 1e-8 {
+                            right = rightNext
+                            let offset = right * (thickness * 0.5)
+                            leftOffsets[pointIndex] = points[pointIndex] - offset
+                            rightOffsets[pointIndex] = points[pointIndex] + offset
+                            continue
+                        }
+                        miter = simd_normalize(miter)
+                        let denominator = max(0.25, abs(simd_dot(miter, rightNext)))
+                        var scale = 1.0 / denominator
+                        scale = min(scale, 4.0)
+                        var candidate = miter * (thickness * 0.5 * scale)
+                        if simd_dot(candidate, rightNext) < 0 {
+                            candidate = -candidate
+                        }
+                        leftOffsets[pointIndex] = points[pointIndex] - candidate
+                        rightOffsets[pointIndex] = points[pointIndex] + candidate
+                        continue
+                    }
+                }
+
+                let offset = right * (thickness * 0.5)
+                leftOffsets[pointIndex] = points[pointIndex] - offset
+                rightOffsets[pointIndex] = points[pointIndex] + offset
+            }
+
+            var uByPoint = Array(repeating: Float(0.5), count: pointCount)
+            if !closed {
+                let total = segmentLengths.reduce(0, +)
+                if total > 0.0001 {
+                    var accum: Float = 0
+                    uByPoint[0] = 0
+                    for segmentIndex in 0..<segmentCount {
+                        let next = segmentIndex + 1
+                        accum += segmentLengths[segmentIndex]
+                        uByPoint[next] = min(1.0, accum / total)
+                    }
+                }
+            }
+
+            for segmentIndex in 0..<segmentCount {
+                if segmentLengths[segmentIndex] < 0.0001 { continue }
+                let nextIndex = (segmentIndex + 1) % pointCount
+                appendQuad(
+                    v0: leftOffsets[segmentIndex],
+                    v1: rightOffsets[segmentIndex],
+                    v2: leftOffsets[nextIndex],
+                    v3: rightOffsets[nextIndex],
+                    color: polyline.color,
+                    u0: uByPoint[segmentIndex],
+                    u1: uByPoint[nextIndex]
+                )
+            }
         }
         if vertices.isEmpty { return }
         guard let buffer = frame.engineContext.device.makeBuffer(bytes: vertices,
@@ -447,7 +558,6 @@ final class BloomBlurPass: RenderGraphPass {
             return SIMD2<Float>(Float(w), Float(h))
         }
 
-        let passes = max(1, Int(settings.blurPasses))
         var blurTotal: Double = 0
         var downsampleTotal: Double = 0
 
@@ -455,82 +565,13 @@ final class BloomBlurPass: RenderGraphPass {
         var didSampleBegin = false
         var didSampleEnd = false
 
-        func blurMip(_ mip: Int) {
-            let size = mipSize(ping, mip)
-            var params = settings
-            params.bloomTexelSize = SIMD2<Float>(1.0 / size.x, 1.0 / size.y)
-            params.bloomMipLevel = Float(mip)
-
-            for i in 0..<passes {
-                let blurStart = CACurrentMediaTime()
-                guard let encH = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: pong, level: mip)) else { return }
-                RenderPassHelpers.setViewport(encH, size)
-                if !didSampleBegin {
-                    frame.profiler.sampleGpuPassBegin(.bloomBlur, encoder: encH, frameIndex: frameIndex)
-                    didSampleBegin = true
-                }
-                let passH = FullscreenPass(
-                    pipeline: .BloomBlurH,
-                    label: "Bloom Blur H \(mip) \(i)",
-                    sampler: .LinearClampToZero,
-                    useSampler: true,
-                    texture0: ping,
-                    useTexture0: true,
-                    texture1: nil,
-                    useTexture1: false,
-                    outlineMask: nil,
-                    useOutlineMask: false,
-                    depth: nil,
-                    useDepth: false,
-                    grid: nil,
-                    useGrid: false,
-                    settings: params
-                )
-                passH.encode(into: encH, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
-                encH.endEncoding()
-
-                guard let encV = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: mip)) else { return }
-                RenderPassHelpers.setViewport(encV, size)
-                if !didSampleBegin {
-                    frame.profiler.sampleGpuPassBegin(.bloomBlur, encoder: encV, frameIndex: frameIndex)
-                    didSampleBegin = true
-                }
-                let passV = FullscreenPass(
-                    pipeline: .BloomBlurV,
-                    label: "Bloom Blur V \(mip) \(i)",
-                    sampler: .LinearClampToZero,
-                    useSampler: true,
-                    texture0: pong,
-                    useTexture0: true,
-                    texture1: nil,
-                    useTexture1: false,
-                    outlineMask: nil,
-                    useOutlineMask: false,
-                    depth: nil,
-                    useDepth: false,
-                    grid: nil,
-                    useGrid: false,
-                    settings: params
-                )
-                passV.encode(into: encV, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
-                if mip == (mipCount - 1), i == (passes - 1), !didSampleEnd {
-                    frame.profiler.sampleGpuPassEnd(.bloomBlur, encoder: encV, frameIndex: frameIndex)
-                    didSampleEnd = true
-                }
-                encV.endEncoding()
-                blurTotal += CACurrentMediaTime() - blurStart
-            }
-        }
-
-        blurMip(0)
-
+        // Build bloom pyramid from extracted mip0.
         if mipCount > 1 {
             for mip in 1..<mipCount {
-                let prevSize = mipSize(ping, mip - 1)
+                let sourceMip = mip - 1
                 let size = mipSize(ping, mip)
                 var params = settings
-                params.bloomTexelSize = SIMD2<Float>(1.0 / prevSize.x, 1.0 / prevSize.y)
-                params.bloomMipLevel = Float(mip - 1)
+                params.bloomMipLevel = Float(sourceMip)
 
                 let downsampleStart = CACurrentMediaTime()
                 guard let enc = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: mip)) else { return }
@@ -555,9 +596,71 @@ final class BloomBlurPass: RenderGraphPass {
                 pass.encode(into: enc, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
                 enc.endEncoding()
                 downsampleTotal += CACurrentMediaTime() - downsampleStart
-
-                blurMip(mip)
             }
+        }
+
+        // Dual-filter upsample: fold low mips back into higher mips.
+        if mipCount > 1 {
+            for mip in stride(from: mipCount - 2, through: 0, by: -1) {
+                let size = mipSize(ping, mip)
+                var params = settings
+                let blurStart = CACurrentMediaTime()
+                params.bloomMipLevel = Float(mip)
+                guard let enc = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: pong, level: mip)) else { return }
+                RenderPassHelpers.setViewport(enc, size)
+                if !didSampleBegin {
+                    frame.profiler.sampleGpuPassBegin(.bloomBlur, encoder: enc, frameIndex: frameIndex)
+                    didSampleBegin = true
+                }
+                let upsample = FullscreenPass(
+                    pipeline: .BloomBlurH,
+                    label: "Bloom Upsample \(mip)",
+                    sampler: .LinearClampToZero,
+                    useSampler: true,
+                    texture0: ping,
+                    useTexture0: true,
+                    texture1: ping,
+                    useTexture1: true,
+                    outlineMask: nil,
+                    useOutlineMask: false,
+                    depth: nil,
+                    useDepth: false,
+                    grid: nil,
+                    useGrid: false,
+                    settings: params
+                )
+                upsample.encode(into: enc, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
+                if mip == 0, !didSampleEnd {
+                    frame.profiler.sampleGpuPassEnd(.bloomBlur, encoder: enc, frameIndex: frameIndex)
+                    didSampleEnd = true
+                }
+                enc.endEncoding()
+
+                // Persist current upsample result back into ping for the next higher mip.
+                guard let blit = frame.commandBuffer.makeBlitCommandEncoder() else { return }
+                blit.label = "Bloom Upsample Copy \(mip)"
+                let copyWidth = max(1, ping.width >> mip)
+                let copyHeight = max(1, ping.height >> mip)
+                blit.copy(
+                    from: pong,
+                    sourceSlice: 0,
+                    sourceLevel: mip,
+                    sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                    sourceSize: MTLSize(width: copyWidth, height: copyHeight, depth: 1),
+                    to: ping,
+                    destinationSlice: 0,
+                    destinationLevel: mip,
+                    destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+                )
+                blit.endEncoding()
+
+                if mipCount == 2 && mip == 0 && !didSampleEnd {
+                    didSampleEnd = true
+                }
+                blurTotal += CACurrentMediaTime() - blurStart
+            }
+        } else if !didSampleEnd {
+            didSampleEnd = true
         }
 
         if downsampleTotal > 0 {

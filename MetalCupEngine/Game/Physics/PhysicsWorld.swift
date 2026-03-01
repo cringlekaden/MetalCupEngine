@@ -12,7 +12,9 @@ private func MCEPhysicsCreateWorld(_ gravityX: Float,
                                    _ maxBodies: UInt32,
                                    _ maxBodyPairs: UInt32,
                                    _ maxContactConstraints: UInt32,
-                                   _ singleThreaded: UInt32) -> UnsafeMutableRawPointer?
+                                   _ singleThreaded: UInt32,
+                                   _ collisionLayerCount: UInt32,
+                                   _ collisionMatrixRows: UnsafePointer<UInt32>?) -> UnsafeMutableRawPointer?
 
 @_silgen_name("MCEPhysicsDestroyWorld")
 private func MCEPhysicsDestroyWorld(_ world: UnsafeMutableRawPointer?)
@@ -23,28 +25,30 @@ private func MCEPhysicsWorldSetGravity(_ world: UnsafeMutableRawPointer?, _ grav
 @_silgen_name("MCEPhysicsStepWorld")
 private func MCEPhysicsStepWorld(_ world: UnsafeMutableRawPointer?, _ dt: Float, _ collisionSteps: UInt32)
 
-@_silgen_name("MCEPhysicsCreateBody")
-private func MCEPhysicsCreateBody(_ world: UnsafeMutableRawPointer?,
-                                  _ shapeType: UInt32,
-                                  _ motionType: UInt32,
-                                  _ posX: Float, _ posY: Float, _ posZ: Float,
-                                  _ rotX: Float, _ rotY: Float, _ rotZ: Float, _ rotW: Float,
-                                  _ boxHX: Float, _ boxHY: Float, _ boxHZ: Float,
-                                  _ sphereRadius: Float,
-                                  _ capsuleHalfHeight: Float,
-                                  _ capsuleRadius: Float,
-                                  _ offsetX: Float, _ offsetY: Float, _ offsetZ: Float,
-                                  _ rotOffsetX: Float, _ rotOffsetY: Float, _ rotOffsetZ: Float, _ rotOffsetW: Float,
-                                  _ friction: Float,
-                                  _ restitution: Float,
-                                  _ linearDamping: Float,
-                                  _ angularDamping: Float,
-                                  _ gravityFactor: Float,
-                                  _ mass: Float,
-                                  _ userData: UInt64,
-                                  _ ccdEnabled: UInt32,
-                                  _ isSensor: UInt32,
-                                  _ allowSleeping: UInt32) -> UInt64
+@_silgen_name("MCEPhysicsCreateBodyMulti")
+private func MCEPhysicsCreateBodyMulti(_ world: UnsafeMutableRawPointer?,
+                                       _ shapeCount: UInt32,
+                                       _ shapeTypes: UnsafePointer<UInt32>?,
+                                       _ boxHalfExtents: UnsafePointer<Float>?,
+                                       _ sphereRadii: UnsafePointer<Float>?,
+                                       _ capsuleHalfHeights: UnsafePointer<Float>?,
+                                       _ capsuleRadii: UnsafePointer<Float>?,
+                                       _ offsets: UnsafePointer<Float>?,
+                                       _ rotationOffsets: UnsafePointer<Float>?,
+                                       _ motionType: UInt32,
+                                       _ posX: Float, _ posY: Float, _ posZ: Float,
+                                       _ rotX: Float, _ rotY: Float, _ rotZ: Float, _ rotW: Float,
+                                       _ friction: Float,
+                                       _ restitution: Float,
+                                       _ linearDamping: Float,
+                                       _ angularDamping: Float,
+                                       _ gravityFactor: Float,
+                                       _ mass: Float,
+                                       _ userData: UInt64,
+                                       _ ccdEnabled: UInt32,
+                                       _ isSensor: UInt32,
+                                       _ allowSleeping: UInt32,
+                                       _ collisionLayer: UInt32) -> UInt64
 
 @_silgen_name("MCEPhysicsDestroyBody")
 private func MCEPhysicsDestroyBody(_ world: UnsafeMutableRawPointer?, _ bodyId: UInt64)
@@ -53,7 +57,8 @@ private func MCEPhysicsDestroyBody(_ world: UnsafeMutableRawPointer?, _ bodyId: 
 private func MCEPhysicsSetBodyTransform(_ world: UnsafeMutableRawPointer?,
                                         _ bodyId: UInt64,
                                         _ posX: Float, _ posY: Float, _ posZ: Float,
-                                        _ rotX: Float, _ rotY: Float, _ rotZ: Float, _ rotW: Float)
+                                        _ rotX: Float, _ rotY: Float, _ rotZ: Float, _ rotW: Float,
+                                        _ activate: UInt32)
 
 @_silgen_name("MCEPhysicsGetBodyTransform")
 private func MCEPhysicsGetBodyTransform(_ world: UnsafeMutableRawPointer?,
@@ -63,6 +68,21 @@ private func MCEPhysicsGetBodyTransform(_ world: UnsafeMutableRawPointer?,
 
 @_silgen_name("MCEPhysicsSetBodyMotionType")
 private func MCEPhysicsSetBodyMotionType(_ world: UnsafeMutableRawPointer?, _ bodyId: UInt64, _ motionType: UInt32)
+
+@_silgen_name("MCEPhysicsSetBodyLinearAndAngularVelocity")
+private func MCEPhysicsSetBodyLinearAndAngularVelocity(_ world: UnsafeMutableRawPointer?,
+                                                       _ bodyId: UInt64,
+                                                       _ linearX: Float, _ linearY: Float, _ linearZ: Float,
+                                                       _ angularX: Float, _ angularY: Float, _ angularZ: Float)
+
+@_silgen_name("MCEPhysicsGetBodyLinearAndAngularVelocity")
+private func MCEPhysicsGetBodyLinearAndAngularVelocity(_ world: UnsafeMutableRawPointer?,
+                                                       _ bodyId: UInt64,
+                                                       _ linearOut: UnsafeMutablePointer<Float>?,
+                                                       _ angularOut: UnsafeMutablePointer<Float>?) -> UInt32
+
+@_silgen_name("MCEPhysicsSetBodyActivation")
+private func MCEPhysicsSetBodyActivation(_ world: UnsafeMutableRawPointer?, _ bodyId: UInt64, _ activate: UInt32)
 
 @_silgen_name("MCEPhysicsCopyLastContacts")
 private func MCEPhysicsCopyLastContacts(_ world: UnsafeMutableRawPointer?,
@@ -113,6 +133,10 @@ private func MCEPhysicsCopyOverlapEvents(_ world: UnsafeMutableRawPointer?,
                                          _ maxEvents: UInt32) -> UInt32
 
 public struct PhysicsSettings {
+    public static let maxCollisionLayers: Int = 16
+    public static let minimumCapacity: UInt32 = 1024
+    public static let maximumCapacity: UInt32 = 131_072
+
     public enum QualityPreset: UInt32, CaseIterable {
         case low = 0
         case medium = 1
@@ -139,6 +163,7 @@ public struct PhysicsSettings {
     public var maxSubsteps: Int
     public var defaultFriction: Float
     public var defaultRestitution: Float
+    public var defaultLinearDamping: Float
     public var defaultAngularDamping: Float
     public var ccdEnabled: Bool
     public var resolveInitialOverlap: Bool
@@ -150,6 +175,11 @@ public struct PhysicsSettings {
     public var showContacts: Bool
     public var showSleeping: Bool
     public var showOverlaps: Bool
+    public var collisionLayerNames: [String]
+    public var collisionMatrix: [UInt32]
+    public var maxBodies: UInt32
+    public var maxBodyPairs: UInt32
+    public var maxContactConstraints: UInt32
 
     public init(isEnabled: Bool = true,
                 gravity: SIMD3<Float> = SIMD3<Float>(0.0, -9.81, 0.0),
@@ -159,6 +189,7 @@ public struct PhysicsSettings {
                 maxSubsteps: Int = 4,
                 defaultFriction: Float = 0.6,
                 defaultRestitution: Float = 0.0,
+                defaultLinearDamping: Float = 0.02,
                 defaultAngularDamping: Float = 0.2,
                 ccdEnabled: Bool = false,
                 resolveInitialOverlap: Bool = false,
@@ -169,16 +200,22 @@ public struct PhysicsSettings {
                 showCOMAxes: Bool = false,
                 showContacts: Bool = false,
                 showSleeping: Bool = false,
-                showOverlaps: Bool = false) {
+                showOverlaps: Bool = false,
+                collisionLayerNames: [String] = PhysicsSettings.defaultCollisionLayerNames(),
+                collisionMatrix: [UInt32] = PhysicsSettings.defaultCollisionMatrix(),
+                maxBodies: UInt32 = 8_192,
+                maxBodyPairs: UInt32 = 16_384,
+                maxContactConstraints: UInt32 = 8_192) {
         self.isEnabled = isEnabled
         self.gravity = gravity
         self.qualityPreset = qualityPreset
         let resolvedSolver = max(1, solverIterations)
         self.solverIterations = max(resolvedSolver, qualityPreset.solverIterations)
         self.fixedDeltaTime = max(0.0001, fixedDeltaTime)
-        self.maxSubsteps = max(1, min(maxSubsteps, 4))
+        self.maxSubsteps = max(1, min(maxSubsteps, 16))
         self.defaultFriction = min(max(defaultFriction, 0.0), 1.0)
         self.defaultRestitution = min(max(defaultRestitution, 0.0), 1.0)
+        self.defaultLinearDamping = max(0.0, defaultLinearDamping)
         self.defaultAngularDamping = max(0.0, defaultAngularDamping)
         self.ccdEnabled = ccdEnabled
         self.resolveInitialOverlap = resolveInitialOverlap
@@ -190,6 +227,103 @@ public struct PhysicsSettings {
         self.showContacts = showContacts
         self.showSleeping = showSleeping
         self.showOverlaps = showOverlaps
+        self.collisionLayerNames = PhysicsSettings.normalizedCollisionLayerNames(collisionLayerNames)
+        self.collisionMatrix = PhysicsSettings.normalizedCollisionMatrix(collisionMatrix)
+        self.maxBodies = PhysicsSettings.clampCapacity(maxBodies)
+        self.maxBodyPairs = PhysicsSettings.clampCapacity(maxBodyPairs)
+        self.maxContactConstraints = PhysicsSettings.clampCapacity(maxContactConstraints)
+    }
+
+    public static func defaultCollisionLayerNames() -> [String] {
+        var names: [String] = ["Default"]
+        for index in 1..<maxCollisionLayers {
+            names.append("Layer \(index)")
+        }
+        return names
+    }
+
+    public static func defaultCollisionMatrix() -> [UInt32] {
+        let fullMask = fullCollisionMask()
+        return Array(repeating: fullMask, count: maxCollisionLayers)
+    }
+
+    public static func fullCollisionMask() -> UInt32 {
+        if maxCollisionLayers >= 32 {
+            return UInt32.max
+        }
+        return (1 << UInt32(maxCollisionLayers)) - 1
+    }
+
+    public static func normalizedCollisionLayerNames(_ names: [String]) -> [String] {
+        var result: [String] = names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if result.count > maxCollisionLayers {
+            result = Array(result.prefix(maxCollisionLayers))
+        }
+        if result.isEmpty {
+            result = defaultCollisionLayerNames()
+        }
+        while result.count < maxCollisionLayers {
+            result.append("Layer \(result.count)")
+        }
+        if result[0].isEmpty {
+            result[0] = "Default"
+        }
+        return result
+    }
+
+    public static func normalizedCollisionMatrix(_ matrix: [UInt32]) -> [UInt32] {
+        let fullMask = fullCollisionMask()
+        var result = matrix
+        if result.count > maxCollisionLayers {
+            result = Array(result.prefix(maxCollisionLayers))
+        }
+        if result.isEmpty {
+            result = defaultCollisionMatrix()
+        }
+        while result.count < maxCollisionLayers {
+            result.append(fullMask)
+        }
+        return result.map { $0 & fullMask }
+    }
+
+    public static func clampCapacity(_ value: UInt32) -> UInt32 {
+        min(max(value, minimumCapacity), maximumCapacity)
+    }
+
+    public func runtimeHash() -> Int {
+        var hasher = Hasher()
+        hasher.combine(isEnabled)
+        hasher.combine(gravity.x.bitPattern)
+        hasher.combine(gravity.y.bitPattern)
+        hasher.combine(gravity.z.bitPattern)
+        hasher.combine(solverIterations)
+        hasher.combine(qualityPreset.rawValue)
+        hasher.combine(fixedDeltaTime.bitPattern)
+        hasher.combine(maxSubsteps)
+        hasher.combine(defaultFriction.bitPattern)
+        hasher.combine(defaultRestitution.bitPattern)
+        hasher.combine(defaultLinearDamping.bitPattern)
+        hasher.combine(defaultAngularDamping.bitPattern)
+        hasher.combine(ccdEnabled)
+        hasher.combine(resolveInitialOverlap)
+        hasher.combine(deterministic)
+        hasher.combine(debugDrawEnabled)
+        hasher.combine(debugDrawInPlay)
+        hasher.combine(showColliders)
+        hasher.combine(showCOMAxes)
+        hasher.combine(showContacts)
+        hasher.combine(showSleeping)
+        hasher.combine(showOverlaps)
+        hasher.combine(maxBodies)
+        hasher.combine(maxBodyPairs)
+        hasher.combine(maxContactConstraints)
+        for name in collisionLayerNames {
+            hasher.combine(name)
+        }
+        for row in collisionMatrix {
+            hasher.combine(row)
+        }
+        return hasher.finalize()
     }
 }
 
@@ -207,20 +341,12 @@ public final class PhysicsWorld {
     private var userDataForEntity: [UUID: UInt64] = [:]
     private var entityForUserData: [UInt64: UUID] = [:]
     private var bodyUserData: [UInt64: UInt64] = [:]
+    private var bodyCollisionLayer: [UInt64: Int32] = [:]
+    private var bodyIsTrigger: [UInt64: Bool] = [:]
 
-    public init?(settings: PhysicsSettings,
-                 maxBodies: UInt32 = 1024,
-                 maxBodyPairs: UInt32 = 1024,
-                 maxContactConstraints: UInt32 = 1024) {
-        guard settings.isEnabled else { return nil }
+    public init?(settings: PhysicsSettings) {
         self.settings = settings
-        self.handle = MCEPhysicsCreateWorld(settings.gravity.x,
-                                            settings.gravity.y,
-                                            settings.gravity.z,
-                                            maxBodies,
-                                            maxBodyPairs,
-                                            maxContactConstraints,
-                                            settings.deterministic ? 1 : 0)
+        self.handle = PhysicsWorld.createWorldHandle(settings: settings)
         if handle == nil {
             return nil
         }
@@ -238,6 +364,20 @@ public final class PhysicsWorld {
         MCEPhysicsWorldSetGravity(handle, settings.gravity.x, settings.gravity.y, settings.gravity.z)
     }
 
+    func recreate(settings: PhysicsSettings) -> Bool {
+        let newHandle = PhysicsWorld.createWorldHandle(settings: settings)
+        guard let newHandle else { return false }
+        if let handle {
+            MCEPhysicsDestroyWorld(handle)
+        }
+        handle = newHandle
+        self.settings = settings
+        bodyUserData.removeAll(keepingCapacity: true)
+        bodyCollisionLayer.removeAll(keepingCapacity: true)
+        bodyIsTrigger.removeAll(keepingCapacity: true)
+        return true
+    }
+
     func step(dt: Float) {
         guard let handle else { return }
         MCEPhysicsStepWorld(handle, dt, settings.solverIterations)
@@ -245,34 +385,81 @@ public final class PhysicsWorld {
 
     func createBody(desc: PhysicsBodyCreation) -> UInt64 {
         guard let handle else { return 0 }
+        guard !desc.shapes.isEmpty else { return 0 }
 #if DEBUG
         // Rotation quaternion ordering is (x, y, z, w) when sent over the C bridge.
 #endif
         let rotation = PhysicsWorld.sanitizedQuaternion(desc.rotation)
-        let rotationOffset = PhysicsWorld.sanitizedQuaternion(desc.rotationOffset)
-        let bodyId = MCEPhysicsCreateBody(handle,
-                                    desc.shapeType.rawValue,
-                                    desc.motionType.rawValue,
-                                    desc.position.x, desc.position.y, desc.position.z,
-                                    rotation.x, rotation.y, rotation.z, rotation.w,
-                                    desc.boxHalfExtents.x, desc.boxHalfExtents.y, desc.boxHalfExtents.z,
-                                    desc.sphereRadius,
-                                    desc.capsuleHalfHeight,
-                                    desc.capsuleRadius,
-                                    desc.offset.x, desc.offset.y, desc.offset.z,
-                                    rotationOffset.x, rotationOffset.y, rotationOffset.z, rotationOffset.w,
-                                    desc.friction,
-                                    desc.restitution,
-                                    desc.linearDamping,
-                                    desc.angularDamping,
-                                    desc.gravityFactor,
-                                    desc.mass,
-                                    desc.userData,
-                                    desc.ccdEnabled ? 1 : 0,
-                                    desc.isTrigger ? 1 : 0,
-                                    desc.allowSleeping ? 1 : 0)
+        let shapeCount = desc.shapes.count
+        var shapeTypes: [UInt32] = Array(repeating: 0, count: shapeCount)
+        var boxHalfExtents: [Float] = Array(repeating: 0, count: shapeCount * 3)
+        var sphereRadii: [Float] = Array(repeating: 0, count: shapeCount)
+        var capsuleHalfHeights: [Float] = Array(repeating: 0, count: shapeCount)
+        var capsuleRadii: [Float] = Array(repeating: 0, count: shapeCount)
+        var offsets: [Float] = Array(repeating: 0, count: shapeCount * 3)
+        var rotationOffsets: [Float] = Array(repeating: 0, count: shapeCount * 4)
+        for index in 0..<shapeCount {
+            let shape = desc.shapes[index]
+            shapeTypes[index] = shape.shapeType.rawValue
+            boxHalfExtents[index * 3 + 0] = shape.boxHalfExtents.x
+            boxHalfExtents[index * 3 + 1] = shape.boxHalfExtents.y
+            boxHalfExtents[index * 3 + 2] = shape.boxHalfExtents.z
+            sphereRadii[index] = shape.sphereRadius
+            capsuleHalfHeights[index] = shape.capsuleHalfHeight
+            capsuleRadii[index] = shape.capsuleRadius
+            offsets[index * 3 + 0] = shape.offset.x
+            offsets[index * 3 + 1] = shape.offset.y
+            offsets[index * 3 + 2] = shape.offset.z
+            let quat = PhysicsWorld.sanitizedQuaternion(shape.rotationOffset)
+            rotationOffsets[index * 4 + 0] = quat.x
+            rotationOffsets[index * 4 + 1] = quat.y
+            rotationOffsets[index * 4 + 2] = quat.z
+            rotationOffsets[index * 4 + 3] = quat.w
+        }
+
+        let bodyId = shapeTypes.withUnsafeBufferPointer { shapeTypesPtr in
+            boxHalfExtents.withUnsafeBufferPointer { boxHalfExtentsPtr in
+                sphereRadii.withUnsafeBufferPointer { sphereRadiiPtr in
+                    capsuleHalfHeights.withUnsafeBufferPointer { capsuleHalfHeightsPtr in
+                        capsuleRadii.withUnsafeBufferPointer { capsuleRadiiPtr in
+                            offsets.withUnsafeBufferPointer { offsetsPtr in
+                                rotationOffsets.withUnsafeBufferPointer { rotationOffsetsPtr in
+                                    MCEPhysicsCreateBodyMulti(handle,
+                                                              UInt32(shapeCount),
+                                                              shapeTypesPtr.baseAddress,
+                                                              boxHalfExtentsPtr.baseAddress,
+                                                              sphereRadiiPtr.baseAddress,
+                                                              capsuleHalfHeightsPtr.baseAddress,
+                                                              capsuleRadiiPtr.baseAddress,
+                                                              offsetsPtr.baseAddress,
+                                                              rotationOffsetsPtr.baseAddress,
+                                                              desc.motionType.rawValue,
+                                                              desc.position.x, desc.position.y, desc.position.z,
+                                                              rotation.x, rotation.y, rotation.z, rotation.w,
+                                                              desc.friction,
+                                                              desc.restitution,
+                                                              desc.linearDamping,
+                                                              desc.angularDamping,
+                                                              desc.gravityFactor,
+                                                              desc.mass,
+                                                              desc.userData,
+                                                              desc.ccdEnabled ? 1 : 0,
+                                                              desc.isTrigger ? 1 : 0,
+                                                              desc.allowSleeping ? 1 : 0,
+                                                              UInt32(max(0, min(Int(desc.collisionLayer), PhysicsSettings.maxCollisionLayers - 1))))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if bodyId != 0, desc.userData != 0 {
             bodyUserData[bodyId] = desc.userData
+        }
+        if bodyId != 0 {
+            bodyCollisionLayer[bodyId] = desc.collisionLayer
+            bodyIsTrigger[bodyId] = desc.isTrigger
         }
         return bodyId
     }
@@ -281,9 +468,11 @@ public final class PhysicsWorld {
         guard let handle else { return }
         MCEPhysicsDestroyBody(handle, bodyId)
         bodyUserData.removeValue(forKey: bodyId)
+        bodyCollisionLayer.removeValue(forKey: bodyId)
+        bodyIsTrigger.removeValue(forKey: bodyId)
     }
 
-    func setBodyTransform(bodyId: UInt64, position: SIMD3<Float>, rotation: SIMD4<Float>) {
+    func setBodyTransform(bodyId: UInt64, position: SIMD3<Float>, rotation: SIMD4<Float>, activate: Bool = true) {
         guard let handle else { return }
 #if DEBUG
         // Rotation quaternion ordering is (x, y, z, w) when sent over the C bridge.
@@ -291,7 +480,8 @@ public final class PhysicsWorld {
         let sanitized = PhysicsWorld.sanitizedQuaternion(rotation)
         MCEPhysicsSetBodyTransform(handle, bodyId,
                                    position.x, position.y, position.z,
-                                   sanitized.x, sanitized.y, sanitized.z, sanitized.w)
+                                   sanitized.x, sanitized.y, sanitized.z, sanitized.w,
+                                   activate ? 1 : 0)
     }
 
     func getBodyTransform(bodyId: UInt64) -> (position: SIMD3<Float>, rotation: SIMD4<Float>)? {
@@ -315,6 +505,31 @@ public final class PhysicsWorld {
     func setBodyMotionType(bodyId: UInt64, motionType: RigidbodyMotionType) {
         guard let handle else { return }
         MCEPhysicsSetBodyMotionType(handle, bodyId, motionType.rawValue)
+    }
+
+    func setBodyVelocity(bodyId: UInt64, linear: SIMD3<Float>, angular: SIMD3<Float>) {
+        guard let handle else { return }
+        MCEPhysicsSetBodyLinearAndAngularVelocity(handle, bodyId, linear.x, linear.y, linear.z, angular.x, angular.y, angular.z)
+    }
+
+    func getBodyVelocity(bodyId: UInt64) -> (linear: SIMD3<Float>, angular: SIMD3<Float>)? {
+        guard let handle else { return nil }
+        var linear = SIMD3<Float>(0, 0, 0)
+        var angular = SIMD3<Float>(0, 0, 0)
+        let success = withUnsafeMutableBytes(of: &linear) { linearBytes in
+            withUnsafeMutableBytes(of: &angular) { angularBytes in
+                let linearPtr = linearBytes.bindMemory(to: Float.self).baseAddress
+                let angularPtr = angularBytes.bindMemory(to: Float.self).baseAddress
+                return MCEPhysicsGetBodyLinearAndAngularVelocity(handle, bodyId, linearPtr, angularPtr) != 0
+            }
+        }
+        guard success else { return nil }
+        return (linear, angular)
+    }
+
+    func setBodyActive(bodyId: UInt64, isActive: Bool) {
+        guard let handle else { return }
+        MCEPhysicsSetBodyActivation(handle, bodyId, isActive ? 1 : 0)
     }
 
     func lastContacts() -> [PhysicsContact] {
@@ -378,6 +593,52 @@ public final class PhysicsWorld {
                                  distance: distance,
                                  bodyId: bodyId,
                                  entityId: entityId)
+    }
+
+    func raycast(origin: SIMD3<Float>,
+                 direction: SIMD3<Float>,
+                 maxDistance: Float,
+                 layerMask: LayerMask,
+                 includeTriggers: Bool) -> PhysicsRaycastHit? {
+        let directionLength = simd_length(direction)
+        guard directionLength > 1e-6 else { return nil }
+        let normalizedDirection = direction / directionLength
+        let requestedDistance = max(0.0, maxDistance)
+        guard requestedDistance > 0 else { return nil }
+
+        var currentOrigin = origin
+        var traveledDistance: Float = 0.0
+        var remainingDistance = requestedDistance
+        let maxIterations = 64
+        let epsilonStep: Float = 0.002
+
+        for _ in 0..<maxIterations {
+            guard let candidate = raycastClosest(origin: currentOrigin,
+                                                 direction: normalizedDirection,
+                                                 maxDistance: remainingDistance) else {
+                return nil
+            }
+
+            let layer = collisionLayerForBody(candidate.bodyId)
+            let layerPasses = layerMask.contains(layerIndex: layer)
+            let triggerPasses = includeTriggers || !isTriggerBody(candidate.bodyId)
+            let absoluteDistance = traveledDistance + candidate.distance
+
+            if layerPasses && triggerPasses {
+                var accepted = candidate
+                accepted.distance = absoluteDistance
+                return accepted
+            }
+
+            let advance = max(candidate.distance + epsilonStep, epsilonStep)
+            traveledDistance += advance
+            if traveledDistance >= requestedDistance {
+                return nil
+            }
+            remainingDistance = requestedDistance - traveledDistance
+            currentOrigin = origin + normalizedDirection * traveledDistance
+        }
+        return nil
     }
 
     func sphereCastClosest(origin: SIMD3<Float>, direction: SIMD3<Float>, radius: Float, maxDistance: Float) -> PhysicsRaycastHit? {
@@ -476,6 +737,56 @@ public final class PhysicsWorld {
         return entityForUserData[userData]
     }
 
+    func collisionLayerForBody(_ bodyId: UInt64) -> Int32 {
+        bodyCollisionLayer[bodyId] ?? 0
+    }
+
+    func isTriggerBody(_ bodyId: UInt64) -> Bool {
+        bodyIsTrigger[bodyId] ?? false
+    }
+
+    private static func createWorldHandle(settings: PhysicsSettings) -> UnsafeMutableRawPointer? {
+        let normalized = PhysicsSettings(
+            isEnabled: settings.isEnabled,
+            gravity: settings.gravity,
+            solverIterations: settings.solverIterations,
+            qualityPreset: settings.qualityPreset,
+            fixedDeltaTime: settings.fixedDeltaTime,
+            maxSubsteps: settings.maxSubsteps,
+            defaultFriction: settings.defaultFriction,
+            defaultRestitution: settings.defaultRestitution,
+            defaultLinearDamping: settings.defaultLinearDamping,
+            defaultAngularDamping: settings.defaultAngularDamping,
+            ccdEnabled: settings.ccdEnabled,
+            resolveInitialOverlap: settings.resolveInitialOverlap,
+            deterministic: settings.deterministic,
+            debugDrawEnabled: settings.debugDrawEnabled,
+            debugDrawInPlay: settings.debugDrawInPlay,
+            showColliders: settings.showColliders,
+            showCOMAxes: settings.showCOMAxes,
+            showContacts: settings.showContacts,
+            showSleeping: settings.showSleeping,
+            showOverlaps: settings.showOverlaps,
+            collisionLayerNames: settings.collisionLayerNames,
+            collisionMatrix: settings.collisionMatrix,
+            maxBodies: settings.maxBodies,
+            maxBodyPairs: settings.maxBodyPairs,
+            maxContactConstraints: settings.maxContactConstraints
+        )
+        var matrix = normalized.collisionMatrix
+        return matrix.withUnsafeBufferPointer { matrixPtr in
+            MCEPhysicsCreateWorld(normalized.gravity.x,
+                                  normalized.gravity.y,
+                                  normalized.gravity.z,
+                                  normalized.maxBodies,
+                                  normalized.maxBodyPairs,
+                                  normalized.maxContactConstraints,
+                                  normalized.deterministic ? 1 : 0,
+                                  UInt32(PhysicsSettings.maxCollisionLayers),
+                                  matrixPtr.baseAddress)
+        }
+    }
+
     private static func sanitizedQuaternion(_ quaternion: SIMD4<Float>) -> SIMD4<Float> {
         let length = simd_length(quaternion)
 #if DEBUG
@@ -491,17 +802,43 @@ public final class PhysicsWorld {
     }
 }
 
-public struct PhysicsBodyCreation {
+public struct PhysicsShapeCreation {
     public var shapeType: ColliderShapeType
-    public var motionType: RigidbodyMotionType
-    public var position: SIMD3<Float>
-    public var rotation: SIMD4<Float>
     public var boxHalfExtents: SIMD3<Float>
     public var sphereRadius: Float
     public var capsuleHalfHeight: Float
     public var capsuleRadius: Float
     public var offset: SIMD3<Float>
     public var rotationOffset: SIMD4<Float>
+    public var collisionLayerOverride: Int32?
+    public var physicsMaterial: AssetHandle?
+
+    public init(shapeType: ColliderShapeType,
+                boxHalfExtents: SIMD3<Float> = SIMD3<Float>(repeating: 0.5),
+                sphereRadius: Float = 0.5,
+                capsuleHalfHeight: Float = 0.5,
+                capsuleRadius: Float = 0.5,
+                offset: SIMD3<Float> = .zero,
+                rotationOffset: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 1),
+                collisionLayerOverride: Int32? = nil,
+                physicsMaterial: AssetHandle? = nil) {
+        self.shapeType = shapeType
+        self.boxHalfExtents = boxHalfExtents
+        self.sphereRadius = sphereRadius
+        self.capsuleHalfHeight = capsuleHalfHeight
+        self.capsuleRadius = capsuleRadius
+        self.offset = offset
+        self.rotationOffset = rotationOffset
+        self.collisionLayerOverride = collisionLayerOverride
+        self.physicsMaterial = physicsMaterial
+    }
+}
+
+public struct PhysicsBodyCreation {
+    public var motionType: RigidbodyMotionType
+    public var position: SIMD3<Float>
+    public var rotation: SIMD4<Float>
+    public var shapes: [PhysicsShapeCreation]
     public var friction: Float
     public var restitution: Float
     public var linearDamping: Float
@@ -512,17 +849,12 @@ public struct PhysicsBodyCreation {
     public var ccdEnabled: Bool
     public var isTrigger: Bool
     public var allowSleeping: Bool
+    public var collisionLayer: Int32
 
-    public init(shapeType: ColliderShapeType,
-                motionType: RigidbodyMotionType,
+    public init(motionType: RigidbodyMotionType,
                 position: SIMD3<Float>,
                 rotation: SIMD4<Float>,
-                boxHalfExtents: SIMD3<Float> = SIMD3<Float>(repeating: 0.5),
-                sphereRadius: Float = 0.5,
-                capsuleHalfHeight: Float = 0.5,
-                capsuleRadius: Float = 0.5,
-                offset: SIMD3<Float> = .zero,
-                rotationOffset: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 1),
+                shapes: [PhysicsShapeCreation],
                 friction: Float = 0.6,
                 restitution: Float = 0.0,
                 linearDamping: Float = 0.02,
@@ -532,17 +864,12 @@ public struct PhysicsBodyCreation {
                 userData: UInt64 = 0,
                 ccdEnabled: Bool = false,
                 isTrigger: Bool = false,
-                allowSleeping: Bool = true) {
-        self.shapeType = shapeType
+                allowSleeping: Bool = true,
+                collisionLayer: Int32 = 0) {
         self.motionType = motionType
         self.position = position
         self.rotation = rotation
-        self.boxHalfExtents = boxHalfExtents
-        self.sphereRadius = sphereRadius
-        self.capsuleHalfHeight = capsuleHalfHeight
-        self.capsuleRadius = capsuleRadius
-        self.offset = offset
-        self.rotationOffset = rotationOffset
+        self.shapes = shapes
         self.friction = friction
         self.restitution = restitution
         self.linearDamping = linearDamping
@@ -553,6 +880,7 @@ public struct PhysicsBodyCreation {
         self.ccdEnabled = ccdEnabled
         self.isTrigger = isTrigger
         self.allowSleeping = allowSleeping
+        self.collisionLayer = collisionLayer
     }
 }
 

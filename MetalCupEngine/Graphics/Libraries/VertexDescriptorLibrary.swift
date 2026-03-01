@@ -79,6 +79,9 @@ struct DebugLineVertexDescriptor: VertexDescriptor {
         vertexDescriptor.attributes[1].format = .float4
         vertexDescriptor.attributes[1].bufferIndex = 0
         vertexDescriptor.attributes[1].offset = MemoryLayout<DebugLineVertex>.offset(of: \DebugLineVertex.color) ?? 0
+        vertexDescriptor.attributes[2].format = .float2
+        vertexDescriptor.attributes[2].bufferIndex = 0
+        vertexDescriptor.attributes[2].offset = MemoryLayout<DebugLineVertex>.offset(of: \DebugLineVertex.uv) ?? 0
         vertexDescriptor.layouts[0].stride = DebugLineVertex.stride
         vertexDescriptor.layouts[0].stepRate = 1
         vertexDescriptor.layouts[0].stepFunction = .perVertex

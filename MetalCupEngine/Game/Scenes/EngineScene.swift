@@ -119,12 +119,33 @@ public class EngineScene {
         renderPreview(encoder: encoder, cameraEntity: cameraEntity, viewportSize: viewportSize, frameContext: frameContext)
     }
 
-    public func raycast(origin: SIMD3<Float>, direction: SIMD3<Float>, mask: LayerMask = .all) -> Entity? {
+    public func raycast(origin: SIMD3<Float>,
+                        direction: SIMD3<Float>,
+                        mask: LayerMask = .all,
+                        includeTriggers: Bool = true) -> Entity? {
         guard let physicsSystem else { return nil }
-        guard let hit = physicsSystem.raycastClosest(origin: origin, direction: direction, maxDistance: 1000.0),
+        guard let hit = physicsSystem.raycast(origin: origin,
+                                              direction: direction,
+                                              maxDistance: 1000.0,
+                                              layerMask: mask,
+                                              includeTriggers: includeTriggers),
               let entityId = hit.entityId,
               let entity = ecs.entity(with: entityId) else { return nil }
-        return raycast(hitEntity: entity, mask: mask)
+        return entity
+    }
+
+    public func raycastForEditorPicking(origin: SIMD3<Float>,
+                                        direction: SIMD3<Float>,
+                                        mask: LayerMask = .all) -> Entity? {
+        raycast(origin: origin, direction: direction, mask: mask, includeTriggers: false)
+    }
+
+    public func physicsTriggerEvents() -> [PhysicsOverlapEvent] {
+        physicsSystem?.recentOverlapEvents() ?? []
+    }
+
+    public func physicsCollisionEvents() -> [PhysicsCollisionEvent] {
+        physicsSystem?.recentCollisionEvents() ?? []
     }
 
     public func raycast(hitEntity: Entity?, mask: LayerMask = .all) -> Entity? {
@@ -158,6 +179,8 @@ public class EngineScene {
         guard let system = PhysicsSystem(settings: settings) else { return }
         system.buildBodies(scene: self)
         physicsSystem = system
+        system.syncSettingsIfNeeded(scene: self)
+        system.pullTransformsFromPhysics(scene: self)
     }
 
     public func stopPhysics() {
@@ -172,7 +195,8 @@ public class EngineScene {
     }
 
     public func toDocument(rendererSettingsOverride: RendererSettingsDTO? = nil,
-                           physicsSettingsOverride: PhysicsSettingsDTO? = nil) -> SceneDocument {
+                           physicsSettingsOverride: PhysicsSettingsDTO? = nil,
+                           includeEditorEntities: Bool = true) -> SceneDocument {
         func overrideSet(for entity: Entity) -> Set<PrefabOverrideType> {
             return ecs.get(PrefabOverrideComponent.self, for: entity)?.overridden ?? []
         }
@@ -191,12 +215,21 @@ public class EngineScene {
             }
         }
 
-        let entities = ecs.allEntities().map { entity -> EntityDocument in
+        func shouldSerializeEntity(_ entity: Entity) -> Bool {
+            guard !includeEditorEntities else { return true }
+            if let camera = ecs.get(CameraComponent.self, for: entity), camera.isEditor {
+                return false
+            }
+            return true
+        }
+
+        let entities = ecs.allEntities().filter(shouldSerializeEntity).map { entity -> EntityDocument in
             let prefabLink = ecs.get(PrefabInstanceComponent.self, for: entity)
             let prefabOverrides = ecs.get(PrefabOverrideComponent.self, for: entity)
             let prefabOverridesDTO: PrefabOverrideComponentDTO? = prefabOverrides.map {
                 PrefabOverrideComponentDTO(overriddenComponents: $0.overridden.map { $0.rawValue })
             }
+            let parentId = ecs.getParent(entity)?.id
 
             if let prefabLink {
                 let components = ComponentsDocument(
@@ -253,17 +286,7 @@ public class EngineScene {
                         : nil,
                     collider: shouldSerializeOverride(.collider, for: entity)
                         ? ecs.get(ColliderComponent.self, for: entity).map { component in
-                            ColliderComponentDTO(
-                                enabled: component.isEnabled,
-                                shapeType: component.shapeType.rawValue,
-                                boxHalfExtents: Vector3DTO(component.boxHalfExtents),
-                                sphereRadius: component.sphereRadius,
-                                capsuleHalfHeight: component.capsuleHalfHeight,
-                                capsuleRadius: component.capsuleRadius,
-                                offset: Vector3DTO(component.offset),
-                                rotationOffset: Vector3DTO(component.rotationOffset),
-                                isTrigger: component.isTrigger
-                            )
+                            ColliderComponentDTO(component: component)
                         }
                         : nil,
                     light: shouldSerializeOverride(.light, for: entity)
@@ -329,7 +352,7 @@ public class EngineScene {
                     skyLightTag: shouldSerializeOverride(.skyLightTag, for: entity) && ecs.has(SkyLightTag.self, entity) ? TagComponentDTO() : nil,
                     skySunTag: shouldSerializeOverride(.skySunTag, for: entity) && ecs.has(SkySunTag.self, entity) ? TagComponentDTO() : nil
                 )
-                return EntityDocument(id: entity.id, components: components)
+                return EntityDocument(id: entity.id, parentId: parentId, components: components)
             }
 
             let components = ComponentsDocument(
@@ -373,17 +396,7 @@ public class EngineScene {
                     )
                 },
                 collider: ecs.get(ColliderComponent.self, for: entity).map { component in
-                    ColliderComponentDTO(
-                        enabled: component.isEnabled,
-                        shapeType: component.shapeType.rawValue,
-                        boxHalfExtents: Vector3DTO(component.boxHalfExtents),
-                        sphereRadius: component.sphereRadius,
-                        capsuleHalfHeight: component.capsuleHalfHeight,
-                        capsuleRadius: component.capsuleRadius,
-                        offset: Vector3DTO(component.offset),
-                        rotationOffset: Vector3DTO(component.rotationOffset),
-                        isTrigger: component.isTrigger
-                    )
+                    ColliderComponentDTO(component: component)
                 },
                 light: ecs.get(LightComponent.self, for: entity).map { component in
                     LightComponentDTO(
@@ -444,7 +457,7 @@ public class EngineScene {
                 skyLightTag: ecs.get(SkyLightTag.self, for: entity).map { _ in TagComponentDTO() },
                 skySunTag: ecs.get(SkySunTag.self, for: entity).map { _ in TagComponentDTO() }
             )
-            return EntityDocument(id: entity.id, components: components)
+            return EntityDocument(id: entity.id, parentId: parentId, components: components)
         }
         return SceneDocument(
             id: id,
@@ -458,9 +471,12 @@ public class EngineScene {
     public func apply(document: SceneDocument) {
         ecs.clear()
         name = document.name
+        let physicsDefaults = engineContext?.physicsSettings ?? PhysicsSettings()
         var prefabHandles = Set<AssetHandle>()
+        var entitiesById: [UUID: Entity] = [:]
         for entityDoc in document.entities {
             let entity = ecs.createEntity(id: entityDoc.id, name: entityDoc.components.name?.name)
+            entitiesById[entity.id] = entity
             if let transform = entityDoc.components.transform {
                 let component = TransformComponent(
                     position: transform.position.toSIMD(),
@@ -511,7 +527,7 @@ public class EngineScene {
                     ecs.add(MaterialComponent(materialHandle: materialComponent.materialHandle), to: entity)
                 }
                 if let rigidbody = entityDoc.components.rigidbody {
-                    ecs.add(rigidbody.toComponent(), to: entity)
+                    ecs.add(rigidbody.toComponent(defaults: physicsDefaults), to: entity)
                 }
                 if let collider = entityDoc.components.collider {
                     ecs.add(collider.toComponent(), to: entity)
@@ -615,7 +631,7 @@ public class EngineScene {
                 ecs.add(component, to: entity)
             }
             if let rigidbody = entityDoc.components.rigidbody {
-                ecs.add(rigidbody.toComponent(), to: entity)
+                ecs.add(rigidbody.toComponent(defaults: physicsDefaults), to: entity)
             }
             if let collider = entityDoc.components.collider {
                 ecs.add(collider.toComponent(), to: entity)
@@ -687,10 +703,20 @@ public class EngineScene {
                 ecs.add(SkySunTag(), to: entity)
             }
         }
+        // Rebuild hierarchy in stored order. Missing parent IDs are treated as roots.
+        for entityDoc in document.entities {
+            guard let entity = entitiesById[entityDoc.id] else { continue }
+            if let parentId = entityDoc.parentId, let parent = entitiesById[parentId] {
+                _ = ecs.setParent(entity, parent, keepWorldTransform: false)
+            } else {
+                _ = ecs.unparent(entity, keepWorldTransform: false)
+            }
+        }
         if !prefabHandles.isEmpty {
             prefabSystem?.applyPrefabs(handles: prefabHandles, to: self)
         }
         ensureCameraEntity()
+        _editorCameraController.reset()
     }
 
     @discardableResult
@@ -698,11 +724,13 @@ public class EngineScene {
         var created: [Entity] = []
         created.reserveCapacity(prefab.entities.count)
         let instanceId = UUID()
+        var entityByLocalId: [UUID: Entity] = [:]
 
         for entityDoc in prefab.entities {
             let entityName = entityDoc.components.name?.name ?? "Entity"
             let entity = ecs.createEntity(name: entityName)
             created.append(entity)
+            entityByLocalId[entityDoc.localId] = entity
 
             if let transform = entityDoc.components.transform {
                 let component = TransformComponent(
@@ -817,6 +845,16 @@ public class EngineScene {
             }
         }
 
+        for entityDoc in prefab.entities {
+            guard let entity = entityByLocalId[entityDoc.localId] else { continue }
+            if let parentLocalId = entityDoc.parentLocalId,
+               let parent = entityByLocalId[parentLocalId] {
+                _ = ecs.setParent(entity, parent, keepWorldTransform: false)
+            } else {
+                _ = ecs.unparent(entity, keepWorldTransform: false)
+            }
+        }
+
         ensureCameraEntity()
         return created
     }
@@ -834,13 +872,14 @@ public class EngineScene {
             _editorCameraController.update(transform: &active.transform, frame: frame)
             ecs.add(active.transform, to: active.entity)
         }
+        let worldTransform = ecs.worldTransform(for: active.entity)
         let viewportSize = frame.input.viewportSize
         let aspectRatio: Float = {
             let width = max(1.0, viewportSize.x)
             let height = max(1.0, viewportSize.y)
             return height == 0 ? 1.0 : width / height
         }()
-        applyCameraConstants(transform: active.transform, camera: active.camera, aspectRatio: aspectRatio)
+        applyCameraConstants(transform: worldTransform, camera: active.camera, aspectRatio: aspectRatio)
     }
 
     private func resolveActiveCamera(isPlaying: Bool) -> (entity: Entity, transform: TransformComponent, camera: CameraComponent, shouldUpdateEditorCamera: Bool)? {
@@ -888,10 +927,10 @@ public class EngineScene {
             let centerPosition: SIMD3<Float> = {
                 guard let centerId = orbit.centerEntityId,
                       let centerEntity = ecs.entity(with: centerId),
-                      let centerTransform = ecs.get(TransformComponent.self, for: centerEntity) else {
+                      ecs.get(TransformComponent.self, for: centerEntity) != nil else {
                     return .zero
                 }
-                return centerTransform.position
+                return ecs.worldTransform(for: centerEntity).position
             }()
 
             if var light = ecs.get(LightComponent.self, for: entity), light.type == .directional {
@@ -899,14 +938,15 @@ public class EngineScene {
                     return
                 }
                 if orbit.affectsDirection {
-                    let direction = SIMD3<Float>(
+                    let lightRayDirection = SIMD3<Float>(
                         cos(angle) * orbit.radius,
                         orbit.height,
                         sin(angle) * orbit.radius
                     )
-                    if simd_length_squared(direction) > 0 {
-                        light.direction = simd_normalize(direction)
-                        ecs.add(light, to: entity)
+                    if simd_length_squared(lightRayDirection) > 0,
+                       var transform {
+                        transform.rotation = TransformMath.rotationForDirectionalLight(direction: simd_normalize(lightRayDirection))
+                        ecs.add(transform, to: entity)
                     }
                 }
                 return
@@ -921,12 +961,12 @@ public class EngineScene {
             ecs.add(transform, to: entity)
 
             if orbit.affectsDirection,
-               var light = ecs.get(LightComponent.self, for: entity),
+               let light = ecs.get(LightComponent.self, for: entity),
                light.type == .spot {
                 let direction = centerPosition - transform.position
                 if simd_length_squared(direction) > 0 {
-                    light.direction = simd_normalize(direction)
-                    ecs.add(light, to: entity)
+                    transform.rotation = TransformMath.rotationForDirectionalLight(direction: simd_normalize(direction))
+                    ecs.add(transform, to: entity)
                 }
             }
         }
@@ -934,20 +974,21 @@ public class EngineScene {
 
     private func syncLights() {
         var lightData: [LightData] = []
-        ecs.viewLights { _, transform, light in
+        ecs.viewLights { entity, _, light in
             var data = light.data
+            let worldTransform = ecs.worldTransform(for: entity)
             switch light.type {
             case .point:
                 data.type = 0
+                data.direction = light.direction
             case .spot:
                 data.type = 1
+                data.direction = TransformMath.directionalLightDirection(from: worldTransform.rotation)
             case .directional:
                 data.type = 2
+                data.direction = TransformMath.directionalLightDirection(from: worldTransform.rotation)
             }
-            if let transform {
-                data.position = transform.position
-            }
-            data.direction = light.direction
+            data.position = worldTransform.position
             data.range = light.range
             data.innerConeCos = light.innerConeCos
             data.outerConeCos = light.outerConeCos

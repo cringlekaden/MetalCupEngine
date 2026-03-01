@@ -3,6 +3,7 @@
 /// Created by Kaden Cringle.
 
 import Foundation
+import simd
 
 public struct Entity: Hashable {
     public let id: UUID
@@ -32,6 +33,15 @@ public final class SceneECS {
     private var skyLightTags: [Entity: SkyLightTag] = [:]
     private var skySunTags: [Entity: SkySunTag] = [:]
 
+    private var parentByEntity: [Entity: Entity] = [:]
+    private var childrenByEntity: [Entity: [Entity]] = [:]
+    private var rootEntities: [Entity] = []
+    private var orderedEntitiesCache: [Entity] = []
+    private var orderedEntitiesDirty = true
+
+    private var worldMatrixCache: [Entity: matrix_float4x4] = [:]
+    private var dirtyTransforms: Set<Entity> = []
+
     public init() {}
 
     public func createEntity(name: String) -> Entity {
@@ -41,7 +51,9 @@ public final class SceneECS {
         nameComponents[entity] = NameComponent(name: name)
         transformComponents[entity] = TransformComponent()
         layerComponents[entity] = LayerComponent()
-
+        rootEntities.append(entity)
+        orderedEntitiesDirty = true
+        markTransformDirty(entity)
         return entity
     }
 
@@ -52,27 +64,20 @@ public final class SceneECS {
             nameComponents[entity] = NameComponent(name: name)
         }
         layerComponents[entity] = LayerComponent()
+        rootEntities.append(entity)
+        orderedEntitiesDirty = true
+        markTransformDirty(entity)
         return entity
     }
 
     public func destroyEntity(_ e: Entity) {
-        aliveEntities.remove(e)
-        nameComponents.removeValue(forKey: e)
-        transformComponents.removeValue(forKey: e)
-        layerComponents.removeValue(forKey: e)
-        rigidbodyComponents.removeValue(forKey: e)
-        colliderComponents.removeValue(forKey: e)
-        prefabInstanceComponents.removeValue(forKey: e)
-        prefabOverrideComponents.removeValue(forKey: e)
-        meshRendererComponents.removeValue(forKey: e)
-        materialComponents.removeValue(forKey: e)
-        cameraComponents.removeValue(forKey: e)
-        lightComponents.removeValue(forKey: e)
-        lightOrbitComponents.removeValue(forKey: e)
-        skyComponents.removeValue(forKey: e)
-        skyLightComponents.removeValue(forKey: e)
-        skyLightTags.removeValue(forKey: e)
-        skySunTags.removeValue(forKey: e)
+        guard aliveEntities.contains(e) else { return }
+        let descendants = gatherDescendants(of: e)
+        for descendant in descendants.reversed() {
+            destroySingleEntity(descendant)
+        }
+        destroySingleEntity(e)
+        orderedEntitiesDirty = true
     }
 
     public func clear() {
@@ -93,10 +98,28 @@ public final class SceneECS {
         skyLightComponents.removeAll()
         skyLightTags.removeAll()
         skySunTags.removeAll()
+        parentByEntity.removeAll()
+        childrenByEntity.removeAll()
+        rootEntities.removeAll()
+        orderedEntitiesCache.removeAll()
+        orderedEntitiesDirty = true
+        worldMatrixCache.removeAll()
+        dirtyTransforms.removeAll()
     }
 
     public func allEntities() -> [Entity] {
-        return Array(aliveEntities)
+        refreshEntityOrderIfNeeded()
+        return orderedEntitiesCache
+    }
+
+    public func rootLevelEntities() -> [Entity] {
+        return rootEntities.filter { aliveEntities.contains($0) }
+    }
+
+    public func forEachEntity(_ body: (Entity) -> Void) {
+        for entity in allEntities() {
+            body(entity)
+        }
     }
 
     public func add<T>(_ component: T, to entity: Entity) {
@@ -105,8 +128,17 @@ public final class SceneECS {
             nameComponents[entity] = value
         case let value as TransformComponent:
             transformComponents[entity] = value
+            markTransformDirty(entity)
         case let value as LayerComponent:
             layerComponents[entity] = value
+        case let value as ParentComponent:
+            if let parent = self.entity(with: value.parent) {
+                _ = setParent(entity, parent, keepWorldTransform: false)
+            } else {
+                _ = setParent(entity, nil, keepWorldTransform: false)
+            }
+        case let value as ChildrenComponent:
+            setChildrenOrder(from: value, for: entity)
         case let value as RigidbodyComponent:
             rigidbodyComponents[entity] = value
         case let value as ColliderComponent:
@@ -144,8 +176,15 @@ public final class SceneECS {
             nameComponents.removeValue(forKey: entity)
         case is TransformComponent.Type:
             transformComponents.removeValue(forKey: entity)
+            markTransformDirty(entity)
         case is LayerComponent.Type:
             layerComponents.removeValue(forKey: entity)
+        case is ParentComponent.Type:
+            _ = setParent(entity, nil, keepWorldTransform: false)
+        case is ChildrenComponent.Type:
+            for child in getChildren(entity) {
+                _ = setParent(child, nil, keepWorldTransform: false)
+            }
         case is RigidbodyComponent.Type:
             rigidbodyComponents.removeValue(forKey: entity)
         case is ColliderComponent.Type:
@@ -185,6 +224,11 @@ public final class SceneECS {
             return transformComponents[entity] as? T
         case is LayerComponent.Type:
             return layerComponents[entity] as? T
+        case is ParentComponent.Type:
+            return parentByEntity[entity].map { ParentComponent(parent: $0.id) } as? T
+        case is ChildrenComponent.Type:
+            let children = childrenByEntity[entity]?.map { $0.id } ?? []
+            return ChildrenComponent(children: children) as? T
         case is RigidbodyComponent.Type:
             return rigidbodyComponents[entity] as? T
         case is ColliderComponent.Type:
@@ -218,6 +262,131 @@ public final class SceneECS {
 
     public func has<T>(_ type: T.Type, _ entity: Entity) -> Bool {
         return get(type, for: entity) != nil
+    }
+
+    public func getParent(_ entity: Entity) -> Entity? {
+        return parentByEntity[entity]
+    }
+
+    public func getChildren(_ parent: Entity) -> [Entity] {
+        return (childrenByEntity[parent] ?? []).filter { aliveEntities.contains($0) }
+    }
+
+    public func isDescendant(_ candidate: Entity, of ancestor: Entity) -> Bool {
+        var current = getParent(candidate)
+        while let value = current {
+            if value == ancestor { return true }
+            current = getParent(value)
+        }
+        return false
+    }
+
+    @discardableResult
+    public func setParent(_ child: Entity, _ newParent: Entity?, keepWorldTransform: Bool = true) -> Bool {
+        guard aliveEntities.contains(child) else { return false }
+        if let newParent {
+            guard aliveEntities.contains(newParent), child != newParent else { return false }
+            if isDescendant(newParent, of: child) { return false }
+        }
+
+        let worldBefore = keepWorldTransform ? worldMatrix(for: child) : matrix_identity_float4x4
+        let oldParent = parentByEntity[child]
+        if oldParent == newParent {
+            return true
+        }
+
+        if let oldParent {
+            removeChild(child, from: oldParent)
+        } else {
+            rootEntities.removeAll { $0 == child }
+        }
+
+        if let newParent {
+            parentByEntity[child] = newParent
+            appendChild(child, to: newParent)
+        } else {
+            parentByEntity.removeValue(forKey: child)
+            rootEntities.append(child)
+        }
+
+        orderedEntitiesDirty = true
+        markTransformDirty(child)
+
+        if keepWorldTransform {
+            let parentWorld = newParent.map { worldMatrix(for: $0) } ?? matrix_identity_float4x4
+            let localMatrix = simd_inverse(parentWorld) * worldBefore
+            let decomposed = TransformMath.decomposeMatrix(localMatrix)
+            transformComponents[child] = TransformComponent(
+                position: decomposed.position,
+                rotation: decomposed.rotation,
+                scale: decomposed.scale
+            )
+            markTransformDirty(child)
+        }
+
+        return true
+    }
+
+    @discardableResult
+    public func unparent(_ child: Entity, keepWorldTransform: Bool = true) -> Bool {
+        return setParent(child, nil, keepWorldTransform: keepWorldTransform)
+    }
+
+    @discardableResult
+    public func reorderChild(parent: Entity?, child: Entity, newIndex: Int) -> Bool {
+        guard aliveEntities.contains(child) else { return false }
+        if let parent {
+            guard parentByEntity[child] == parent else { return false }
+            guard var children = childrenByEntity[parent] else { return false }
+            guard let currentIndex = children.firstIndex(of: child) else { return false }
+            let clamped = max(0, min(newIndex, max(0, children.count - 1)))
+            if currentIndex == clamped { return true }
+            children.remove(at: currentIndex)
+            children.insert(child, at: clamped)
+            childrenByEntity[parent] = children
+        } else {
+            guard parentByEntity[child] == nil else { return false }
+            guard let currentIndex = rootEntities.firstIndex(of: child) else { return false }
+            let clamped = max(0, min(newIndex, max(0, rootEntities.count - 1)))
+            if currentIndex == clamped { return true }
+            rootEntities.remove(at: currentIndex)
+            rootEntities.insert(child, at: clamped)
+        }
+        orderedEntitiesDirty = true
+        return true
+    }
+
+    public func worldMatrix(for entity: Entity) -> matrix_float4x4 {
+        if !dirtyTransforms.contains(entity), let cached = worldMatrixCache[entity] {
+            return cached
+        }
+
+        let localTransform = transformComponents[entity] ?? TransformComponent()
+        let localMatrix = TransformMath.makeMatrix(
+            position: localTransform.position,
+            rotation: localTransform.rotation,
+            scale: localTransform.scale
+        )
+
+        let resolvedWorldMatrix: matrix_float4x4
+        if let parent = parentByEntity[entity] {
+            resolvedWorldMatrix = worldMatrix(for: parent) * localMatrix
+        } else {
+            resolvedWorldMatrix = localMatrix
+        }
+
+        worldMatrixCache[entity] = resolvedWorldMatrix
+        dirtyTransforms.remove(entity)
+        return resolvedWorldMatrix
+    }
+
+    public func worldTransform(for entity: Entity) -> TransformComponent {
+        let decomposed = TransformMath.decomposeMatrix(worldMatrix(for: entity))
+        return TransformComponent(
+            position: decomposed.position,
+            rotation: decomposed.rotation,
+            scale: decomposed.scale
+        )
     }
 
     public func viewTransformMeshRenderer(_ body: (Entity, TransformComponent, MeshRendererComponent) -> Void) {
@@ -310,5 +479,114 @@ public final class SceneECS {
 
     public func entity(with id: UUID) -> Entity? {
         return aliveEntities.first { $0.id == id }
+    }
+
+    private func gatherDescendants(of entity: Entity) -> [Entity] {
+        var output: [Entity] = []
+        for child in childrenByEntity[entity] ?? [] {
+            output.append(child)
+            output.append(contentsOf: gatherDescendants(of: child))
+        }
+        return output
+    }
+
+    private func destroySingleEntity(_ e: Entity) {
+        if let parent = parentByEntity[e] {
+            removeChild(e, from: parent)
+            parentByEntity.removeValue(forKey: e)
+        } else {
+            rootEntities.removeAll { $0 == e }
+        }
+
+        if let children = childrenByEntity[e] {
+            for child in children {
+                parentByEntity.removeValue(forKey: child)
+                rootEntities.append(child)
+            }
+        }
+        childrenByEntity.removeValue(forKey: e)
+
+        aliveEntities.remove(e)
+        nameComponents.removeValue(forKey: e)
+        transformComponents.removeValue(forKey: e)
+        layerComponents.removeValue(forKey: e)
+        rigidbodyComponents.removeValue(forKey: e)
+        colliderComponents.removeValue(forKey: e)
+        prefabInstanceComponents.removeValue(forKey: e)
+        prefabOverrideComponents.removeValue(forKey: e)
+        meshRendererComponents.removeValue(forKey: e)
+        materialComponents.removeValue(forKey: e)
+        cameraComponents.removeValue(forKey: e)
+        lightComponents.removeValue(forKey: e)
+        lightOrbitComponents.removeValue(forKey: e)
+        skyComponents.removeValue(forKey: e)
+        skyLightComponents.removeValue(forKey: e)
+        skyLightTags.removeValue(forKey: e)
+        skySunTags.removeValue(forKey: e)
+        worldMatrixCache.removeValue(forKey: e)
+        dirtyTransforms.remove(e)
+    }
+
+    private func appendChild(_ child: Entity, to parent: Entity) {
+        var children = childrenByEntity[parent] ?? []
+        children.removeAll { $0 == child }
+        children.append(child)
+        childrenByEntity[parent] = children
+    }
+
+    private func removeChild(_ child: Entity, from parent: Entity) {
+        guard var children = childrenByEntity[parent] else { return }
+        children.removeAll { $0 == child }
+        childrenByEntity[parent] = children
+    }
+
+    private func refreshEntityOrderIfNeeded() {
+        guard orderedEntitiesDirty else { return }
+        var ordered: [Entity] = []
+        ordered.reserveCapacity(aliveEntities.count)
+        for root in rootEntities where aliveEntities.contains(root) {
+            appendSubtree(root, to: &ordered)
+        }
+        // Fallback for older/invalid data where an alive entity isn't rooted.
+        if ordered.count != aliveEntities.count {
+            for entity in aliveEntities where !ordered.contains(entity) {
+                ordered.append(entity)
+            }
+        }
+        orderedEntitiesCache = ordered
+        orderedEntitiesDirty = false
+    }
+
+    private func appendSubtree(_ entity: Entity, to list: inout [Entity]) {
+        guard aliveEntities.contains(entity) else { return }
+        list.append(entity)
+        for child in childrenByEntity[entity] ?? [] {
+            appendSubtree(child, to: &list)
+        }
+    }
+
+    private func markTransformDirty(_ entity: Entity) {
+        dirtyTransforms.insert(entity)
+        worldMatrixCache.removeValue(forKey: entity)
+        for child in childrenByEntity[entity] ?? [] {
+            markTransformDirty(child)
+        }
+    }
+
+    private func setChildrenOrder(from component: ChildrenComponent, for parent: Entity) {
+        guard aliveEntities.contains(parent) else { return }
+        var reordered: [Entity] = []
+        reordered.reserveCapacity(component.children.count)
+        for id in component.children {
+            guard let child = entity(with: id), parentByEntity[child] == parent else { continue }
+            reordered.append(child)
+        }
+        if let existing = childrenByEntity[parent] {
+            for child in existing where !reordered.contains(child) {
+                reordered.append(child)
+            }
+        }
+        childrenByEntity[parent] = reordered
+        orderedEntitiesDirty = true
     }
 }

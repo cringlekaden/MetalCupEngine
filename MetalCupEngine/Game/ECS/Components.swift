@@ -34,6 +34,22 @@ public struct TransformComponent {
     }
 }
 
+public struct ParentComponent {
+    public var parent: UUID
+
+    public init(parent: UUID) {
+        self.parent = parent
+    }
+}
+
+public struct ChildrenComponent {
+    public var children: [UUID]
+
+    public init(children: [UUID] = []) {
+        self.children = children
+    }
+}
+
 public enum RigidbodyMotionType: UInt32, Codable {
     case staticBody = 0
     case dynamic = 1
@@ -44,6 +60,44 @@ public enum ColliderShapeType: UInt32, Codable {
     case box = 0
     case sphere = 1
     case capsule = 2
+}
+
+public struct ColliderShape: Codable {
+    public var isEnabled: Bool
+    public var shapeType: ColliderShapeType
+    public var boxHalfExtents: SIMD3<Float>
+    public var sphereRadius: Float
+    public var capsuleHalfHeight: Float
+    public var capsuleRadius: Float
+    public var offset: SIMD3<Float>
+    public var rotationOffset: SIMD3<Float>
+    public var isTrigger: Bool
+    public var collisionLayerOverride: Int32?
+    public var physicsMaterial: AssetHandle?
+
+    public init(isEnabled: Bool = true,
+                shapeType: ColliderShapeType = .box,
+                boxHalfExtents: SIMD3<Float> = SIMD3<Float>(repeating: 0.5),
+                sphereRadius: Float = 0.5,
+                capsuleHalfHeight: Float = 0.5,
+                capsuleRadius: Float = 0.5,
+                offset: SIMD3<Float> = .zero,
+                rotationOffset: SIMD3<Float> = .zero,
+                isTrigger: Bool = false,
+                collisionLayerOverride: Int32? = nil,
+                physicsMaterial: AssetHandle? = nil) {
+        self.isEnabled = isEnabled
+        self.shapeType = shapeType
+        self.boxHalfExtents = boxHalfExtents
+        self.sphereRadius = sphereRadius
+        self.capsuleHalfHeight = capsuleHalfHeight
+        self.capsuleRadius = capsuleRadius
+        self.offset = offset
+        self.rotationOffset = rotationOffset
+        self.isTrigger = isTrigger
+        self.collisionLayerOverride = collisionLayerOverride
+        self.physicsMaterial = physicsMaterial
+    }
 }
 
 public struct RigidbodyComponent {
@@ -97,6 +151,9 @@ public struct ColliderComponent {
     public var offset: SIMD3<Float>
     public var rotationOffset: SIMD3<Float>
     public var isTrigger: Bool
+    public var collisionLayerOverride: Int32?
+    public var physicsMaterial: AssetHandle?
+    public var additionalShapes: [ColliderShape]
 
     public init(isEnabled: Bool = true,
                 shapeType: ColliderShapeType = .box,
@@ -106,7 +163,10 @@ public struct ColliderComponent {
                 capsuleRadius: Float = 0.5,
                 offset: SIMD3<Float> = .zero,
                 rotationOffset: SIMD3<Float> = .zero,
-                isTrigger: Bool = false) {
+                isTrigger: Bool = false,
+                collisionLayerOverride: Int32? = nil,
+                physicsMaterial: AssetHandle? = nil,
+                additionalShapes: [ColliderShape] = []) {
         self.isEnabled = isEnabled
         self.shapeType = shapeType
         self.boxHalfExtents = boxHalfExtents
@@ -116,6 +176,48 @@ public struct ColliderComponent {
         self.offset = offset
         self.rotationOffset = rotationOffset
         self.isTrigger = isTrigger
+        self.collisionLayerOverride = collisionLayerOverride
+        self.physicsMaterial = physicsMaterial
+        self.additionalShapes = additionalShapes
+    }
+
+    public func primaryShape() -> ColliderShape {
+        ColliderShape(
+            isEnabled: isEnabled,
+            shapeType: shapeType,
+            boxHalfExtents: boxHalfExtents,
+            sphereRadius: sphereRadius,
+            capsuleHalfHeight: capsuleHalfHeight,
+            capsuleRadius: capsuleRadius,
+            offset: offset,
+            rotationOffset: rotationOffset,
+            isTrigger: isTrigger,
+            collisionLayerOverride: collisionLayerOverride,
+            physicsMaterial: physicsMaterial
+        )
+    }
+
+    public func allShapes() -> [ColliderShape] {
+        var shapes: [ColliderShape] = [primaryShape()]
+        shapes.append(contentsOf: additionalShapes)
+        return shapes
+    }
+
+    public mutating func setShapes(_ shapes: [ColliderShape]) {
+        let resolved = shapes.isEmpty ? [ColliderShape()] : shapes
+        let primary = resolved[0]
+        isEnabled = primary.isEnabled
+        shapeType = primary.shapeType
+        boxHalfExtents = primary.boxHalfExtents
+        sphereRadius = primary.sphereRadius
+        capsuleHalfHeight = primary.capsuleHalfHeight
+        capsuleRadius = primary.capsuleRadius
+        offset = primary.offset
+        rotationOffset = primary.rotationOffset
+        isTrigger = primary.isTrigger
+        collisionLayerOverride = primary.collisionLayerOverride
+        physicsMaterial = primary.physicsMaterial
+        additionalShapes = Array(resolved.dropFirst())
     }
 }
 
@@ -129,6 +231,7 @@ public struct LayerComponent {
 
 public enum PrefabOverrideType: String, Codable, CaseIterable {
     case name
+    case hierarchy
     case layer
     case meshRenderer
     case material
@@ -261,6 +364,8 @@ public struct LightComponent {
     public var type: LightType
     public var data: LightData
     /// Direction the light rays travel (from the light toward the scene).
+    /// For directional lights, runtime derives this from TransformComponent.rotation.
+    /// This value is retained for backward compatibility/fallback serialization.
     public var direction: SIMD3<Float>
     public var range: Float
     public var innerConeCos: Float

@@ -24,6 +24,8 @@ public var zAxis:  SIMD3<Float> {
 public enum TransformMath {
     // Quaternion layout is (x, y, z, w) and Euler order is XYZ.
     public static let identityQuaternion = SIMD4<Float>(0, 0, 0, 1)
+    public static let localForward = SIMD3<Float>(0, 0, 1)
+    public static let localDirectionalLightRayAxis = SIMD3<Float>(0, 0, -1)
 
     public static func normalizedQuaternion(_ quat: SIMD4<Float>) -> SIMD4<Float> {
         let length = simd_length(quat)
@@ -105,6 +107,38 @@ public enum TransformMath {
             z = 0.0
         }
         return SIMD3<Float>(x, y, z)
+    }
+
+    // Directional light convention:
+    // - A directional light entity shines along its local -Forward axis (0, 0, -1).
+    // - Entity transform rotation is the source of truth for directional light direction.
+    public static func directionalLightDirection(from rotation: SIMD4<Float>) -> SIMD3<Float> {
+        let normalized = normalizedQuaternion(rotation)
+        let q = simd_quatf(real: normalized.w, imag: SIMD3<Float>(normalized.x, normalized.y, normalized.z))
+        return simd_normalize(q.act(localDirectionalLightRayAxis))
+    }
+
+    public static func rotationForDirectionalLight(direction: SIMD3<Float>) -> SIMD4<Float> {
+        let lenSq = simd_length_squared(direction)
+        guard lenSq > 1e-8 else { return identityQuaternion }
+        let from = localDirectionalLightRayAxis
+        let to = simd_normalize(direction)
+        let dotValue = simd_dot(from, to)
+        if dotValue > 0.9999 {
+            return identityQuaternion
+        }
+        if dotValue < -0.9999 {
+            var axis = simd_cross(from, yAxis)
+            if simd_length_squared(axis) < 1e-8 {
+                axis = simd_cross(from, xAxis)
+            }
+            let q = simd_quatf(angle: .pi, axis: simd_normalize(axis))
+            return normalizedQuaternion(SIMD4<Float>(q.imag.x, q.imag.y, q.imag.z, q.real))
+        }
+        let axis = simd_normalize(simd_cross(from, to))
+        let angle = acos(max(-1.0, min(1.0, dotValue)))
+        let q = simd_quatf(angle: angle, axis: axis)
+        return normalizedQuaternion(SIMD4<Float>(q.imag.x, q.imag.y, q.imag.z, q.real))
     }
 
 #if DEBUG

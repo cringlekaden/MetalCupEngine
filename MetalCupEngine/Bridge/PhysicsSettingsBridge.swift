@@ -97,7 +97,7 @@ public func MCEPhysicsGetMaxSubsteps(_ contextPtr: UnsafeRawPointer?) -> Int32 {
 public func MCEPhysicsSetMaxSubsteps(_ contextPtr: UnsafeRawPointer?, _ value: Int32) {
     guard let context = resolveEngineContext(contextPtr) else { return }
     var settings = context.physicsSettings
-    settings.maxSubsteps = max(1, min(Int(value), 4))
+    settings.maxSubsteps = max(1, min(Int(value), 16))
     context.physicsSettings = settings
 }
 
@@ -137,6 +137,58 @@ public func MCEPhysicsSetDefaultAngularDamping(_ contextPtr: UnsafeRawPointer?, 
     guard let context = resolveEngineContext(contextPtr) else { return }
     var settings = context.physicsSettings
     settings.defaultAngularDamping = max(0.0, value)
+    context.physicsSettings = settings
+}
+
+@_cdecl("MCEPhysicsGetDefaultLinearDamping")
+public func MCEPhysicsGetDefaultLinearDamping(_ contextPtr: UnsafeRawPointer?) -> Float {
+    resolveEngineContext(contextPtr)?.physicsSettings.defaultLinearDamping ?? 0.02
+}
+
+@_cdecl("MCEPhysicsSetDefaultLinearDamping")
+public func MCEPhysicsSetDefaultLinearDamping(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
+    guard let context = resolveEngineContext(contextPtr) else { return }
+    var settings = context.physicsSettings
+    settings.defaultLinearDamping = max(0.0, value)
+    context.physicsSettings = settings
+}
+
+@_cdecl("MCEPhysicsGetMaxBodies")
+public func MCEPhysicsGetMaxBodies(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    resolveEngineContext(contextPtr)?.physicsSettings.maxBodies ?? 8_192
+}
+
+@_cdecl("MCEPhysicsSetMaxBodies")
+public func MCEPhysicsSetMaxBodies(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    guard let context = resolveEngineContext(contextPtr) else { return }
+    var settings = context.physicsSettings
+    settings.maxBodies = PhysicsSettings.clampCapacity(value)
+    context.physicsSettings = settings
+}
+
+@_cdecl("MCEPhysicsGetMaxBodyPairs")
+public func MCEPhysicsGetMaxBodyPairs(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    resolveEngineContext(contextPtr)?.physicsSettings.maxBodyPairs ?? 16_384
+}
+
+@_cdecl("MCEPhysicsSetMaxBodyPairs")
+public func MCEPhysicsSetMaxBodyPairs(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    guard let context = resolveEngineContext(contextPtr) else { return }
+    var settings = context.physicsSettings
+    settings.maxBodyPairs = PhysicsSettings.clampCapacity(value)
+    context.physicsSettings = settings
+}
+
+@_cdecl("MCEPhysicsGetMaxContactConstraints")
+public func MCEPhysicsGetMaxContactConstraints(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    resolveEngineContext(contextPtr)?.physicsSettings.maxContactConstraints ?? 8_192
+}
+
+@_cdecl("MCEPhysicsSetMaxContactConstraints")
+public func MCEPhysicsSetMaxContactConstraints(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    guard let context = resolveEngineContext(contextPtr) else { return }
+    var settings = context.physicsSettings
+    settings.maxContactConstraints = PhysicsSettings.clampCapacity(value)
     context.physicsSettings = settings
 }
 

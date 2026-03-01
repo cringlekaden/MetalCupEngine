@@ -36,10 +36,12 @@ public struct SceneDocument: Codable {
 
 public struct EntityDocument: Codable {
     public var id: UUID
+    public var parentId: UUID?
     public var components: ComponentsDocument
 
-    public init(id: UUID, components: ComponentsDocument) {
+    public init(id: UUID, parentId: UUID? = nil, components: ComponentsDocument) {
         self.id = id
+        self.parentId = parentId
         self.components = components
     }
 }
@@ -298,10 +300,10 @@ public struct RigidbodyComponentDTO: Codable {
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         motionType = try container.decodeIfPresent(UInt32.self, forKey: .motionType) ?? RigidbodyMotionType.dynamic.rawValue
         mass = try container.decodeIfPresent(Float.self, forKey: .mass) ?? 1.0
-        friction = try container.decodeIfPresent(Float.self, forKey: .friction) ?? 0.5
-        restitution = try container.decodeIfPresent(Float.self, forKey: .restitution) ?? 0.0
-        linearDamping = try container.decodeIfPresent(Float.self, forKey: .linearDamping) ?? 0.0
-        angularDamping = try container.decodeIfPresent(Float.self, forKey: .angularDamping) ?? 0.05
+        friction = try container.decodeIfPresent(Float.self, forKey: .friction) ?? .nan
+        restitution = try container.decodeIfPresent(Float.self, forKey: .restitution) ?? .nan
+        linearDamping = try container.decodeIfPresent(Float.self, forKey: .linearDamping) ?? .nan
+        angularDamping = try container.decodeIfPresent(Float.self, forKey: .angularDamping) ?? .nan
         gravityFactor = try container.decodeIfPresent(Float.self, forKey: .gravityFactor) ?? 1.0
         allowSleeping = try container.decodeIfPresent(Bool.self, forKey: .allowSleeping) ?? true
         ccdEnabled = try container.decodeIfPresent(Bool.self, forKey: .ccdEnabled) ?? false
@@ -309,13 +311,21 @@ public struct RigidbodyComponentDTO: Codable {
     }
 
     public func toComponent() -> RigidbodyComponent {
+        toComponent(defaults: PhysicsSettings())
+    }
+
+    public func toComponent(defaults: PhysicsSettings) -> RigidbodyComponent {
+        let resolvedFriction = friction.isFinite ? friction : defaults.defaultFriction
+        let resolvedRestitution = restitution.isFinite ? restitution : defaults.defaultRestitution
+        let resolvedLinearDamping = linearDamping.isFinite ? linearDamping : defaults.defaultLinearDamping
+        let resolvedAngularDamping = angularDamping.isFinite ? angularDamping : defaults.defaultAngularDamping
         return RigidbodyComponent(isEnabled: enabled,
                                   motionType: RigidbodyMotionType(rawValue: motionType) ?? .dynamic,
                                   mass: mass,
-                                  friction: friction,
-                                  restitution: restitution,
-                                  linearDamping: linearDamping,
-                                  angularDamping: angularDamping,
+                                  friction: resolvedFriction,
+                                  restitution: resolvedRestitution,
+                                  linearDamping: resolvedLinearDamping,
+                                  angularDamping: resolvedAngularDamping,
                                   gravityFactor: gravityFactor,
                                   allowSleeping: allowSleeping,
                                   ccdEnabled: ccdEnabled,
@@ -334,6 +344,9 @@ public struct ColliderComponentDTO: Codable {
     public var offset: Vector3DTO
     public var rotationOffset: Vector3DTO
     public var isTrigger: Bool
+    public var collisionLayerOverride: Int32?
+    public var physicsMaterial: AssetHandle?
+    public var shapes: [ColliderShapeDTO]?
 
     public init(schemaVersion: Int = 1,
                 enabled: Bool,
@@ -344,7 +357,10 @@ public struct ColliderComponentDTO: Codable {
                 capsuleRadius: Float,
                 offset: Vector3DTO,
                 rotationOffset: Vector3DTO,
-                isTrigger: Bool) {
+                isTrigger: Bool,
+                collisionLayerOverride: Int32? = nil,
+                physicsMaterial: AssetHandle? = nil,
+                shapes: [ColliderShapeDTO]? = nil) {
         self.schemaVersion = schemaVersion
         self.enabled = enabled
         self.shapeType = shapeType
@@ -355,6 +371,9 @@ public struct ColliderComponentDTO: Codable {
         self.offset = offset
         self.rotationOffset = rotationOffset
         self.isTrigger = isTrigger
+        self.collisionLayerOverride = collisionLayerOverride
+        self.physicsMaterial = physicsMaterial
+        self.shapes = shapes
     }
 
     public init(from decoder: Decoder) throws {
@@ -369,9 +388,17 @@ public struct ColliderComponentDTO: Codable {
         offset = try container.decodeIfPresent(Vector3DTO.self, forKey: .offset) ?? Vector3DTO(.zero)
         rotationOffset = try container.decodeIfPresent(Vector3DTO.self, forKey: .rotationOffset) ?? Vector3DTO(.zero)
         isTrigger = try container.decodeIfPresent(Bool.self, forKey: .isTrigger) ?? false
+        collisionLayerOverride = try container.decodeIfPresent(Int32.self, forKey: .collisionLayerOverride)
+        physicsMaterial = try container.decodeIfPresent(AssetHandle.self, forKey: .physicsMaterial)
+        shapes = try container.decodeIfPresent([ColliderShapeDTO].self, forKey: .shapes)
     }
 
     public func toComponent() -> ColliderComponent {
+        if let shapes, !shapes.isEmpty {
+            var component = ColliderComponent()
+            component.setShapes(shapes.map { $0.toShape() })
+            return component
+        }
         return ColliderComponent(isEnabled: enabled,
                                  shapeType: ColliderShapeType(rawValue: shapeType) ?? .box,
                                  boxHalfExtents: boxHalfExtents.toSIMD(),
@@ -380,7 +407,85 @@ public struct ColliderComponentDTO: Codable {
                                  capsuleRadius: capsuleRadius,
                                  offset: offset.toSIMD(),
                                  rotationOffset: rotationOffset.toSIMD(),
-                                 isTrigger: isTrigger)
+                                 isTrigger: isTrigger,
+                                 collisionLayerOverride: collisionLayerOverride,
+                                 physicsMaterial: physicsMaterial)
+    }
+
+    public init(component: ColliderComponent) {
+        self.schemaVersion = 2
+        self.enabled = component.isEnabled
+        self.shapeType = component.shapeType.rawValue
+        self.boxHalfExtents = Vector3DTO(component.boxHalfExtents)
+        self.sphereRadius = component.sphereRadius
+        self.capsuleHalfHeight = component.capsuleHalfHeight
+        self.capsuleRadius = component.capsuleRadius
+        self.offset = Vector3DTO(component.offset)
+        self.rotationOffset = Vector3DTO(component.rotationOffset)
+        self.isTrigger = component.isTrigger
+        self.collisionLayerOverride = component.collisionLayerOverride
+        self.physicsMaterial = component.physicsMaterial
+        self.shapes = component.allShapes().map { ColliderShapeDTO(shape: $0) }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case enabled
+        case shapeType
+        case boxHalfExtents
+        case sphereRadius
+        case capsuleHalfHeight
+        case capsuleRadius
+        case offset
+        case rotationOffset
+        case isTrigger
+        case collisionLayerOverride
+        case physicsMaterial
+        case shapes
+    }
+}
+
+public struct ColliderShapeDTO: Codable {
+    public var enabled: Bool
+    public var shapeType: UInt32
+    public var boxHalfExtents: Vector3DTO
+    public var sphereRadius: Float
+    public var capsuleHalfHeight: Float
+    public var capsuleRadius: Float
+    public var offset: Vector3DTO
+    public var rotationOffset: Vector3DTO
+    public var isTrigger: Bool
+    public var collisionLayerOverride: Int32?
+    public var physicsMaterial: AssetHandle?
+
+    public init(shape: ColliderShape) {
+        enabled = shape.isEnabled
+        shapeType = shape.shapeType.rawValue
+        boxHalfExtents = Vector3DTO(shape.boxHalfExtents)
+        sphereRadius = shape.sphereRadius
+        capsuleHalfHeight = shape.capsuleHalfHeight
+        capsuleRadius = shape.capsuleRadius
+        offset = Vector3DTO(shape.offset)
+        rotationOffset = Vector3DTO(shape.rotationOffset)
+        isTrigger = shape.isTrigger
+        collisionLayerOverride = shape.collisionLayerOverride
+        physicsMaterial = shape.physicsMaterial
+    }
+
+    public func toShape() -> ColliderShape {
+        ColliderShape(
+            isEnabled: enabled,
+            shapeType: ColliderShapeType(rawValue: shapeType) ?? .box,
+            boxHalfExtents: boxHalfExtents.toSIMD(),
+            sphereRadius: sphereRadius,
+            capsuleHalfHeight: capsuleHalfHeight,
+            capsuleRadius: capsuleRadius,
+            offset: offset.toSIMD(),
+            rotationOffset: rotationOffset.toSIMD(),
+            isTrigger: isTrigger,
+            collisionLayerOverride: collisionLayerOverride,
+            physicsMaterial: physicsMaterial
+        )
     }
 }
 
@@ -781,6 +886,8 @@ public struct RendererSettingsDTO: Codable {
     public var bloomDirtIntensity: Float
     public var bloomEnabled: UInt32
     public var bloomMaxMips: UInt32
+    public var bloomQualityPreset: UInt32
+    public var bloomResolutionScale: UInt32
     public var blurPasses: UInt32
     public var tonemap: UInt32
     public var exposure: Float
@@ -821,6 +928,8 @@ public struct RendererSettingsDTO: Codable {
         self.bloomDirtIntensity = settings.bloomDirtIntensity
         self.bloomEnabled = settings.bloomEnabled
         self.bloomMaxMips = settings.bloomMaxMips
+        self.bloomQualityPreset = settings.bloomQualityPreset
+        self.bloomResolutionScale = settings.bloomResolutionScale
         self.blurPasses = settings.blurPasses
         self.tonemap = settings.tonemap
         self.exposure = settings.exposure
@@ -864,6 +973,8 @@ public struct RendererSettingsDTO: Codable {
         bloomDirtIntensity = try container.decodeIfPresent(Float.self, forKey: .bloomDirtIntensity) ?? defaults.bloomDirtIntensity
         bloomEnabled = try container.decodeIfPresent(UInt32.self, forKey: .bloomEnabled) ?? defaults.bloomEnabled
         bloomMaxMips = try container.decodeIfPresent(UInt32.self, forKey: .bloomMaxMips) ?? defaults.bloomMaxMips
+        bloomQualityPreset = try container.decodeIfPresent(UInt32.self, forKey: .bloomQualityPreset) ?? defaults.bloomQualityPreset
+        bloomResolutionScale = try container.decodeIfPresent(UInt32.self, forKey: .bloomResolutionScale) ?? defaults.bloomResolutionScale
         blurPasses = try container.decodeIfPresent(UInt32.self, forKey: .blurPasses) ?? defaults.blurPasses
         tonemap = try container.decodeIfPresent(UInt32.self, forKey: .tonemap) ?? defaults.tonemap
         exposure = try container.decodeIfPresent(Float.self, forKey: .exposure) ?? defaults.exposure
@@ -906,6 +1017,8 @@ public struct RendererSettingsDTO: Codable {
         try container.encode(bloomDirtIntensity, forKey: .bloomDirtIntensity)
         try container.encode(bloomEnabled, forKey: .bloomEnabled)
         try container.encode(bloomMaxMips, forKey: .bloomMaxMips)
+        try container.encode(bloomQualityPreset, forKey: .bloomQualityPreset)
+        try container.encode(bloomResolutionScale, forKey: .bloomResolutionScale)
         try container.encode(blurPasses, forKey: .blurPasses)
         try container.encode(tonemap, forKey: .tonemap)
         try container.encode(exposure, forKey: .exposure)
@@ -947,6 +1060,8 @@ public struct RendererSettingsDTO: Codable {
         case bloomDirtIntensity
         case bloomEnabled
         case bloomMaxMips
+        case bloomQualityPreset
+        case bloomResolutionScale
         case blurPasses
         case tonemap
         case exposure
@@ -988,6 +1103,8 @@ public struct RendererSettingsDTO: Codable {
         settings.bloomDirtIntensity = bloomDirtIntensity
         settings.bloomEnabled = bloomEnabled
         settings.bloomMaxMips = bloomMaxMips
+        settings.bloomQualityPreset = bloomQualityPreset
+        settings.bloomResolutionScale = bloomResolutionScale
         settings.blurPasses = blurPasses
         settings.tonemap = tonemap
         settings.exposure = exposure
@@ -1032,6 +1149,7 @@ public struct PhysicsSettingsDTO: Codable {
     public var maxSubsteps: Int32
     public var defaultFriction: Float
     public var defaultRestitution: Float
+    public var defaultLinearDamping: Float
     public var defaultAngularDamping: Float
     public var ccdEnabled: Bool
     public var resolveInitialOverlap: Bool
@@ -1043,6 +1161,11 @@ public struct PhysicsSettingsDTO: Codable {
     public var showContacts: Bool
     public var showSleeping: Bool = false
     public var showOverlaps: Bool = false
+    public var collisionLayerNames: [String] = PhysicsSettings.defaultCollisionLayerNames()
+    public var collisionMatrix: [UInt32] = PhysicsSettings.defaultCollisionMatrix()
+    public var maxBodies: UInt32 = 8_192
+    public var maxBodyPairs: UInt32 = 16_384
+    public var maxContactConstraints: UInt32 = 8_192
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -1054,6 +1177,7 @@ public struct PhysicsSettingsDTO: Codable {
         case maxSubsteps
         case defaultFriction
         case defaultRestitution
+        case defaultLinearDamping
         case defaultAngularDamping
         case ccdEnabled
         case resolveInitialOverlap
@@ -1065,6 +1189,11 @@ public struct PhysicsSettingsDTO: Codable {
         case showContacts
         case showSleeping
         case showOverlaps
+        case collisionLayerNames
+        case collisionMatrix
+        case maxBodies
+        case maxBodyPairs
+        case maxContactConstraints
     }
 
     public init(from decoder: Decoder) throws {
@@ -1078,6 +1207,7 @@ public struct PhysicsSettingsDTO: Codable {
         maxSubsteps = try container.decode(Int32.self, forKey: .maxSubsteps)
         defaultFriction = try container.decode(Float.self, forKey: .defaultFriction)
         defaultRestitution = try container.decode(Float.self, forKey: .defaultRestitution)
+        defaultLinearDamping = try container.decodeIfPresent(Float.self, forKey: .defaultLinearDamping) ?? 0.02
         defaultAngularDamping = try container.decode(Float.self, forKey: .defaultAngularDamping)
         ccdEnabled = try container.decode(Bool.self, forKey: .ccdEnabled)
         resolveInitialOverlap = try container.decode(Bool.self, forKey: .resolveInitialOverlap)
@@ -1089,6 +1219,11 @@ public struct PhysicsSettingsDTO: Codable {
         showContacts = try container.decode(Bool.self, forKey: .showContacts)
         showSleeping = try container.decodeIfPresent(Bool.self, forKey: .showSleeping) ?? false
         showOverlaps = try container.decodeIfPresent(Bool.self, forKey: .showOverlaps) ?? false
+        collisionLayerNames = try container.decodeIfPresent([String].self, forKey: .collisionLayerNames) ?? PhysicsSettings.defaultCollisionLayerNames()
+        collisionMatrix = try container.decodeIfPresent([UInt32].self, forKey: .collisionMatrix) ?? PhysicsSettings.defaultCollisionMatrix()
+        maxBodies = try container.decodeIfPresent(UInt32.self, forKey: .maxBodies) ?? 8_192
+        maxBodyPairs = try container.decodeIfPresent(UInt32.self, forKey: .maxBodyPairs) ?? 16_384
+        maxContactConstraints = try container.decodeIfPresent(UInt32.self, forKey: .maxContactConstraints) ?? 8_192
     }
 
     public init(schemaVersion: Int = 1, settings: PhysicsSettings) {
@@ -1101,6 +1236,7 @@ public struct PhysicsSettingsDTO: Codable {
         self.maxSubsteps = Int32(settings.maxSubsteps)
         self.defaultFriction = settings.defaultFriction
         self.defaultRestitution = settings.defaultRestitution
+        self.defaultLinearDamping = settings.defaultLinearDamping
         self.defaultAngularDamping = settings.defaultAngularDamping
         self.ccdEnabled = settings.ccdEnabled
         self.resolveInitialOverlap = settings.resolveInitialOverlap
@@ -1112,6 +1248,11 @@ public struct PhysicsSettingsDTO: Codable {
         self.showContacts = settings.showContacts
         self.showSleeping = settings.showSleeping
         self.showOverlaps = settings.showOverlaps
+        self.collisionLayerNames = settings.collisionLayerNames
+        self.collisionMatrix = settings.collisionMatrix
+        self.maxBodies = settings.maxBodies
+        self.maxBodyPairs = settings.maxBodyPairs
+        self.maxContactConstraints = settings.maxContactConstraints
     }
 
     public func makePhysicsSettings() -> PhysicsSettings {
@@ -1125,6 +1266,7 @@ public struct PhysicsSettingsDTO: Codable {
             maxSubsteps: Int(maxSubsteps),
             defaultFriction: defaultFriction,
             defaultRestitution: defaultRestitution,
+            defaultLinearDamping: defaultLinearDamping,
             defaultAngularDamping: defaultAngularDamping,
             ccdEnabled: ccdEnabled,
             resolveInitialOverlap: resolveInitialOverlap,
@@ -1135,7 +1277,12 @@ public struct PhysicsSettingsDTO: Codable {
             showCOMAxes: showCOMAxes,
             showContacts: showContacts,
             showSleeping: showSleeping,
-            showOverlaps: showOverlaps
+            showOverlaps: showOverlaps,
+            collisionLayerNames: collisionLayerNames,
+            collisionMatrix: collisionMatrix,
+            maxBodies: maxBodies,
+            maxBodyPairs: maxBodyPairs,
+            maxContactConstraints: maxContactConstraints
         )
     }
 }
@@ -1149,6 +1296,11 @@ public struct ShadowsSettingsDTO: Codable {
     public var depthBias: Float
     public var normalBias: Float
     public var pcfRadius: Float
+    public var pcfTapPreset: UInt32
+    public var pcfTapsCascade0: UInt32
+    public var pcfTapsCascade1: UInt32
+    public var pcfTapsCascade2: UInt32
+    public var pcfTapsCascade3: UInt32
     public var filterMode: UInt32
     public var maxShadowDistance: Float
     public var fadeOutDistance: Float
@@ -1169,6 +1321,11 @@ public struct ShadowsSettingsDTO: Codable {
         depthBias = settings.depthBias
         normalBias = settings.normalBias
         pcfRadius = settings.pcfRadius
+        pcfTapPreset = settings.pcfTapPreset
+        pcfTapsCascade0 = settings.pcfTapsCascade0
+        pcfTapsCascade1 = settings.pcfTapsCascade1
+        pcfTapsCascade2 = settings.pcfTapsCascade2
+        pcfTapsCascade3 = settings.pcfTapsCascade3
         filterMode = settings.filterMode
         maxShadowDistance = settings.maxShadowDistance
         fadeOutDistance = settings.fadeOutDistance
@@ -1192,6 +1349,11 @@ public struct ShadowsSettingsDTO: Codable {
         depthBias = try container.decodeIfPresent(Float.self, forKey: .depthBias) ?? defaults.depthBias
         normalBias = try container.decodeIfPresent(Float.self, forKey: .normalBias) ?? defaults.normalBias
         pcfRadius = try container.decodeIfPresent(Float.self, forKey: .pcfRadius) ?? defaults.pcfRadius
+        pcfTapPreset = try container.decodeIfPresent(UInt32.self, forKey: .pcfTapPreset) ?? defaults.pcfTapPreset
+        pcfTapsCascade0 = try container.decodeIfPresent(UInt32.self, forKey: .pcfTapsCascade0) ?? defaults.pcfTapsCascade0
+        pcfTapsCascade1 = try container.decodeIfPresent(UInt32.self, forKey: .pcfTapsCascade1) ?? defaults.pcfTapsCascade1
+        pcfTapsCascade2 = try container.decodeIfPresent(UInt32.self, forKey: .pcfTapsCascade2) ?? defaults.pcfTapsCascade2
+        pcfTapsCascade3 = try container.decodeIfPresent(UInt32.self, forKey: .pcfTapsCascade3) ?? defaults.pcfTapsCascade3
         filterMode = try container.decodeIfPresent(UInt32.self, forKey: .filterMode) ?? defaults.filterMode
         maxShadowDistance = try container.decodeIfPresent(Float.self, forKey: .maxShadowDistance) ?? defaults.maxShadowDistance
         fadeOutDistance = try container.decodeIfPresent(Float.self, forKey: .fadeOutDistance) ?? defaults.fadeOutDistance
@@ -1214,6 +1376,11 @@ public struct ShadowsSettingsDTO: Codable {
         settings.depthBias = depthBias
         settings.normalBias = normalBias
         settings.pcfRadius = pcfRadius
+        settings.pcfTapPreset = pcfTapPreset
+        settings.pcfTapsCascade0 = max(1, min(25, pcfTapsCascade0))
+        settings.pcfTapsCascade1 = max(1, min(25, pcfTapsCascade1))
+        settings.pcfTapsCascade2 = max(1, min(25, pcfTapsCascade2))
+        settings.pcfTapsCascade3 = max(1, min(25, pcfTapsCascade3))
         settings.filterMode = filterMode
         settings.maxShadowDistance = maxShadowDistance
         settings.fadeOutDistance = fadeOutDistance
@@ -1224,6 +1391,7 @@ public struct ShadowsSettingsDTO: Codable {
         settings.pcssBlockerSamples = pcssBlockerSamples
         settings.pcssPCFSamples = pcssPCFSamples
         settings.pcssNoiseEnabled = pcssNoiseEnabled
+        settings.refreshPCFPreset()
         return settings
     }
 
@@ -1236,6 +1404,11 @@ public struct ShadowsSettingsDTO: Codable {
         case depthBias
         case normalBias
         case pcfRadius
+        case pcfTapPreset
+        case pcfTapsCascade0
+        case pcfTapsCascade1
+        case pcfTapsCascade2
+        case pcfTapsCascade3
         case filterMode
         case maxShadowDistance
         case fadeOutDistance
@@ -1510,7 +1683,8 @@ public enum SceneSerializer {
         let physicsSettings = scene.engineContext?.physicsSettings ?? PhysicsSettings()
         let document = scene.toDocument(
             rendererSettingsOverride: RendererSettingsDTO(settings: rendererSettings),
-            physicsSettingsOverride: PhysicsSettingsDTO(settings: physicsSettings)
+            physicsSettingsOverride: PhysicsSettingsDTO(settings: physicsSettings),
+            includeEditorEntities: false
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

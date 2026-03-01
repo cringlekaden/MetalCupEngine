@@ -374,7 +374,7 @@ public final class RendererFrameContextStorage {
             return buffer
         }
 #if DEBUG
-        MC_ASSERT(ShadowConstants.stride == 416, "ShadowConstants stride mismatch. Keep Swift and Metal layouts in sync.")
+        MC_ASSERT(ShadowConstants.stride == 432, "ShadowConstants stride mismatch. Keep Swift and Metal layouts in sync.")
 #endif
         let requiredBytes = ShadowConstants.stride
         guard let buffer = device.makeBuffer(length: requiredBytes, options: [.storageModeShared]) else {

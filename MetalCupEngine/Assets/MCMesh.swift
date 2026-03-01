@@ -165,6 +165,11 @@ public class MCMesh {
     private var _simpleVertexBuffer: MTLBuffer! = nil
     private var _instanceCount: Int = 1
     private var _submeshes: [Submesh] = []
+    private var localBoundsCenter = SIMD3<Float>(repeating: 0)
+    private var localBoundsRadius: Float = 1_000.0
+
+    var boundsCenter: SIMD3<Float> { localBoundsCenter }
+    var boundsRadius: Float { localBoundsRadius }
 
     init(device: MTLDevice, graphics: Graphics, assetManager: AssetManager? = nil) {
         self.device = device
@@ -186,8 +191,10 @@ public class MCMesh {
     private func createBuffer() {
         if(_vertices.count > 0){
             _vertexBuffer = device.makeBuffer(bytes: _vertices, length: Vertex.stride(_vertices.count), options: [])
+            updateBoundsFromVertices()
         } else if(_simpleVertices.count > 0) {
             _simpleVertexBuffer = device.makeBuffer(bytes: _simpleVertices, length: SimpleVertex.stride(_simpleVertices.count), options: [])
+            updateBoundsFromSimpleVertices()
         }
     }
     
@@ -274,6 +281,7 @@ public class MCMesh {
         }
         self._vertexBuffer = mtkMesh.vertexBuffers[0].buffer
         self._vertexCount = mtkMesh.vertexCount
+        updateBoundsFromModelMesh(mdlMesh)
         for i in 0..<mtkMesh.submeshes.count {
             let mtkSubmesh = mtkMesh.submeshes[i]
             if let mdlSubmesh = (mdlMesh.submeshes?[i] as? MDLSubmesh) {
@@ -304,6 +312,59 @@ public class MCMesh {
     private func hasVertexAttribute(_ mesh: MDLMesh, name: String) -> Bool {
         guard let data = mesh.vertexAttributeData(forAttributeNamed: name) else { return false }
         return data.stride > 0
+    }
+
+    private func updateBoundsFromVertices() {
+        guard !_vertices.isEmpty else { return }
+        var center = SIMD3<Float>(repeating: 0)
+        for vertex in _vertices {
+            center += vertex.position
+        }
+        center /= Float(_vertices.count)
+        var maxDistanceSquared: Float = 0
+        for vertex in _vertices {
+            maxDistanceSquared = max(maxDistanceSquared, simd_length_squared(vertex.position - center))
+        }
+        localBoundsCenter = center
+        localBoundsRadius = max(0.001, sqrt(maxDistanceSquared))
+    }
+
+    private func updateBoundsFromSimpleVertices() {
+        guard !_simpleVertices.isEmpty else { return }
+        var center = SIMD3<Float>(repeating: 0)
+        for vertex in _simpleVertices {
+            center += vertex.position
+        }
+        center /= Float(_simpleVertices.count)
+        var maxDistanceSquared: Float = 0
+        for vertex in _simpleVertices {
+            maxDistanceSquared = max(maxDistanceSquared, simd_length_squared(vertex.position - center))
+        }
+        localBoundsCenter = center
+        localBoundsRadius = max(0.001, sqrt(maxDistanceSquared))
+    }
+
+    private func updateBoundsFromModelMesh(_ mesh: MDLMesh) {
+        guard let positions = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributePosition),
+              positions.stride > 0 else { return }
+        let stride = positions.stride
+        let count = mesh.vertexCount
+        guard count > 0 else { return }
+        let base = positions.dataStart
+        var center = SIMD3<Float>(repeating: 0)
+        for index in 0..<count {
+            let ptr = base.advanced(by: index * stride).assumingMemoryBound(to: Float.self)
+            center += SIMD3<Float>(ptr[0], ptr[1], ptr[2])
+        }
+        center /= Float(count)
+        var maxDistanceSquared: Float = 0
+        for index in 0..<count {
+            let ptr = base.advanced(by: index * stride).assumingMemoryBound(to: Float.self)
+            let position = SIMD3<Float>(ptr[0], ptr[1], ptr[2])
+            maxDistanceSquared = max(maxDistanceSquared, simd_length_squared(position - center))
+        }
+        localBoundsCenter = center
+        localBoundsRadius = max(0.001, sqrt(maxDistanceSquared))
     }
 
 #if DEBUG

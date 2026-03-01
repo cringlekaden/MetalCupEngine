@@ -80,6 +80,32 @@ public func MCERendererSetBloomIntensity(_ contextPtr: UnsafeRawPointer?, _ valu
     }
 }
 
+@_cdecl("MCERendererGetBloomQualityPreset")
+public func MCERendererGetBloomQualityPreset(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).bloomQualityPreset
+}
+
+@_cdecl("MCERendererSetBloomQualityPreset")
+public func MCERendererSetBloomQualityPreset(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.bloomQualityPreset = min(value, BloomQualityPreset.custom.rawValue)
+    }
+}
+
+@_cdecl("MCERendererGetBloomResolutionScale")
+public func MCERendererGetBloomResolutionScale(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).bloomResolutionScale
+}
+
+@_cdecl("MCERendererSetBloomResolutionScale")
+public func MCERendererSetBloomResolutionScale(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.bloomResolutionScale = value <= BloomResolutionScale.half.rawValue
+            ? BloomResolutionScale.half.rawValue
+            : BloomResolutionScale.quarter.rawValue
+    }
+}
+
 @_cdecl("MCERendererGetBloomUpsampleScale")
 public func MCERendererGetBloomUpsampleScale(_ contextPtr: UnsafeRawPointer?) -> Float {
     getSettings(contextPtr).bloomUpsampleScale
@@ -202,13 +228,15 @@ public func MCERendererSetIBLQualityPreset(_ contextPtr: UnsafeRawPointer?, _ va
 
 @_cdecl("MCERendererGetHalfResBloom")
 public func MCERendererGetHalfResBloom(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
-    (getSettings(contextPtr).perfFlags & RendererPerfFlags.halfResBloom.rawValue) != 0 ? 1 : 0
+    getSettings(contextPtr).bloomResolutionScale <= BloomResolutionScale.half.rawValue ? 1 : 0
 }
 
 @_cdecl("MCERendererSetHalfResBloom")
 public func MCERendererSetHalfResBloom(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
     updateSettings(contextPtr) { settings in
-        settings.setPerfFlag(.halfResBloom, enabled: value != 0)
+        settings.bloomResolutionScale = value != 0
+            ? BloomResolutionScale.half.rawValue
+            : BloomResolutionScale.quarter.rawValue
     }
 }
 
@@ -607,6 +635,76 @@ public func MCERendererGetShadowPCFRadius(_ contextPtr: UnsafeRawPointer?) -> Fl
 public func MCERendererSetShadowPCFRadius(_ contextPtr: UnsafeRawPointer?, _ value: Float) {
     updateSettings(contextPtr) { settings in
         settings.shadows.pcfRadius = max(0.0, value)
+    }
+}
+
+@_cdecl("MCERendererGetShadowPCFQualityPreset")
+public func MCERendererGetShadowPCFQualityPreset(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).shadows.pcfTapPreset
+}
+
+@_cdecl("MCERendererSetShadowPCFQualityPreset")
+public func MCERendererSetShadowPCFQualityPreset(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        let preset = ShadowPCFQualityPreset(rawValue: min(value, ShadowPCFQualityPreset.custom.rawValue)) ?? .high
+        settings.shadows.applyPCFPreset(preset)
+        settings.shadows.filterMode = ShadowFilterMode.pcf.rawValue
+    }
+}
+
+@_cdecl("MCERendererGetShadowPCFTapsCascade0")
+public func MCERendererGetShadowPCFTapsCascade0(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).shadows.pcfTapsCascade0
+}
+
+@_cdecl("MCERendererSetShadowPCFTapsCascade0")
+public func MCERendererSetShadowPCFTapsCascade0(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.shadows.pcfTapsCascade0 = max(1, min(25, value))
+        settings.shadows.refreshPCFPreset()
+        settings.shadows.filterMode = ShadowFilterMode.pcf.rawValue
+    }
+}
+
+@_cdecl("MCERendererGetShadowPCFTapsCascade1")
+public func MCERendererGetShadowPCFTapsCascade1(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).shadows.pcfTapsCascade1
+}
+
+@_cdecl("MCERendererSetShadowPCFTapsCascade1")
+public func MCERendererSetShadowPCFTapsCascade1(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.shadows.pcfTapsCascade1 = max(1, min(25, value))
+        settings.shadows.refreshPCFPreset()
+        settings.shadows.filterMode = ShadowFilterMode.pcf.rawValue
+    }
+}
+
+@_cdecl("MCERendererGetShadowPCFTapsCascade2")
+public func MCERendererGetShadowPCFTapsCascade2(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).shadows.pcfTapsCascade2
+}
+
+@_cdecl("MCERendererSetShadowPCFTapsCascade2")
+public func MCERendererSetShadowPCFTapsCascade2(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.shadows.pcfTapsCascade2 = max(1, min(25, value))
+        settings.shadows.refreshPCFPreset()
+        settings.shadows.filterMode = ShadowFilterMode.pcf.rawValue
+    }
+}
+
+@_cdecl("MCERendererGetShadowPCFTapsCascade3")
+public func MCERendererGetShadowPCFTapsCascade3(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getSettings(contextPtr).shadows.pcfTapsCascade3
+}
+
+@_cdecl("MCERendererSetShadowPCFTapsCascade3")
+public func MCERendererSetShadowPCFTapsCascade3(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.shadows.pcfTapsCascade3 = max(1, min(25, value))
+        settings.shadows.refreshPCFPreset()
+        settings.shadows.filterMode = ShadowFilterMode.pcf.rawValue
     }
 }
 

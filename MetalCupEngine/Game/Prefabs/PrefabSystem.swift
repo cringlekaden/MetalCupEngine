@@ -48,6 +48,18 @@ public final class PrefabSystem {
         }
     }
 
+    public func reapplyInstance(entity: Entity, in scene: EngineScene) -> Bool {
+        let ecs = scene.ecs
+        guard let link = ecs.get(PrefabInstanceComponent.self, for: entity),
+              let database = scene.engineContext?.assetDatabase,
+              let prefab = loadPrefab(handle: link.prefabHandle, database: database),
+              let prefabEntity = prefab.entities.first(where: { $0.localId == link.prefabEntityId }) else {
+            return false
+        }
+        applyPrefabEntity(prefabEntity, to: entity, ecs: ecs)
+        return true
+    }
+
     private func loadPrefab(handle: AssetHandle, database: AssetDatabase) -> PrefabDocument? {
         guard let url = database.assetURL(for: handle) else {
             logMissing(handle: handle)
@@ -120,6 +132,20 @@ public final class PrefabSystem {
                 ecs.destroyEntity(entity)
             }
 
+            for entityDoc in prefab.entities {
+                guard let entity = entityByLocalId[entityDoc.localId] else { continue }
+                let hierarchyOverridden = ecs.get(PrefabOverrideComponent.self, for: entity)?.contains(.hierarchy) ?? false
+                if hierarchyOverridden {
+                    continue
+                }
+                if let parentLocalId = entityDoc.parentLocalId,
+                   let parent = entityByLocalId[parentLocalId] {
+                    _ = ecs.setParent(entity, parent, keepWorldTransform: false)
+                } else {
+                    _ = ecs.unparent(entity, keepWorldTransform: false)
+                }
+            }
+
             for (localId, prefabEntity) in prefabEntities {
                 guard let entity = entityByLocalId[localId] else { continue }
                 applyPrefabEntity(prefabEntity, to: entity, ecs: ecs)
@@ -136,16 +162,10 @@ public final class PrefabSystem {
             return overrides?.contains(type) ?? false
         }
 
+        // Instance transforms are per-entity state in editor scenes.
+        // Never overwrite an existing transform from prefab reapply/apply.
         if ecs.get(TransformComponent.self, for: entity) == nil {
-            if let transform = prefabEntity.components.transform {
-                ecs.add(TransformComponent(
-                    position: transform.position.toSIMD(),
-                    rotation: transform.rotationQuat.toSIMD(),
-                    scale: transform.scale.toSIMD()
-                ), to: entity)
-            } else {
-                ecs.add(TransformComponent(), to: entity)
-            }
+            ecs.add(TransformComponent(), to: entity)
         }
 
         if !isOverridden(.name) {

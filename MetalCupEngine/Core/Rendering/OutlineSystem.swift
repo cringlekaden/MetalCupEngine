@@ -18,13 +18,10 @@ public enum OutlineSystem {
 
         guard let pickId = frame.resources.texture(.pickId) else { return }
         guard let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
-        guard let selectedId = frame.sceneView.selectedEntityIds.first else { return }
-
-        let selectedPickId = frame.engineContext.pickingSystem.pickId(for: selectedId)
-        if selectedPickId == 0 { return }
+        guard !frame.sceneView.selectedEntityIds.isEmpty else { return }
 
         let frameIndex = frame.frameContext.currentFrameIndex()
-        let pass = RenderPassBuilder.color(texture: outline, clearColor: MTLClearColorMake(0, 0, 0, 0))
+        let pass = RenderPassBuilder.colorLoad(texture: outline)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.label = "Selection Outline"
         encoder.pushDebugGroup("Selection Outline")
@@ -40,13 +37,17 @@ public enum OutlineSystem {
         encoder.setCullMode(.none)
         encoder.setFragmentTexture(pickId, index: PostProcessTextureIndex.source)
 
-        var params = OutlineParams()
-        params.selectedId = selectedPickId
         let thickness = max(1, min(4, Int(frame.renderer.settings.outlineThickness)))
-        params.thickness = UInt32(thickness)
-        params.texelSize = SIMD2<Float>(1.0 / Float(pickId.width), 1.0 / Float(pickId.height))
-        encoder.setFragmentBytes(&params, length: OutlineParams.stride, index: FragmentBufferIndex.outlineParams)
-
-        quadMesh.drawPrimitives(encoder, frameContext: frame.frameContext)
+        let texelSize = SIMD2<Float>(1.0 / Float(pickId.width), 1.0 / Float(pickId.height))
+        for selectedId in frame.sceneView.selectedEntityIds {
+            let selectedPickId = frame.engineContext.pickingSystem.pickId(for: selectedId)
+            if selectedPickId == 0 { continue }
+            var params = OutlineParams()
+            params.selectedId = selectedPickId
+            params.thickness = UInt32(thickness)
+            params.texelSize = texelSize
+            encoder.setFragmentBytes(&params, length: OutlineParams.stride, index: FragmentBufferIndex.outlineParams)
+            quadMesh.drawPrimitives(encoder, frameContext: frame.frameContext)
+        }
     }
 }

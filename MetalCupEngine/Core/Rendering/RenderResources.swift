@@ -41,7 +41,7 @@ enum RenderResourceTexture {
 
 final class RenderResources {
     private var drawableSize = SIMD2<Int>(0, 0)
-    private var usesHalfResBloom = false
+    private var bloomResolutionScale: UInt32 = BloomResolutionScale.quarter.rawValue
     private let preferences: Preferences
     private let settingsProvider: () -> RendererSettings
     private let settingsUpdater: (RendererSettings) -> Void
@@ -61,8 +61,8 @@ final class RenderResources {
         let height = Int(size.height)
         guard width > 0, height > 0 else { return false }
         if drawableSize.x != width || drawableSize.y != height { return false }
-        let halfResBloom = settingsProvider().hasPerfFlag(.halfResBloom)
-        if usesHalfResBloom != halfResBloom { return false }
+        let currentScale = normalizedBloomScale(settingsProvider().bloomResolutionScale)
+        if bloomResolutionScale != currentScale { return false }
         return texture(.baseColor) != nil
             && texture(.finalColor) != nil
             && texture(.baseDepth) != nil
@@ -79,7 +79,7 @@ final class RenderResources {
         let height = Int(size.height)
         guard width > 0, height > 0 else { return }
         drawableSize = SIMD2<Int>(width, height)
-        usesHalfResBloom = settingsProvider().hasPerfFlag(.halfResBloom)
+        bloomResolutionScale = normalizedBloomScale(settingsProvider().bloomResolutionScale)
 
         let baseColorDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: preferences.HDRPixelFormat,
@@ -151,7 +151,7 @@ final class RenderResources {
         pickDepthDesc.storageMode = .private
         registerTexture(descriptor: pickDepthDesc, handle: .pickDepth, label: "RenderTarget.PickDepth")
 
-        let divisor = usesHalfResBloom ? 2 : 1
+        let divisor = Int(bloomResolutionScale)
         let bloomWidth = max(1, width / divisor)
         let bloomHeight = max(1, height / divisor)
         let bloomDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -181,6 +181,12 @@ final class RenderResources {
         }
         texture.label = label
         assetManager.registerRuntimeTexture(handle: handle.handle, texture: texture)
+    }
+
+    private func normalizedBloomScale(_ value: UInt32) -> UInt32 {
+        value <= BloomResolutionScale.half.rawValue
+            ? BloomResolutionScale.half.rawValue
+            : BloomResolutionScale.quarter.rawValue
     }
 }
 

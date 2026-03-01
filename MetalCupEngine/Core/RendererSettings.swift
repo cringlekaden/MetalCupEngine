@@ -26,6 +26,27 @@ public enum ShadowFilterMode: UInt32 {
     case pcssExperimental = 2
 }
 
+public enum BloomQualityPreset: UInt32 {
+    case low = 0
+    case medium = 1
+    case high = 2
+    case ultra = 3
+    case custom = 4
+}
+
+public enum BloomResolutionScale: UInt32 {
+    case half = 2
+    case quarter = 4
+}
+
+public enum ShadowPCFQualityPreset: UInt32 {
+    case low = 0
+    case medium = 1
+    case high = 2
+    case ultra = 3
+    case custom = 4
+}
+
 public struct ShadowsSettings {
     public var enabled: UInt32 = 0
     public var directionalEnabled: UInt32 = 1
@@ -35,6 +56,11 @@ public struct ShadowsSettings {
     public var depthBias: Float = 0.0005
     public var normalBias: Float = 0.01
     public var pcfRadius: Float = 1.5
+    public var pcfTapPreset: UInt32 = ShadowPCFQualityPreset.high.rawValue
+    public var pcfTapsCascade0: UInt32 = 16
+    public var pcfTapsCascade1: UInt32 = 9
+    public var pcfTapsCascade2: UInt32 = 9
+    public var pcfTapsCascade3: UInt32 = 4
     public var filterMode: UInt32 = ShadowFilterMode.pcf.rawValue
     public var maxShadowDistance: Float = 100.0
     public var fadeOutDistance: Float = 10.0
@@ -48,13 +74,58 @@ public struct ShadowsSettings {
     public var pcssPadding: UInt32 = 0
 
     public init() {}
+
+    public mutating func applyPCFPreset(_ preset: ShadowPCFQualityPreset) {
+        pcfTapPreset = preset.rawValue
+        switch preset {
+        case .low:
+            pcfTapsCascade0 = 4
+            pcfTapsCascade1 = 4
+            pcfTapsCascade2 = 4
+            pcfTapsCascade3 = 4
+        case .medium:
+            pcfTapsCascade0 = 9
+            pcfTapsCascade1 = 9
+            pcfTapsCascade2 = 4
+            pcfTapsCascade3 = 4
+        case .high:
+            pcfTapsCascade0 = 16
+            pcfTapsCascade1 = 9
+            pcfTapsCascade2 = 9
+            pcfTapsCascade3 = 4
+        case .ultra:
+            pcfTapsCascade0 = 25
+            pcfTapsCascade1 = 16
+            pcfTapsCascade2 = 9
+            pcfTapsCascade3 = 9
+        case .custom:
+            break
+        }
+    }
+
+    public mutating func refreshPCFPreset() {
+        let preset: ShadowPCFQualityPreset
+        switch (pcfTapsCascade0, pcfTapsCascade1, pcfTapsCascade2, pcfTapsCascade3) {
+        case (4, 4, 4, 4):
+            preset = .low
+        case (9, 9, 4, 4):
+            preset = .medium
+        case (16, 9, 9, 4):
+            preset = .high
+        case (25, 16, 9, 9):
+            preset = .ultra
+        default:
+            preset = .custom
+        }
+        pcfTapPreset = preset.rawValue
+    }
 }
 
 public typealias BloomUniforms = RendererSettings
 public typealias RendererUniforms = RendererSettings
 
 public struct RendererSettings: sizeable {
-    public static let expectedMetalStride: Int = 304
+    public static let expectedMetalStride: Int = 336
 
     public init() {}
 
@@ -68,6 +139,8 @@ public struct RendererSettings: sizeable {
     public var bloomTexelSize: SIMD2<Float> = .zero
     public var bloomMipLevel: Float = 0
     public var bloomMaxMips: UInt32 = 5
+    public var bloomQualityPreset: UInt32 = BloomQualityPreset.high.rawValue
+    public var bloomResolutionScale: UInt32 = BloomResolutionScale.quarter.rawValue
 
     public var blurPasses: UInt32 = 6
     public var tonemap: UInt32 = TonemapType.metalCupCustom.rawValue

@@ -113,6 +113,7 @@ public struct SimpleVertex: sizeable {
 public struct DebugLineVertex: sizeable {
     public var position: SIMD3<Float>
     public var color: SIMD4<Float>
+    public var uv: SIMD2<Float>
 }
 
 public struct ModelConstants: sizeable {
@@ -287,6 +288,7 @@ public struct ShadowConstants: sizeable {
     public var shadowFadeParams = SIMD4<Float>(0, 0, 0, 0)
     public var pcssParams0 = SIMD4<Float>(1.0, 1.0, 8.0, 4.0)
     public var pcssParams1 = SIMD4<Float>(12.0, 16.0, 1.0, 0.0)
+    public var pcfTapCounts = SIMD4<Float>(16.0, 9.0, 9.0, 4.0)
 
     public var shadowCasterDirection: SIMD3<Float> {
         get { SIMD3<Float>(shadowCasterDirectionAndEnabled.x, shadowCasterDirectionAndEnabled.y, shadowCasterDirectionAndEnabled.z) }

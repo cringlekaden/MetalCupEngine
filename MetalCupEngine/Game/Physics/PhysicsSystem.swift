@@ -9,11 +9,21 @@ import simd
 public final class PhysicsSystem {
     private static let positionWritebackEpsilon: Float = 1e-4
     private static let rotationWritebackEpsilon: Float = 1e-4
+    private static let minimumScaleEpsilon: Float = 1e-4
     private var world: PhysicsWorld
-    private let settings: PhysicsSettings
+    private var settings: PhysicsSettings
+    private var lastAppliedSettingsHash: Int
+    private var lastAppliedSettingsVersion: UInt64?
     private var warnedEntities: Set<UUID> = []
+    private var warnedZeroScaleEntities: Set<UUID> = []
+    private var warnedMirroredScaleEntities: Set<UUID> = []
     private var overlapEvents: [PhysicsOverlapEvent] = []
     private var activeOverlaps: Set<OverlapKey> = []
+    private var collisionEvents: [PhysicsCollisionEvent] = []
+    private var activeCollisionPairs: Set<OverlapKey> = []
+    private var sensorBodyIdsByEntity: [UUID: [UInt64]] = [:]
+    private var runtimeSignatureByEntity: [UUID: Int] = [:]
+    private var runtimeWorldScaleByEntity: [UUID: SIMD3<Float>] = [:]
 #if DEBUG
     private var warnedScaleEntities: Set<UUID> = []
     private var hasSteppedOnce: Bool = false
@@ -27,79 +37,116 @@ public final class PhysicsSystem {
         guard let world = PhysicsWorld(settings: settings) else { return nil }
         self.world = world
         self.settings = settings
+        self.lastAppliedSettingsHash = settings.runtimeHash()
+        self.lastAppliedSettingsVersion = nil
+    }
+
+    public func syncSettingsIfNeeded(scene: EngineScene) {
+        let latest: PhysicsSettings
+        let newHash: Int
+        if let context = scene.engineContext {
+            let version = context.physicsSettingsVersion
+            if lastAppliedSettingsVersion == version { return }
+            latest = context.physicsSettings
+            lastAppliedSettingsVersion = version
+            newHash = latest.runtimeHash()
+        } else {
+            latest = settings
+            newHash = latest.runtimeHash()
+            if newHash == lastAppliedSettingsHash { return }
+        }
+
+        let previous = settings
+        settings = latest
+        lastAppliedSettingsHash = newHash
+
+        let requiresWorldRebuild =
+            previous.deterministic != latest.deterministic ||
+            previous.maxBodies != latest.maxBodies ||
+            previous.maxBodyPairs != latest.maxBodyPairs ||
+            previous.maxContactConstraints != latest.maxContactConstraints ||
+            previous.collisionMatrix != latest.collisionMatrix
+
+        if requiresWorldRebuild {
+            rebuildWorldAndBodies(scene: scene)
+            return
+        }
+
+        world.applySettings(latest)
+        if previous.isEnabled && !latest.isEnabled {
+            overlapEvents.removeAll(keepingCapacity: true)
+            activeOverlaps.removeAll(keepingCapacity: true)
+            collisionEvents.removeAll(keepingCapacity: true)
+            activeCollisionPairs.removeAll(keepingCapacity: true)
+        }
+        if previous.ccdEnabled != latest.ccdEnabled {
+            rebuildAllBodiesPreservingMotion(scene: scene)
+        }
+    }
+
+    public func pullTransformsFromPhysics(scene: EngineScene) {
+        pullDynamicTransforms(ecs: scene.ecs)
     }
 
     public func buildBodies(scene: EngineScene) {
         let ecs = scene.ecs
         overlapEvents.removeAll(keepingCapacity: true)
         activeOverlaps.removeAll(keepingCapacity: true)
-        for entity in ecs.allEntities() {
-            guard let transform = ecs.get(TransformComponent.self, for: entity) else { continue }
+        activeCollisionPairs.removeAll(keepingCapacity: true)
+        collisionEvents.removeAll(keepingCapacity: true)
+        sensorBodyIdsByEntity.removeAll(keepingCapacity: true)
+        runtimeSignatureByEntity.removeAll(keepingCapacity: true)
+        runtimeWorldScaleByEntity.removeAll(keepingCapacity: true)
+        ecs.forEachEntity { entity in
+            guard ecs.get(TransformComponent.self, for: entity) != nil else { return }
             guard var rigidbody = ecs.get(RigidbodyComponent.self, for: entity) else {
                 if ecs.has(ColliderComponent.self, entity) {
                     logWarningOnce(entityId: entity.id, message: "Collider present without Rigidbody. Add a Rigidbody to enable physics.")
                 }
-                continue
+                return
             }
             guard let collider = ecs.get(ColliderComponent.self, for: entity) else {
                 logWarningOnce(entityId: entity.id, message: "Rigidbody present without Collider. Add a Collider to enable physics.")
-                continue
+                return
             }
-            guard rigidbody.isEnabled, collider.isEnabled else { continue }
-            guard validateCollider(entityId: entity.id, collider: collider) else { continue }
-#if DEBUG
-            logScaleWarningIfNeeded(entityId: entity.id, collider: collider, scale: transform.scale)
-#endif
-
-            let userData = world.userData(for: entity.id)
-            let creation = PhysicsSystem.buildBodyCreation(rigidbody: rigidbody,
-                                                          collider: collider,
-                                                          transform: transform,
-                                                          settings: settings,
-                                                          userData: userData)
-            let bodyId = world.createBody(desc: creation)
-            if bodyId != 0 {
-                rigidbody.bodyId = bodyId
-                ecs.add(rigidbody, to: entity)
-#if DEBUG
-                if let fetched = world.getBodyTransform(bodyId: bodyId) {
-                    let ecsRotation = transform.rotation
-                    let posDelta = simd_length(fetched.position - transform.position)
-                    let angDelta = PhysicsSystem.angularDeltaDegrees(ecsRotation, fetched.rotation)
-                    EngineLoggerContext.log(
-                        String(format: "Physics Debug Body '%@': create delta pos=%.6f, ang=%.4f°",
-                               entity.id.uuidString, posDelta, angDelta),
-                        level: .debug,
-                        category: .scene
-                    )
-                }
-
-                if debugEntityId == nil, rigidbody.motionType == .dynamic {
-                    debugEntityId = entity.id
-                }
-#endif
-            }
+            guard rigidbody.isEnabled, collider.isEnabled else { return }
+            _ = rebuildEntityBodies(entity: entity, rigidbody: &rigidbody, collider: collider, ecs: ecs)
+            let worldScale = ecs.worldTransform(for: entity).scale
+            runtimeSignatureByEntity[entity.id] = runtimeSignature(rigidbody: rigidbody, collider: collider)
+            runtimeWorldScaleByEntity[entity.id] = worldScale
         }
     }
 
     public func destroyBodies(scene: EngineScene) {
         let ecs = scene.ecs
-        for entity in ecs.allEntities() {
-            guard var rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
-                  let bodyId = rigidbody.bodyId else {
-                continue
+        ecs.forEachEntity { entity in
+            guard var rigidbody = ecs.get(RigidbodyComponent.self, for: entity) else { return }
+            if let bodyId = rigidbody.bodyId {
+                world.destroyBody(bodyId: bodyId)
             }
-            world.destroyBody(bodyId: bodyId)
+            if let sensorBodies = sensorBodyIdsByEntity[entity.id] {
+                for sensorBody in sensorBodies {
+                    world.destroyBody(bodyId: sensorBody)
+                }
+            }
             rigidbody.bodyId = nil
             ecs.add(rigidbody, to: entity)
         }
+        sensorBodyIdsByEntity.removeAll(keepingCapacity: true)
+        runtimeSignatureByEntity.removeAll(keepingCapacity: true)
+        runtimeWorldScaleByEntity.removeAll(keepingCapacity: true)
         overlapEvents.removeAll(keepingCapacity: true)
         activeOverlaps.removeAll(keepingCapacity: true)
+        activeCollisionPairs.removeAll(keepingCapacity: true)
+        collisionEvents.removeAll(keepingCapacity: true)
     }
 
     public func fixedUpdate(scene: EngineScene, fixedDeltaTime: Float) {
+        syncSettingsIfNeeded(scene: scene)
         guard settings.isEnabled else { return }
         let ecs = scene.ecs
+        syncRuntimeBindings(scene: scene)
+        syncSensorBodiesToParents(ecs: ecs)
         pushKinematicTransforms(ecs: ecs)
         world.step(dt: fixedDeltaTime)
         updateOverlapEvents()
@@ -121,18 +168,7 @@ public final class PhysicsSystem {
             debugLoggedPostStep = true
         }
 #endif
-        if hasSteppedOnce {
-            pullDynamicTransforms(ecs: ecs)
-        } else if settings.resolveInitialOverlap {
-            pullDynamicTransforms(ecs: ecs)
-#if DEBUG
-            EngineLoggerContext.log(
-                "Physics Debug Body: initial overlap resolution applied after first step.",
-                level: .debug,
-                category: .scene
-            )
-#endif
-        }
+        pullDynamicTransforms(ecs: ecs)
         hasSteppedOnce = true
     }
 
@@ -140,33 +176,18 @@ public final class PhysicsSystem {
         let ecs = scene.ecs
         guard var rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
               let collider = ecs.get(ColliderComponent.self, for: entity),
-              let transform = ecs.get(TransformComponent.self, for: entity) else {
+              ecs.get(TransformComponent.self, for: entity) != nil else {
             return false
         }
-        if let bodyId = rigidbody.bodyId {
-            world.destroyBody(bodyId: bodyId)
-            rigidbody.bodyId = nil
+        let preservedState = preserveMotionStateIfPossible(rigidbody: rigidbody)
+        let rebuilt = rebuildEntityBodies(entity: entity, rigidbody: &rigidbody, collider: collider, ecs: ecs)
+        if rebuilt, let bodyId = rigidbody.bodyId {
+            restoreMotionStateIfPossible(preservedState, to: bodyId)
         }
-        guard rigidbody.isEnabled, collider.isEnabled else {
-            ecs.add(rigidbody, to: entity)
-            return false
-        }
-        guard validateCollider(entityId: entity.id, collider: collider) else { return false }
-#if DEBUG
-        logScaleWarningIfNeeded(entityId: entity.id, collider: collider, scale: transform.scale)
-#endif
-
-        let userData = world.userData(for: entity.id)
-        let creation = PhysicsSystem.buildBodyCreation(rigidbody: rigidbody,
-                                                      collider: collider,
-                                                      transform: transform,
-                                                      settings: settings,
-                                                      userData: userData)
-        let bodyId = world.createBody(desc: creation)
-        if bodyId == 0 { return false }
-        rigidbody.bodyId = bodyId
-        ecs.add(rigidbody, to: entity)
-        return true
+        let worldScale = ecs.worldTransform(for: entity).scale
+        runtimeSignatureByEntity[entity.id] = runtimeSignature(rigidbody: rigidbody, collider: collider)
+        runtimeWorldScaleByEntity[entity.id] = worldScale
+        return rebuilt
     }
 
     public static func submitDebugDraw(scene: EngineScene, debugDraw: DebugDraw, selectionId: UUID?) {
@@ -182,36 +203,38 @@ public final class PhysicsSystem {
         for entity in ecs.allEntities() {
             guard let collider = ecs.get(ColliderComponent.self, for: entity),
                   collider.isEnabled,
-                  let transform = ecs.get(TransformComponent.self, for: entity) else { continue }
+                  ecs.get(TransformComponent.self, for: entity) != nil else { continue }
+            let worldTransform = ecs.worldTransform(for: entity)
             let rigidbody = ecs.get(RigidbodyComponent.self, for: entity)
             if let bodyId = rigidbody?.bodyId {
-                bodyState[bodyId] = (motionType: rigidbody?.motionType ?? .staticBody, isTrigger: collider.isTrigger)
+                bodyState[bodyId] = (motionType: rigidbody?.motionType ?? .staticBody, isTrigger: false)
             }
-            let baseColor = debugColor(rigidbody: rigidbody, collider: collider, isSelected: selectionId == entity.id)
-            var color = baseColor
-            if drawSleeping,
-               let rigidbody,
-               rigidbody.isEnabled,
-               rigidbody.motionType == .dynamic,
-               let bodyId = rigidbody.bodyId,
-               let physicsSystem = scene.physicsSystem,
-               physicsSystem.isBodySleeping(bodyId: bodyId) {
-                color = SIMD4<Float>(0.55, 0.55, 0.55, 0.9)
-            }
-            let scaled = PhysicsMath.scaledShape(from: collider, scale: transform.scale)
-            let worldMatrix = PhysicsMath.transformMatrix(position: transform.position, rotation: transform.rotation)
-            let offsetRotation = TransformMath.quaternionFromEulerXYZ(collider.rotationOffset)
-            let offsetMatrix = PhysicsMath.transformMatrix(position: scaled.offset, rotation: offsetRotation)
-            let colliderMatrix = matrix_multiply(worldMatrix, offsetMatrix)
-
-            if drawColliders {
-                switch collider.shapeType {
-                case .box:
-                    debugDraw.submitWireBox(transform: colliderMatrix, halfExtents: scaled.boxHalfExtents, color: color)
-                case .sphere:
-                    debugDraw.submitWireSphere(transform: colliderMatrix, radius: scaled.sphereRadius, color: color)
-                case .capsule:
-                    debugDraw.submitWireCapsule(transform: colliderMatrix, radius: scaled.capsuleRadius, halfHeight: scaled.capsuleHalfHeight, color: color)
+            let worldMatrix = PhysicsMath.transformMatrix(position: worldTransform.position, rotation: worldTransform.rotation)
+            for shape in collider.allShapes() where shape.isEnabled {
+                let baseColor = debugColor(rigidbody: rigidbody, isTrigger: shape.isTrigger, isSelected: selectionId == entity.id)
+                var color = baseColor
+                if drawSleeping,
+                   let rigidbody,
+                   rigidbody.isEnabled,
+                   rigidbody.motionType == .dynamic,
+                   let bodyId = rigidbody.bodyId,
+                   let physicsSystem = scene.physicsSystem,
+                   physicsSystem.isBodySleeping(bodyId: bodyId) {
+                    color = SIMD4<Float>(0.55, 0.55, 0.55, 0.9)
+                }
+                let scaled = PhysicsMath.scaledShape(from: shape, scale: worldTransform.scale)
+                let offsetRotation = TransformMath.quaternionFromEulerXYZ(shape.rotationOffset)
+                let offsetMatrix = PhysicsMath.transformMatrix(position: scaled.offset, rotation: offsetRotation)
+                let colliderMatrix = matrix_multiply(worldMatrix, offsetMatrix)
+                if drawColliders {
+                    switch shape.shapeType {
+                    case .box:
+                        debugDraw.submitWireBox(transform: colliderMatrix, halfExtents: scaled.boxHalfExtents, color: color)
+                    case .sphere:
+                        debugDraw.submitWireSphere(transform: colliderMatrix, radius: scaled.sphereRadius, color: color)
+                    case .capsule:
+                        debugDraw.submitWireCapsule(transform: colliderMatrix, radius: scaled.capsuleRadius, halfHeight: scaled.capsuleHalfHeight, color: color)
+                    }
                 }
             }
 
@@ -263,9 +286,11 @@ public final class PhysicsSystem {
                 for pair in overlaps {
                     guard let entityA = ecs.entity(with: pair.a),
                           let entityB = ecs.entity(with: pair.b),
-                          let transformA = ecs.get(TransformComponent.self, for: entityA),
-                          let transformB = ecs.get(TransformComponent.self, for: entityB) else { continue }
-                    debugDraw.submitLine(transformA.position, transformB.position,
+                          ecs.get(TransformComponent.self, for: entityA) != nil,
+                          ecs.get(TransformComponent.self, for: entityB) != nil else { continue }
+                    let worldA = ecs.worldTransform(for: entityA)
+                    let worldB = ecs.worldTransform(for: entityB)
+                    debugDraw.submitLine(worldA.position, worldB.position,
                                          color: SIMD4<Float>(0.85, 0.4, 1.0, 0.9))
                 }
             }
@@ -273,16 +298,17 @@ public final class PhysicsSystem {
     }
 
     private func pushKinematicTransforms(ecs: SceneECS) {
-        for entity in ecs.allEntities() {
+        ecs.forEachEntity { entity in
             guard let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
                   rigidbody.isEnabled,
                   rigidbody.motionType == .kinematic,
                   let bodyId = rigidbody.bodyId,
-                  let transform = ecs.get(TransformComponent.self, for: entity) else {
-                continue
+                  ecs.get(TransformComponent.self, for: entity) != nil else {
+                return
             }
-            let rotation = transform.rotation
-            world.setBodyTransform(bodyId: bodyId, position: transform.position, rotation: rotation)
+            let worldTransform = ecs.worldTransform(for: entity)
+            let rotation = worldTransform.rotation
+            world.setBodyTransform(bodyId: bodyId, position: worldTransform.position, rotation: rotation)
         }
     }
 
@@ -298,6 +324,10 @@ public final class PhysicsSystem {
         overlapEvents
     }
 
+    public func recentCollisionEvents() -> [PhysicsCollisionEvent] {
+        collisionEvents
+    }
+
     public func activeOverlapPairs() -> [OverlapPair] {
         activeOverlaps.map { OverlapPair(a: $0.a, b: $0.b) }
     }
@@ -306,8 +336,35 @@ public final class PhysicsSystem {
         world.isBodySleeping(bodyId: bodyId)
     }
 
+    public func raycast(origin: SIMD3<Float>,
+                        direction: SIMD3<Float>,
+                        maxDistance: Float,
+                        layerMask: LayerMask,
+                        includeTriggers: Bool) -> PhysicsRaycastHit? {
+        world.raycast(origin: origin,
+                      direction: direction,
+                      maxDistance: maxDistance,
+                      layerMask: layerMask,
+                      includeTriggers: includeTriggers)
+    }
+
     public func raycastClosest(origin: SIMD3<Float>, direction: SIMD3<Float>, maxDistance: Float) -> PhysicsRaycastHit? {
-        world.raycastClosest(origin: origin, direction: direction, maxDistance: maxDistance)
+        raycast(origin: origin,
+                direction: direction,
+                maxDistance: maxDistance,
+                layerMask: .all,
+                includeTriggers: true)
+    }
+
+    public func raycastForEditorPicking(origin: SIMD3<Float>,
+                                        direction: SIMD3<Float>,
+                                        maxDistance: Float,
+                                        layerMask: LayerMask = .all) -> PhysicsRaycastHit? {
+        raycast(origin: origin,
+                direction: direction,
+                maxDistance: maxDistance,
+                layerMask: layerMask,
+                includeTriggers: false)
     }
 
     public func sphereCastClosest(origin: SIMD3<Float>, direction: SIMD3<Float>, radius: Float, maxDistance: Float) -> PhysicsRaycastHit? {
@@ -315,76 +372,304 @@ public final class PhysicsSystem {
     }
 
     private func pullDynamicTransforms(ecs: SceneECS) {
-        for entity in ecs.allEntities() {
+        ecs.forEachEntity { entity in
             guard let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
                   rigidbody.isEnabled,
                   rigidbody.motionType == .dynamic,
                   let bodyId = rigidbody.bodyId,
-                  let transform = ecs.get(TransformComponent.self, for: entity) else {
-                continue
+                  var localTransform = ecs.get(TransformComponent.self, for: entity) else {
+                return
             }
-            guard let result = world.getBodyTransform(bodyId: bodyId) else { continue }
-            let positionDelta = simd_length(result.position - transform.position)
-            let currentQuat = transform.rotation
+            guard let result = world.getBodyTransform(bodyId: bodyId) else { return }
+            let worldTransform = ecs.worldTransform(for: entity)
+            let positionDelta = simd_length(result.position - worldTransform.position)
+            let currentQuat = worldTransform.rotation
             let rotationDelta = PhysicsSystem.quaternionAngleDelta(currentQuat, result.rotation)
             if positionDelta <= Self.positionWritebackEpsilon,
                rotationDelta <= Self.rotationWritebackEpsilon {
-                continue
+                return
             }
-            var updated = transform
-            updated.position = result.position
-            updated.rotation = TransformMath.normalizedQuaternion(result.rotation)
-            ecs.add(updated, to: entity)
+            let resultRotation = TransformMath.normalizedQuaternion(result.rotation)
+            if let parent = ecs.getParent(entity) {
+                let parentWorldMatrix = ecs.worldMatrix(for: parent)
+                let desiredWorldMatrix = TransformMath.makeMatrix(
+                    position: result.position,
+                    rotation: resultRotation,
+                    scale: worldTransform.scale
+                )
+                let desiredLocalMatrix = simd_inverse(parentWorldMatrix) * desiredWorldMatrix
+                let decomposedLocal = TransformMath.decomposeMatrix(desiredLocalMatrix)
+                localTransform.position = decomposedLocal.position
+                localTransform.rotation = decomposedLocal.rotation
+            } else {
+                localTransform.position = result.position
+                localTransform.rotation = resultRotation
+            }
+            ecs.add(localTransform, to: entity)
         }
     }
 
     private static func buildBodyCreation(rigidbody: RigidbodyComponent,
-                                          collider: ColliderComponent,
                                           transform: TransformComponent,
                                           settings: PhysicsSettings,
-                                          userData: UInt64) -> PhysicsBodyCreation {
-        let scaled = PhysicsMath.scaledShape(from: collider, scale: transform.scale)
+                                          userData: UInt64,
+                                          isTrigger: Bool,
+                                          collisionLayer: Int32,
+                                          shapes: [PhysicsShapeCreation]) -> PhysicsBodyCreation {
+        let friction = rigidbody.friction.isFinite ? rigidbody.friction : settings.defaultFriction
+        let restitution = rigidbody.restitution.isFinite ? rigidbody.restitution : settings.defaultRestitution
+        let linearDamping = rigidbody.linearDamping.isFinite ? rigidbody.linearDamping : settings.defaultLinearDamping
+        let angularDamping = rigidbody.angularDamping.isFinite ? rigidbody.angularDamping : settings.defaultAngularDamping
+        let resolvedLayer = max(0, min(collisionLayer, Int32(PhysicsSettings.maxCollisionLayers - 1)))
         return PhysicsBodyCreation(
-            shapeType: collider.shapeType,
             motionType: rigidbody.motionType,
             position: transform.position,
             rotation: transform.rotation,
-            boxHalfExtents: scaled.boxHalfExtents,
-            sphereRadius: scaled.sphereRadius,
-            capsuleHalfHeight: scaled.capsuleHalfHeight,
-            capsuleRadius: scaled.capsuleRadius,
-            offset: scaled.offset,
-            rotationOffset: PhysicsMath.quaternionFromEuler(collider.rotationOffset),
-            friction: rigidbody.friction,
-            restitution: rigidbody.restitution,
-            linearDamping: rigidbody.linearDamping,
-            angularDamping: rigidbody.angularDamping,
+            shapes: shapes,
+            friction: friction,
+            restitution: restitution,
+            linearDamping: linearDamping,
+            angularDamping: angularDamping,
             gravityFactor: rigidbody.gravityFactor,
             mass: rigidbody.mass,
             userData: userData,
             ccdEnabled: settings.ccdEnabled || rigidbody.ccdEnabled,
-            isTrigger: collider.isTrigger,
-            allowSleeping: rigidbody.allowSleeping
+            isTrigger: isTrigger,
+            allowSleeping: rigidbody.allowSleeping,
+            collisionLayer: resolvedLayer
         )
     }
 
-    private func validateCollider(entityId: UUID, collider: ColliderComponent) -> Bool {
-        switch collider.shapeType {
+    private func rebuildEntityBodies(entity: Entity,
+                                     rigidbody: inout RigidbodyComponent,
+                                     collider: ColliderComponent,
+                                     ecs: SceneECS) -> Bool {
+        if let bodyId = rigidbody.bodyId {
+            world.destroyBody(bodyId: bodyId)
+            rigidbody.bodyId = nil
+        }
+        if let sensorBodies = sensorBodyIdsByEntity[entity.id] {
+            for sensorBody in sensorBodies {
+                world.destroyBody(bodyId: sensorBody)
+            }
+            sensorBodyIdsByEntity.removeValue(forKey: entity.id)
+        }
+
+        guard rigidbody.isEnabled, collider.isEnabled else {
+            ecs.add(rigidbody, to: entity)
+            return false
+        }
+
+        let worldTransform = ecs.worldTransform(for: entity)
+        guard validateWorldScale(entityId: entity.id, scale: worldTransform.scale) else {
+            ecs.add(rigidbody, to: entity)
+            return false
+        }
+
+        let allShapes = collider.allShapes().filter { $0.isEnabled }
+        guard !allShapes.isEmpty else {
+            ecs.add(rigidbody, to: entity)
+            return false
+        }
+        for shape in allShapes where !validateShape(entityId: entity.id, shape: shape) {
+            ecs.add(rigidbody, to: entity)
+            return false
+        }
+
+        let userData = world.userData(for: entity.id)
+        let solidShapes = allShapes.filter { !$0.isTrigger }
+        let triggerShapes = allShapes.filter { $0.isTrigger }
+
+        var createdMainBody = false
+        if !solidShapes.isEmpty {
+            let physicsShapes = solidShapes.map { shape in
+                buildShapeCreation(shape: shape, worldScale: worldTransform.scale)
+            }
+            let layer = rigidbody.collisionLayer
+            let creation = Self.buildBodyCreation(rigidbody: rigidbody,
+                                                  transform: worldTransform,
+                                                  settings: settings,
+                                                  userData: userData,
+                                                  isTrigger: false,
+                                                  collisionLayer: layer,
+                                                  shapes: physicsShapes)
+            let bodyId = world.createBody(desc: creation)
+            if bodyId != 0 {
+                rigidbody.bodyId = bodyId
+                createdMainBody = true
+            }
+        }
+
+        if !triggerShapes.isEmpty {
+            let physicsShapes = triggerShapes.map { shape in
+                buildShapeCreation(shape: shape, worldScale: worldTransform.scale)
+            }
+            let layer = triggerShapes.compactMap { $0.collisionLayerOverride }.first ?? rigidbody.collisionLayer
+            let triggerMotionType: RigidbodyMotionType = .kinematic
+            var triggerRigidbody = rigidbody
+            triggerRigidbody.motionType = triggerMotionType
+            triggerRigidbody.gravityFactor = 0.0
+            triggerRigidbody.allowSleeping = false
+            let creation = Self.buildBodyCreation(rigidbody: triggerRigidbody,
+                                                  transform: worldTransform,
+                                                  settings: settings,
+                                                  userData: userData,
+                                                  isTrigger: true,
+                                                  collisionLayer: layer,
+                                                  shapes: physicsShapes)
+            let sensorBodyId = world.createBody(desc: creation)
+            if sensorBodyId != 0 {
+                sensorBodyIdsByEntity[entity.id] = [sensorBodyId]
+                if !createdMainBody {
+                    rigidbody.bodyId = sensorBodyId
+                    createdMainBody = true
+                }
+            }
+        }
+
+        ecs.add(rigidbody, to: entity)
+        return createdMainBody
+    }
+
+    private func buildShapeCreation(shape: ColliderShape, worldScale: SIMD3<Float>) -> PhysicsShapeCreation {
+        let scaled = PhysicsMath.scaledShape(from: shape, scale: worldScale)
+        return PhysicsShapeCreation(shapeType: shape.shapeType,
+                                    boxHalfExtents: scaled.boxHalfExtents,
+                                    sphereRadius: scaled.sphereRadius,
+                                    capsuleHalfHeight: scaled.capsuleHalfHeight,
+                                    capsuleRadius: scaled.capsuleRadius,
+                                    offset: scaled.offset,
+                                    rotationOffset: PhysicsMath.quaternionFromEuler(shape.rotationOffset),
+                                    collisionLayerOverride: shape.collisionLayerOverride,
+                                    physicsMaterial: shape.physicsMaterial)
+    }
+
+    private func runtimeSignature(rigidbody: RigidbodyComponent,
+                                  collider: ColliderComponent) -> Int {
+        var hasher = Hasher()
+        hasher.combine(rigidbody.isEnabled)
+        hasher.combine(rigidbody.motionType.rawValue)
+        hasher.combine(rigidbody.mass.bitPattern)
+        hasher.combine(rigidbody.friction.bitPattern)
+        hasher.combine(rigidbody.restitution.bitPattern)
+        hasher.combine(rigidbody.linearDamping.bitPattern)
+        hasher.combine(rigidbody.angularDamping.bitPattern)
+        hasher.combine(rigidbody.gravityFactor.bitPattern)
+        hasher.combine(rigidbody.allowSleeping)
+        hasher.combine(rigidbody.ccdEnabled)
+        hasher.combine(rigidbody.collisionLayer)
+        for shape in collider.allShapes() {
+            hasher.combine(shape.isEnabled)
+            hasher.combine(shape.shapeType.rawValue)
+            hasher.combine(shape.boxHalfExtents.x.bitPattern)
+            hasher.combine(shape.boxHalfExtents.y.bitPattern)
+            hasher.combine(shape.boxHalfExtents.z.bitPattern)
+            hasher.combine(shape.sphereRadius.bitPattern)
+            hasher.combine(shape.capsuleHalfHeight.bitPattern)
+            hasher.combine(shape.capsuleRadius.bitPattern)
+            hasher.combine(shape.offset.x.bitPattern)
+            hasher.combine(shape.offset.y.bitPattern)
+            hasher.combine(shape.offset.z.bitPattern)
+            hasher.combine(shape.rotationOffset.x.bitPattern)
+            hasher.combine(shape.rotationOffset.y.bitPattern)
+            hasher.combine(shape.rotationOffset.z.bitPattern)
+            hasher.combine(shape.isTrigger)
+            hasher.combine(shape.collisionLayerOverride ?? -1)
+            if let handle = shape.physicsMaterial {
+                hasher.combine(handle.rawValue.uuidString)
+            } else {
+                hasher.combine("nil")
+            }
+        }
+        return hasher.finalize()
+    }
+
+    private func syncRuntimeBindings(scene: EngineScene) {
+        let ecs = scene.ecs
+        var liveEntities: Set<UUID> = []
+        liveEntities.reserveCapacity(runtimeSignatureByEntity.count + 16)
+        ecs.forEachEntity { entity in
+            liveEntities.insert(entity.id)
+            guard var rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
+                  let collider = ecs.get(ColliderComponent.self, for: entity),
+                  ecs.get(TransformComponent.self, for: entity) != nil else {
+                if var staleRigidbody = ecs.get(RigidbodyComponent.self, for: entity), staleRigidbody.bodyId != nil {
+                    _ = rebuildEntityBodies(entity: entity, rigidbody: &staleRigidbody, collider: ColliderComponent(isEnabled: false), ecs: ecs)
+                }
+                runtimeSignatureByEntity.removeValue(forKey: entity.id)
+                runtimeWorldScaleByEntity.removeValue(forKey: entity.id)
+                return
+            }
+
+            let worldScale = ecs.worldTransform(for: entity).scale
+            let signature = runtimeSignature(rigidbody: rigidbody, collider: collider)
+            let lastScale = runtimeWorldScaleByEntity[entity.id] ?? worldScale
+            let scaleChanged = simd_length(worldScale - lastScale) > 1e-4
+            if runtimeSignatureByEntity[entity.id] != signature || scaleChanged {
+                _ = rebuildEntityBodies(entity: entity, rigidbody: &rigidbody, collider: collider, ecs: ecs)
+                let rebuiltWorldScale = ecs.worldTransform(for: entity).scale
+                runtimeSignatureByEntity[entity.id] = runtimeSignature(rigidbody: rigidbody, collider: collider)
+                runtimeWorldScaleByEntity[entity.id] = rebuiltWorldScale
+            }
+        }
+
+        for entityId in runtimeSignatureByEntity.keys where !liveEntities.contains(entityId) {
+            runtimeSignatureByEntity.removeValue(forKey: entityId)
+            sensorBodyIdsByEntity.removeValue(forKey: entityId)
+            runtimeWorldScaleByEntity.removeValue(forKey: entityId)
+        }
+    }
+
+    private func syncSensorBodiesToParents(ecs: SceneECS) {
+        guard !sensorBodyIdsByEntity.isEmpty else { return }
+        ecs.forEachEntity { entity in
+            guard let sensorBodyIds = sensorBodyIdsByEntity[entity.id], !sensorBodyIds.isEmpty else { return }
+            guard let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
+                  let bodyId = rigidbody.bodyId,
+                  let bodyTransform = world.getBodyTransform(bodyId: bodyId) else { return }
+            for sensorBodyId in sensorBodyIds {
+                if sensorBodyId == bodyId { continue }
+                world.setBodyTransform(bodyId: sensorBodyId,
+                                       position: bodyTransform.position,
+                                       rotation: bodyTransform.rotation,
+                                       activate: false)
+            }
+        }
+    }
+
+    private func validateShape(entityId: UUID, shape: ColliderShape) -> Bool {
+        switch shape.shapeType {
         case .box:
-            if collider.boxHalfExtents.x <= 0 || collider.boxHalfExtents.y <= 0 || collider.boxHalfExtents.z <= 0 {
+            if shape.boxHalfExtents.x <= 0 || shape.boxHalfExtents.y <= 0 || shape.boxHalfExtents.z <= 0 {
                 logWarningOnce(entityId: entityId, message: "Box collider has invalid half extents. Update values > 0.")
                 return false
             }
         case .sphere:
-            if collider.sphereRadius <= 0 {
+            if shape.sphereRadius <= 0 {
                 logWarningOnce(entityId: entityId, message: "Sphere collider has invalid radius. Update value > 0.")
                 return false
             }
         case .capsule:
-            if collider.capsuleRadius <= 0 || collider.capsuleHalfHeight <= 0 {
+            if shape.capsuleRadius <= 0 || shape.capsuleHalfHeight <= 0 {
                 logWarningOnce(entityId: entityId, message: "Capsule collider has invalid radius/half height. Update values > 0.")
                 return false
             }
+        }
+        return true
+    }
+
+    private func validateWorldScale(entityId: UUID, scale: SIMD3<Float>) -> Bool {
+        let absScale = SIMD3<Float>(abs(scale.x), abs(scale.y), abs(scale.z))
+        if absScale.x < Self.minimumScaleEpsilon || absScale.y < Self.minimumScaleEpsilon || absScale.z < Self.minimumScaleEpsilon {
+            if !warnedZeroScaleEntities.contains(entityId) {
+                warnedZeroScaleEntities.insert(entityId)
+                EngineLoggerContext.log("Physics collider disabled due to near-zero world scale.", level: .warning, category: .scene)
+            }
+            return false
+        }
+        if (scale.x < 0 || scale.y < 0 || scale.z < 0) && !warnedMirroredScaleEntities.contains(entityId) {
+            warnedMirroredScaleEntities.insert(entityId)
+            EngineLoggerContext.log("Mirrored scale detected. Physics uses signed offset with absolute shape extents.", level: .warning, category: .scene)
         }
         return true
     }
@@ -396,7 +681,7 @@ public final class PhysicsSystem {
     }
 
 #if DEBUG
-    private func logScaleWarningIfNeeded(entityId: UUID, collider: ColliderComponent, scale: SIMD3<Float>) {
+    private func logScaleWarningIfNeeded(entityId: UUID, collider: ColliderShape, scale: SIMD3<Float>) {
         if warnedScaleEntities.contains(entityId) { return }
         let absScale = SIMD3<Float>(abs(scale.x), abs(scale.y), abs(scale.z))
         let isNonUniform = abs(absScale.x - absScale.y) > 0.0001
@@ -436,21 +721,102 @@ public final class PhysicsSystem {
 
     private func updateOverlapEvents() {
         overlapEvents = world.overlapEvents()
+        collisionEvents.removeAll(keepingCapacity: true)
         if overlapEvents.isEmpty { return }
         for event in overlapEvents {
             guard let entityA = event.entityIdA, let entityB = event.entityIdB else { continue }
             let key = OverlapKey(a: entityA, b: entityB)
-            if event.isBegin {
-                activeOverlaps.insert(key)
+            let isTriggerPair = world.isTriggerBody(event.bodyIdA) || world.isTriggerBody(event.bodyIdB)
+            if isTriggerPair {
+                if event.isBegin {
+                    activeOverlaps.insert(key)
+                } else {
+                    activeOverlaps.remove(key)
+                }
             } else {
-                activeOverlaps.remove(key)
+                if event.isBegin {
+                    activeCollisionPairs.insert(key)
+                    collisionEvents.append(
+                        PhysicsCollisionEvent(entityIdA: key.a,
+                                              entityIdB: key.b,
+                                              isBegin: true,
+                                              normal: nil,
+                                              position: nil)
+                    )
+                } else {
+                    activeCollisionPairs.remove(key)
+                    collisionEvents.append(
+                        PhysicsCollisionEvent(entityIdA: key.a,
+                                              entityIdB: key.b,
+                                              isBegin: false,
+                                              normal: nil,
+                                              position: nil)
+                    )
+                }
             }
         }
     }
 
-    private static func debugColor(rigidbody: RigidbodyComponent?, collider: ColliderComponent, isSelected: Bool) -> SIMD4<Float> {
+    private func rebuildWorldAndBodies(scene: EngineScene) {
+        let preservedStateByEntity = captureMotionState(scene: scene)
+        guard world.recreate(settings: settings) else { return }
+        rebuildBodies(scene: scene, preservedStateByEntity: preservedStateByEntity)
+    }
+
+    private func rebuildAllBodiesPreservingMotion(scene: EngineScene) {
+        let preservedStateByEntity = captureMotionState(scene: scene)
+        rebuildBodies(scene: scene, preservedStateByEntity: preservedStateByEntity)
+    }
+
+    private func captureMotionState(scene: EngineScene) -> [UUID: BodyMotionState] {
+        let ecs = scene.ecs
+        var preservedStateByEntity: [UUID: BodyMotionState] = [:]
+        for entity in ecs.allEntities() {
+            guard let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
+                  rigidbody.motionType == .dynamic,
+                  rigidbody.isEnabled else { continue }
+            if let preserved = preserveMotionStateIfPossible(rigidbody: rigidbody) {
+                preservedStateByEntity[entity.id] = preserved
+            }
+        }
+        return preservedStateByEntity
+    }
+
+    private func rebuildBodies(scene: EngineScene, preservedStateByEntity: [UUID: BodyMotionState]) {
+        let ecs = scene.ecs
+        destroyBodies(scene: scene)
+        buildBodies(scene: scene)
+        for entity in ecs.allEntities() {
+            guard let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
+                  let bodyId = rigidbody.bodyId,
+                  let preserved = preservedStateByEntity[entity.id] else { continue }
+            restoreMotionStateIfPossible(preserved, to: bodyId)
+        }
+        pullDynamicTransforms(ecs: ecs)
+        hasSteppedOnce = true
+    }
+
+    private func preserveMotionStateIfPossible(rigidbody: RigidbodyComponent) -> BodyMotionState? {
+        guard rigidbody.motionType == .dynamic,
+              let bodyId = rigidbody.bodyId,
+              let velocity = world.getBodyVelocity(bodyId: bodyId) else { return nil }
+        let isSleeping = world.isBodySleeping(bodyId: bodyId)
+        return BodyMotionState(linearVelocity: velocity.linear,
+                               angularVelocity: velocity.angular,
+                               isSleeping: isSleeping)
+    }
+
+    private func restoreMotionStateIfPossible(_ state: BodyMotionState?, to bodyId: UInt64) {
+        guard let state else { return }
+        world.setBodyVelocity(bodyId: bodyId,
+                              linear: state.linearVelocity,
+                              angular: state.angularVelocity)
+        world.setBodyActive(bodyId: bodyId, isActive: !state.isSleeping)
+    }
+
+    private static func debugColor(rigidbody: RigidbodyComponent?, isTrigger: Bool, isSelected: Bool) -> SIMD4<Float> {
         if isSelected { return SIMD4<Float>(1.0, 0.9, 0.2, 1.0) }
-        if collider.isTrigger { return SIMD4<Float>(1.0, 0.65, 0.2, 0.95) }
+        if isTrigger { return SIMD4<Float>(1.0, 0.65, 0.2, 0.95) }
         guard let rigidbody else { return SIMD4<Float>(0.65, 0.65, 0.65, 0.9) }
         switch rigidbody.motionType {
         case .staticBody:
@@ -468,6 +834,14 @@ public struct OverlapPair {
     let b: UUID
 }
 
+public struct PhysicsCollisionEvent {
+    public let entityIdA: UUID
+    public let entityIdB: UUID
+    public let isBegin: Bool
+    public let normal: SIMD3<Float>?
+    public let position: SIMD3<Float>?
+}
+
 private struct OverlapKey: Hashable {
     let a: UUID
     let b: UUID
@@ -481,6 +855,12 @@ private struct OverlapKey: Hashable {
             self.b = a
         }
     }
+}
+
+private struct BodyMotionState {
+    let linearVelocity: SIMD3<Float>
+    let angularVelocity: SIMD3<Float>
+    let isSleeping: Bool
 }
 
 private enum PhysicsMath {
@@ -509,9 +889,9 @@ private enum PhysicsMath {
     }
 #endif
 
-    static func scaledShape(from collider: ColliderComponent, scale: SIMD3<Float>) -> (boxHalfExtents: SIMD3<Float>, sphereRadius: Float, capsuleHalfHeight: Float, capsuleRadius: Float, offset: SIMD3<Float>) {
+    static func scaledShape(from collider: ColliderShape, scale: SIMD3<Float>) -> (boxHalfExtents: SIMD3<Float>, sphereRadius: Float, capsuleHalfHeight: Float, capsuleRadius: Float, offset: SIMD3<Float>) {
         let absScale = SIMD3<Float>(abs(scale.x), abs(scale.y), abs(scale.z))
-        let offset = collider.offset * absScale
+        let offset = collider.offset * scale
 
         switch collider.shapeType {
         case .box:
@@ -523,6 +903,10 @@ private enum PhysicsMath {
             let radiusScale = max(absScale.x, absScale.z)
             return (collider.boxHalfExtents, collider.sphereRadius, collider.capsuleHalfHeight * absScale.y, collider.capsuleRadius * radiusScale, offset)
         }
+    }
+
+    static func scaledShape(from collider: ColliderComponent, scale: SIMD3<Float>) -> (boxHalfExtents: SIMD3<Float>, sphereRadius: Float, capsuleHalfHeight: Float, capsuleRadius: Float, offset: SIMD3<Float>) {
+        scaledShape(from: collider.primaryShape(), scale: scale)
     }
 
     static func transformMatrix(position: SIMD3<Float>, rotation: SIMD4<Float>) -> matrix_float4x4 {

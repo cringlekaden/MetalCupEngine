@@ -64,21 +64,24 @@ public enum SkySystem {
             return
         }
 
+        // sunDir points from world origin toward the visible sun disc.
+        // Directional light rays travel from sun to scene, so ray direction is -sunDir.
         let sunDir = sunDirection(azimuthDegrees: sky.azimuthDegrees, elevationDegrees: sky.elevationDegrees)
         let sunEntity = scene.firstEntity(with: SkySunTag.self) ?? createSunLight(in: scene, name: "Sun")
+        let lightRayDirection = -sunDir
 
         var light = scene.get(LightComponent.self, for: sunEntity) ?? LightComponent(type: .directional)
         light.type = .directional
-        light.direction = -sunDir
+        light.direction = lightRayDirection
         light.data.color = SIMD3<Float>(repeating: 1.0)
         light.data.brightness = max(sky.intensity, 0.0)
         light.data.diffuseIntensity = 1.0
         light.data.specularIntensity = 1.0
         scene.add(light, to: sunEntity)
 
-        if scene.get(TransformComponent.self, for: sunEntity) == nil {
-            scene.add(TransformComponent(), to: sunEntity)
-        }
+        var transform = scene.get(TransformComponent.self, for: sunEntity) ?? TransformComponent()
+        transform.rotation = TransformMath.rotationForDirectionalLight(direction: lightRayDirection)
+        scene.add(transform, to: sunEntity)
         if scene.get(NameComponent.self, for: sunEntity) == nil {
             scene.add(NameComponent(name: "Sun"), to: sunEntity)
         }

@@ -33,6 +33,7 @@ public final class Renderer: NSObject {
     private let _renderResources: RenderResources
     private let _renderGraph = RenderGraph()
     private let _frameContextStorage: RendererFrameContextStorage
+    private let _skyRebuildFrameContextStorage: RendererFrameContextStorage
     let shadowRenderer: ShadowRenderer
     private var _lastFrameTimestamp: TimeInterval?
     private var _frameCount: UInt64 = 0
@@ -55,14 +56,19 @@ public final class Renderer: NSObject {
     private let _environmentSize = 2048
     private let _irradianceSize = 64
     private let _prefilteredSize = 1024
+    private let _environmentSizeFast = 512
+    private let _irradianceSizeFast = 32
+    private let _prefilteredSizeFast = 256
     private let _brdfLutSize = 512
     private let _skyRebuildQueue = DispatchQueue(label: "MetalCup.Renderer.SkyRebuild", qos: .userInitiated)
     private let _skyRebuildCooldown: Double = 2.0
+    private let _skyInteractiveSettleDelay: Double = 4.0
     private var _skyRebuildInFlight = false
     private var _lastSkyRequestedSnapshot: SkyLightComponent?
     private var _lastSkyLiveSnapshot: SkyLightComponent?
     private var _lastSkyLiveUpdateTime: Double = 0.0
     private var _lastSkyRebuildStartTime: Double = 0.0
+    private var _lastSkyInteractionTime: Double = 0.0
     private var _pendingSkySnapshot: SkyLightComponent?
 
     private struct IBLTextureHandles {
@@ -74,7 +80,9 @@ public final class Renderer: NSObject {
 
 
     private var _iblHandleSets: [IBLTextureHandles] = []
+    private var _iblFastHandles: IBLTextureHandles?
     private var _activeIBLHandleIndex = 0
+    private var _brdfPipelineStateByFormat: [MTLPixelFormat: MTLRenderPipelineState] = [:]
 
     // MARK: - Static sizes
 
@@ -98,11 +106,13 @@ public final class Renderer: NSObject {
             device: engineContext.device
         )
         self._frameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
+        self._skyRebuildFrameContextStorage = RendererFrameContextStorage(engineContext: engineContext)
         self.shadowRenderer = ShadowRenderer(engineContext: engineContext)
         super.init()
         self._lastPerfFlags = settings.perfFlags
         _viewProjections = _views.map { _projection * $0 }
         updateScreenSize(view: mtkView) // builds render targets + base pass desc
+        let iblAllocationStart = CACurrentMediaTime()
         BuiltinAssets.registerIBLTextures(
             assetManager: engineContext.assets,
             preferences: engineContext.preferences,
@@ -112,10 +122,8 @@ public final class Renderer: NSObject {
             prefilteredSize: _prefilteredSize,
             brdfLutSize: _brdfLutSize
         )
-        _ = engineContext.graphics.renderPipelineStates[.Cubemap]
-        _ = engineContext.graphics.renderPipelineStates[.IrradianceMap]
-        _ = engineContext.graphics.renderPipelineStates[.PrefilteredMap]
-        _ = engineContext.graphics.renderPipelineStates[.ProceduralSkyCubemap]
+        _ = ensureBRDFLUTTexture()
+        prewarmIBLPipelinesWithTiming()
         BuiltinAssets.registerFallbackIBLTextures(assetManager: engineContext.assets, preferences: engineContext.preferences, device: engineContext.device)
         let builtinHandles = IBLTextureHandles(
             environment: BuiltinAssets.environmentCubemap,
@@ -132,6 +140,27 @@ public final class Renderer: NSObject {
         _iblHandleSets = [builtinHandles, alternateHandles]
         _activeIBLHandleIndex = 0
         ensureIBLTextureSet(handles: alternateHandles)
+        let fastHandles = IBLTextureHandles(
+            environment: AssetHandle(),
+            irradiance: AssetHandle(),
+            prefiltered: AssetHandle(),
+            brdf: BuiltinAssets.brdfLut
+        )
+        _iblFastHandles = fastHandles
+        ensureIBLTextureSet(
+            handles: fastHandles,
+            environmentSize: _environmentSizeFast,
+            irradianceSize: _irradianceSizeFast,
+            prefilteredSize: _prefilteredSizeFast,
+            labelSuffix: "Fast"
+        )
+        _lastSkyInteractionTime = CACurrentMediaTime()
+        let iblAllocationEnd = CACurrentMediaTime()
+        EngineLoggerContext.log(
+            "IBL resource allocation/prewarm dt=\(String(format: "%.3f", iblAllocationEnd - iblAllocationStart))s",
+            level: .debug,
+            category: .renderer
+        )
         let frameContext = _frameContextStorage.beginFrame()
         _frameContextStorage.updateRendererState(
             settings: settings,
@@ -152,6 +181,11 @@ public final class Renderer: NSObject {
         var fireflyClamp: Float
         var fireflyClampEnabled: Bool
         var samplingStrategy: String
+    }
+
+    private enum IBLBuildMode: String {
+        case interactive
+        case final
     }
 
     // MARK: - Render pass descriptor helpers
@@ -243,13 +277,14 @@ public final class Renderer: NSObject {
         }
     }
 
-    private func iblConfig() -> IBLGenerationConfig {
+    private func iblConfig(mode: IBLBuildMode) -> IBLGenerationConfig {
         let preset = iblQualityPreset()
         let multiplier = iblSampleMultiplier(for: preset)
-        let irradianceSamples = UInt32(max(512.0, min(8192.0, multiplier * 2048.0)))
-        let prefilterBase = max(128.0, min(4096.0, multiplier * 1024.0))
-        let minSamples = UInt32(max(128.0, min(1024.0, prefilterBase * 0.25)))
-        let maxSamples = UInt32(max(512.0, min(4096.0, prefilterBase)))
+        let modeScale: Float = (mode == .interactive) ? 0.2 : 1.0
+        let irradianceSamples = UInt32(max(128.0, min(8192.0, modeScale * multiplier * 2048.0)))
+        let prefilterBase = max(64.0, min(4096.0, modeScale * multiplier * 1024.0))
+        let minSamples = UInt32(max(64.0, min(1024.0, prefilterBase * 0.20)))
+        let maxSamples = UInt32(max(128.0, min(4096.0, prefilterBase)))
         return IBLGenerationConfig(
             qualityPreset: preset,
             irradianceSamples: irradianceSamples,
@@ -257,7 +292,9 @@ public final class Renderer: NSObject {
             prefilterSamplesMax: maxSamples,
             fireflyClamp: settings.iblFireflyClamp,
             fireflyClampEnabled: settings.iblFireflyClampEnabled != 0,
-            samplingStrategy: "cosine + GGX importance sampling"
+            samplingStrategy: mode == .interactive
+                ? "interactive reduced-sample cosine + GGX"
+                : "cosine + GGX importance sampling"
         )
     }
 
@@ -283,18 +320,56 @@ public final class Renderer: NSObject {
     }
 
     private func ensureIBLTextureSet(handles: IBLTextureHandles) {
+        ensureIBLTextureSet(
+            handles: handles,
+            environmentSize: _environmentSize,
+            irradianceSize: _irradianceSize,
+            prefilteredSize: _prefilteredSize,
+            labelSuffix: "Next"
+        )
+    }
+
+    private func ensureIBLTextureSet(
+        handles: IBLTextureHandles,
+        environmentSize: Int,
+        irradianceSize: Int,
+        prefilteredSize: Int,
+        labelSuffix: String
+    ) {
         if engineContext.assets.texture(handle: handles.environment) == nil,
-           let env = makeCubemapTexture(size: _environmentSize, mipmapped: true, label: "IBL.EnvironmentCubemap.Next") {
+           let env = makeCubemapTexture(size: environmentSize, mipmapped: true, label: "IBL.EnvironmentCubemap.\(labelSuffix)") {
             engineContext.assets.registerRuntimeTexture(handle: handles.environment, texture: env)
         }
         if engineContext.assets.texture(handle: handles.irradiance) == nil,
-           let irr = makeCubemapTexture(size: _irradianceSize, mipmapped: false, label: "IBL.IrradianceCubemap.Next") {
+           let irr = makeCubemapTexture(size: irradianceSize, mipmapped: false, label: "IBL.IrradianceCubemap.\(labelSuffix)") {
             engineContext.assets.registerRuntimeTexture(handle: handles.irradiance, texture: irr)
         }
         if engineContext.assets.texture(handle: handles.prefiltered) == nil,
-           let pre = makeCubemapTexture(size: _prefilteredSize, mipmapped: true, label: "IBL.PrefilteredCubemap.Next") {
+           let pre = makeCubemapTexture(size: prefilteredSize, mipmapped: true, label: "IBL.PrefilteredCubemap.\(labelSuffix)") {
             engineContext.assets.registerRuntimeTexture(handle: handles.prefiltered, texture: pre)
         }
+    }
+
+    private func prewarmIBLPipelinesWithTiming() {
+        let warmStart = CACurrentMediaTime()
+        let cubemapStart = CACurrentMediaTime()
+        _ = engineContext.graphics.renderPipelineStates[.Cubemap]
+        let cubemapDt = CACurrentMediaTime() - cubemapStart
+        let irradianceStart = CACurrentMediaTime()
+        _ = engineContext.graphics.renderPipelineStates[.IrradianceMap]
+        let irradianceDt = CACurrentMediaTime() - irradianceStart
+        let prefilteredStart = CACurrentMediaTime()
+        _ = engineContext.graphics.renderPipelineStates[.PrefilteredMap]
+        let prefilteredDt = CACurrentMediaTime() - prefilteredStart
+        let proceduralStart = CACurrentMediaTime()
+        _ = engineContext.graphics.renderPipelineStates[.ProceduralSkyCubemap]
+        let proceduralDt = CACurrentMediaTime() - proceduralStart
+        let totalDt = CACurrentMediaTime() - warmStart
+        EngineLoggerContext.log(
+            "IBL pipeline warmup total=\(String(format: "%.3f", totalDt))s [cubemap=\(String(format: "%.3f", cubemapDt))s, irr=\(String(format: "%.3f", irradianceDt))s, pre=\(String(format: "%.3f", prefilteredDt))s, procedural=\(String(format: "%.3f", proceduralDt))s]",
+            level: .debug,
+            category: .renderer
+        )
     }
 
     private func activeIBLHandles() -> IBLTextureHandles {
@@ -326,24 +401,21 @@ public final class Renderer: NSObject {
         }
     }
 
-    private func renderSkyToEnvironmentMap(hdriHandle: AssetHandle?, intensity: Float, targetEnvironment: MTLTexture, frameContext: RendererFrameContext, commandBuffer: MTLCommandBuffer) {
-        guard let cubemapMesh = engineContext.assets.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
-        guard let envHandle = hdriHandle,
-              let envTexture = engineContext.assets.texture(handle: envHandle) else { return }
+    private func renderSkyToEnvironmentMap(hdriTexture: MTLTexture, intensity: Float, targetEnvironment: MTLTexture, frameContext: RendererFrameContext, commandBuffer: MTLCommandBuffer) {
+        guard let quadMesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
         validateIBLResources(environment: targetEnvironment, irradiance: nil, prefiltered: nil)
         for face in 0..<6 {
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createCubemapRenderPassDescriptor(texture: targetEnvironment, face: face)) else { continue }
             encoder.label = "Cubemap face \(face)"
             encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.Cubemap])
-            encoder.setCullMode(.front)
-            encoder.setFrontFacing(.clockwise)
-            var vp = _viewProjections[face]
+            encoder.setCullMode(.none)
+            var vp = matrix_identity_float4x4
             encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
-            var skyIntensity = intensity
-            encoder.setFragmentBytes(&skyIntensity, length: MemoryLayout<Float>.stride, index: FragmentBufferIndex.skyIntensity)
-            encoder.setFragmentTexture(envTexture, index: IBLTextureIndex.environment)
+            var cubemapParams = SIMD2<Float>(max(intensity, 0.0), Float(face))
+            encoder.setFragmentBytes(&cubemapParams, length: MemoryLayout<SIMD2<Float>>.stride, index: FragmentBufferIndex.skyIntensity)
+            encoder.setFragmentTexture(hdriTexture, index: IBLTextureIndex.environment)
             encoder.setFragmentSamplerState(engineContext.graphics.samplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
-            cubemapMesh.drawPrimitives(encoder, frameContext: frameContext)
+            quadMesh.drawPrimitives(encoder, frameContext: frameContext)
             encoder.endEncoding()
         }
         if targetEnvironment.mipmapLevelCount > 1,
@@ -353,19 +425,19 @@ public final class Renderer: NSObject {
         }
     }
 
-    private func renderIrradianceMap(sourceEnvironment: MTLTexture, targetIrradiance: MTLTexture, frameContext: RendererFrameContext, commandBuffer: MTLCommandBuffer) {
-        let config = iblConfig()
-        guard let cubemapMesh = engineContext.assets.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
+    private func renderIrradianceMap(sourceEnvironment: MTLTexture,
+                                     targetIrradiance: MTLTexture,
+                                     config: IBLGenerationConfig,
+                                     frameContext: RendererFrameContext,
+                                     commandBuffer: MTLCommandBuffer) {
+        guard let quadMesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
         validateIBLResources(environment: sourceEnvironment, irradiance: targetIrradiance, prefiltered: nil)
         for face in 0..<6 {
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createCubemapRenderPassDescriptor(texture: targetIrradiance, face: face)) else { continue }
             encoder.label = "Irradiance Cubemap face: \(face)"
             encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.IrradianceMap])
-            encoder.setCullMode(.front)
-            encoder.setFrontFacing(.clockwise)
-            // IBL outputs must match canonical env cubemap face order; swap +Z/-Z only.
-            let viewIndex = (face == 4) ? 5 : (face == 5 ? 4 : face)
-            var vp = _viewProjections[viewIndex]
+            encoder.setCullMode(.none)
+            var vp = matrix_identity_float4x4
             encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
             var params = IBLIrradianceParams()
             params.sampleCount = config.irradianceSamples
@@ -375,16 +447,19 @@ public final class Renderer: NSObject {
             encoder.setFragmentBytes(&params, length: IBLIrradianceParams.stride, index: FragmentBufferIndex.iblParams)
             encoder.setFragmentTexture(sourceEnvironment, index: IBLTextureIndex.environment)
             encoder.setFragmentSamplerState(engineContext.graphics.samplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
-            cubemapMesh.drawPrimitives(encoder, frameContext: frameContext)
+            quadMesh.drawPrimitives(encoder, frameContext: frameContext)
             encoder.endEncoding()
         }
     }
 
-    private func renderPrefilteredSpecularMap(sourceEnvironment: MTLTexture, targetPrefiltered: MTLTexture, frameContext: RendererFrameContext, commandBuffer: MTLCommandBuffer) {
-        let config = iblConfig()
+    private func renderPrefilteredSpecularMap(sourceEnvironment: MTLTexture,
+                                              targetPrefiltered: MTLTexture,
+                                              config: IBLGenerationConfig,
+                                              frameContext: RendererFrameContext,
+                                              commandBuffer: MTLCommandBuffer) {
         let mipCount = targetPrefiltered.mipmapLevelCount
         let baseSize = targetPrefiltered.width
-        guard let cubemapMesh = engineContext.assets.mesh(handle: BuiltinAssets.cubemapMesh) else { return }
+        guard let quadMesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
         validateIBLResources(environment: sourceEnvironment, irradiance: nil, prefiltered: targetPrefiltered)
         if sourceEnvironment.mipmapLevelCount > 1, let blit = commandBuffer.makeBlitCommandEncoder() {
             blit.generateMipmaps(for: sourceEnvironment)
@@ -398,20 +473,17 @@ public final class Renderer: NSObject {
                 guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else { continue }
                 encoder.label = "Specular face \(face), mip \(mip)"
                 encoder.setRenderPipelineState(engineContext.graphics.renderPipelineStates[.PrefilteredMap])
-                encoder.setCullMode(.front)
-                encoder.setFrontFacing(.clockwise)
+                encoder.setCullMode(.none)
                 encoder.setViewport(MTLViewport(
                     originX: 0, originY: 0,
                     width: Double(mipSize), height: Double(mipSize),
                     znear: 0, zfar: 1
                 ))
-                // IBL outputs must match canonical env cubemap face order; swap +Z/-Z only.
-                let viewIndex = (face == 4) ? 5 : (face == 5 ? 4 : face)
-                var vp = _viewProjections[viewIndex]
+                var vp = matrix_identity_float4x4
                 encoder.setVertexBytes(&vp, length: MemoryLayout<float4x4>.stride, index: VertexBufferIndex.cubemapViewProjection)
                 var params = IBLPrefilterParams()
                 params.roughness = roughness
-                params.sampleCount = prefilterSampleCount(for: roughness, config: config)
+                params.sampleCount = prefilterSampleCount(for: roughness, mipIndex: mip, mipCount: mipCount, config: config)
                 params.fireflyClamp = config.fireflyClamp
                 params.fireflyClampEnabled = config.fireflyClampEnabled ? 1 : 0
                 params.envMipCount = Float(sourceEnvironment.mipmapLevelCount)
@@ -419,42 +491,91 @@ public final class Renderer: NSObject {
                 encoder.setFragmentBytes(&params, length: IBLPrefilterParams.stride, index: FragmentBufferIndex.iblParams)
                 encoder.setFragmentTexture(sourceEnvironment, index: IBLTextureIndex.environment)
                 encoder.setFragmentSamplerState(engineContext.graphics.samplerStates[.LinearClamp], index: FragmentSamplerIndex.linearClamp)
-                cubemapMesh.drawPrimitives(encoder, frameContext: frameContext)
+                quadMesh.drawPrimitives(encoder, frameContext: frameContext)
                 encoder.endEncoding()
             }
         }
     }
 
-    private func prefilterSampleCount(for roughness: Float, config: IBLGenerationConfig) -> UInt32 {
+    private func prefilterSampleCount(for roughness: Float, mipIndex: Int, mipCount: Int, config: IBLGenerationConfig) -> UInt32 {
         let glossyFactor = pow(max(1.0 - roughness, 0.0), 2.0)
+        let mipT = Float(mipIndex) / Float(max(mipCount - 1, 1))
+        let mipScale = max(0.25, 1.0 - mipT * 0.70)
         let range = max(Float(config.prefilterSamplesMax - config.prefilterSamplesMin), 1.0)
-        let samples = Float(config.prefilterSamplesMin) + range * glossyFactor
+        let samples = Float(config.prefilterSamplesMin) + range * glossyFactor * mipScale
         return UInt32(max(Float(config.prefilterSamplesMin), min(Float(config.prefilterSamplesMax), samples)))
     }
 
+    private func createBRDFLUTTexture(pixelFormat: MTLPixelFormat) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: pixelFormat,
+            width: _brdfLutSize,
+            height: _brdfLutSize,
+            mipmapped: false
+        )
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .private
+        return engineContext.device.makeTexture(descriptor: descriptor)
+    }
+
+    private func resolveBRDFLUTPixelFormat() -> MTLPixelFormat {
+        if createBRDFLUTTexture(pixelFormat: .rg16Float) != nil {
+            return .rg16Float
+        }
+        if createBRDFLUTTexture(pixelFormat: .rg32Float) != nil {
+            return .rg32Float
+        }
+        return .rg16Float
+    }
+
+    @discardableResult
+    private func ensureBRDFLUTTexture() -> MTLTexture? {
+        let targetFormat = resolveBRDFLUTPixelFormat()
+        if let existing = engineContext.assets.texture(handle: BuiltinAssets.brdfLut),
+           existing.width == _brdfLutSize,
+           existing.height == _brdfLutSize,
+           existing.pixelFormat == targetFormat {
+            return existing
+        }
+        guard let texture = createBRDFLUTTexture(pixelFormat: targetFormat) else { return nil }
+        texture.label = "IBL.BRDFLUT"
+        engineContext.assets.registerRuntimeTexture(handle: BuiltinAssets.brdfLut, texture: texture)
+        return texture
+    }
+
+    private func brdfPipelineState(for pixelFormat: MTLPixelFormat) -> MTLRenderPipelineState? {
+        if pixelFormat == .rg16Float {
+            return engineContext.graphics.renderPipelineStates[.BRDF]
+        }
+        if let cached = _brdfPipelineStateByFormat[pixelFormat] {
+            return cached
+        }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.label = "BRDF (\(pixelFormat.rawValue))"
+        descriptor.colorAttachments[0].pixelFormat = pixelFormat
+        descriptor.depthAttachmentPixelFormat = .invalid
+        descriptor.vertexFunction = engineContext.graphics.shaders[.FSQuadVertex]
+        descriptor.fragmentFunction = engineContext.graphics.shaders[.BRDFFragment]
+        descriptor.vertexDescriptor = engineContext.graphics.vertexDescriptors[.Simple]
+        guard let state = try? engineContext.device.makeRenderPipelineState(descriptor: descriptor) else {
+            return nil
+        }
+        _brdfPipelineStateByFormat[pixelFormat] = state
+        return state
+    }
+
     private func renderBRDFLUT(frameContext: RendererFrameContext) {
+        guard let brdfTexture = ensureBRDFLUTTexture() else { return }
+        guard let pipelineState = brdfPipelineState(for: brdfTexture.pixelFormat) else { return }
         guard let commandBuffer = engineContext.commandQueue.makeCommandBuffer() else { return }
         commandBuffer.label = "Render BRDF LUT"
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: createColorOnlyRenderPassDescriptor(colorTarget: BuiltinAssets.brdfLut)) else { return }
+        let passDescriptor = makeRenderPassDescriptor(colorTexture: brdfTexture)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else { return }
         guard let quadMesh = engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
-        let pass = FullscreenPass(
-            pipeline: .BRDF,
-            label: "BRDF LUT Encoder",
-            sampler: .LinearClampToZero,
-            useSampler: false,
-            texture0: nil,
-            useTexture0: false,
-            texture1: nil,
-            useTexture1: false,
-            outlineMask: nil,
-            useOutlineMask: false,
-            depth: nil,
-            useDepth: false,
-            grid: nil,
-            useGrid: false,
-            settings: nil
-        )
-        pass.encode(into: encoder, quad: quadMesh, frameContext: frameContext, graphics: engineContext.graphics)
+        encoder.label = "BRDF LUT Encoder"
+        encoder.setRenderPipelineState(pipelineState)
+        encoder.setCullMode(.none)
+        quadMesh.drawPrimitives(encoder, frameContext: frameContext)
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
@@ -485,7 +606,7 @@ public final class Renderer: NSObject {
 
     private func skyParams(from sky: SkyLightComponent) -> SkyParams {
         var params = SkyParams()
-        params.sunDirection = SkySystem.sunDirection(azimuthDegrees: sky.azimuthDegrees, elevationDegrees: -sky.elevationDegrees)
+        params.sunDirection = SkySystem.sunDirection(azimuthDegrees: sky.azimuthDegrees, elevationDegrees: sky.elevationDegrees)
         params.sunAngularRadius = max(0.0001, sky.sunSizeDegrees * Float.pi / 180.0)
         params.sunColor = SIMD3<Float>(1.0, 0.98, 0.92)
         params.sunIntensity = max(1.0, sky.intensity * 10.0)
@@ -574,6 +695,7 @@ public final class Renderer: NSObject {
             || (prefiltered?.width ?? 0) <= 1
         if isFallbackIBL && !sky.needsRebuild {
             sky.needsRebuild = true
+            sky.rebuildRequested = true
             scene.ecs.add(sky, to: entity)
         }
 
@@ -594,6 +716,7 @@ public final class Renderer: NSObject {
                 sky = updated
                 _lastSkyRequestedSnapshot = updated
                 _lastSkyLiveUpdateTime = now
+                _lastSkyInteractionTime = now
                 }
             }
         }
@@ -617,20 +740,30 @@ public final class Renderer: NSObject {
         let snapshot = _pendingSkySnapshot ?? updated
         _pendingSkySnapshot = nil
         let nextIndex = (_activeIBLHandleIndex + 1) % _iblHandleSets.count
-        let nextHandles = _iblHandleSets[nextIndex]
+        let finalHandles = _iblHandleSets[nextIndex]
+        let withinInteractiveWindow = (now - _lastSkyInteractionTime) < _skyInteractiveSettleDelay
+        let buildMode: IBLBuildMode = withinInteractiveWindow ? .interactive : .final
+        let targetHandles = (buildMode == .interactive ? (_iblFastHandles ?? finalHandles) : finalHandles)
+        let modeLabel = buildMode.rawValue
         _skyRebuildInFlight = true
         _lastSkyRebuildStartTime = now
+        let requestStart = CACurrentMediaTime()
         EngineLoggerContext.log(
-            "IBL rebuild scheduled (t=\(String(format: "%.3f", now)))",
+            "IBL rebuild scheduled (t=\(String(format: "%.3f", now)), mode=\(modeLabel))",
             level: .debug,
             category: .renderer
         )
         _skyRebuildQueue.async { [weak self] in
             guard let self = self else { return }
-            let frameContext = RendererFrameContextStorage(engineContext: self.engineContext).beginFrame()
-            guard let targetEnv = self.engineContext.assets.texture(handle: nextHandles.environment),
-                  let targetIrr = self.engineContext.assets.texture(handle: nextHandles.irradiance),
-                  let targetPre = self.engineContext.assets.texture(handle: nextHandles.prefiltered) else {
+            let isMainThread = Thread.isMainThread
+            MC_ASSERT(!isMainThread, "IBL rebuild must not run on the main thread.")
+            let threadLabel = isMainThread ? "main" : "background"
+            let frameContext = self._skyRebuildFrameContextStorage.beginFrame()
+            let generationConfig = self.iblConfig(mode: buildMode)
+            let resourceLookupStart = CACurrentMediaTime()
+            guard let targetEnv = self.engineContext.assets.texture(handle: targetHandles.environment),
+                  let targetIrr = self.engineContext.assets.texture(handle: targetHandles.irradiance),
+                  let targetPre = self.engineContext.assets.texture(handle: targetHandles.prefiltered) else {
                 EngineLoggerContext.log(
                     "IBL rebuild aborted: missing preallocated textures.",
                     level: .warning,
@@ -641,6 +774,7 @@ public final class Renderer: NSObject {
                 }
                 return
             }
+            let resourceLookupDt = CACurrentMediaTime() - resourceLookupStart
             guard let commandBuffer = self.engineContext.commandQueue.makeCommandBuffer() else {
                 EngineLoggerContext.log(
                     "IBL rebuild aborted: failed to create command buffer.",
@@ -654,15 +788,25 @@ public final class Renderer: NSObject {
             }
             commandBuffer.label = "IBL Rebuild"
             let encodeStart = CACurrentMediaTime()
-            EngineLoggerContext.log(
-                "IBL rebuild encoding start (t=\(String(format: "%.3f", encodeStart)))",
-                level: .debug,
-                category: .renderer
-            )
+            var hdriResolveDt: Double = 0.0
             switch snapshot.mode {
             case .hdri:
+                let hdriResolveStart = CACurrentMediaTime()
+                guard let hdriHandle = snapshot.hdriHandle,
+                      let hdriTexture = self.engineContext.assets.texture(handle: hdriHandle) else {
+                    EngineLoggerContext.log(
+                        "IBL rebuild aborted: HDRI texture not resolved.",
+                        level: .warning,
+                        category: .renderer
+                    )
+                    DispatchQueue.main.async { [weak self] in
+                        self?._skyRebuildInFlight = false
+                    }
+                    return
+                }
+                hdriResolveDt = CACurrentMediaTime() - hdriResolveStart
                 self.renderSkyToEnvironmentMap(
-                    hdriHandle: snapshot.hdriHandle,
+                    hdriTexture: hdriTexture,
                     intensity: snapshot.intensity,
                     targetEnvironment: targetEnv,
                     frameContext: frameContext,
@@ -681,20 +825,27 @@ public final class Renderer: NSObject {
             self.renderIrradianceMap(
                 sourceEnvironment: targetEnv,
                 targetIrradiance: targetIrr,
+                config: generationConfig,
                 frameContext: frameContext,
                 commandBuffer: commandBuffer
             )
             self.renderPrefilteredSpecularMap(
                 sourceEnvironment: targetEnv,
                 targetPrefiltered: targetPre,
+                config: generationConfig,
                 frameContext: frameContext,
                 commandBuffer: commandBuffer
             )
+            let encodeDt = CACurrentMediaTime() - encodeStart
 
+            var commitTimestamp: Double = 0.0
+            var commitCpuDt: Double = 0.0
             commandBuffer.addCompletedHandler { [weak self] _ in
                 let completed = CACurrentMediaTime()
+                let commitToCompleteDt = commitTimestamp > 0.0 ? (completed - commitTimestamp) : 0.0
+                let totalCpuWallDt = completed - requestStart
                 EngineLoggerContext.log(
-                    "IBL rebuild completed (t=\(String(format: "%.3f", completed)), dt=\(String(format: "%.3f", completed - encodeStart)))",
+                    "IBL rebuild timings [mode=\(modeLabel), thread=\(threadLabel), waitUntilCompleted=none]: totalCpuWall=\(String(format: "%.3f", totalCpuWallDt))s, resources=\(String(format: "%.3f", resourceLookupDt))s, hdriResolve=\(String(format: "%.3f", hdriResolveDt))s, encode=\(String(format: "%.3f", encodeDt))s, commitCpu=\(String(format: "%.3f", commitCpuDt))s, commitToComplete=\(String(format: "%.3f", commitToCompleteDt))s",
                     level: .debug,
                     category: .renderer
                 )
@@ -706,12 +857,22 @@ public final class Renderer: NSObject {
                     let (currentEntity, currentSky) = currentEntry
                     var regen = currentSky
                     if self.skySettingsMatch(currentSky, snapshot) {
-                        self._activeIBLHandleIndex = nextIndex
-                        regen.iblEnvironmentHandle = nextHandles.environment
-                        regen.iblIrradianceHandle = nextHandles.irradiance
-                        regen.iblPrefilteredHandle = nextHandles.prefiltered
-                        regen.iblBrdfHandle = nextHandles.brdf
-                        regen.needsRebuild = false
+                        if buildMode == .interactive {
+                            regen.iblEnvironmentHandle = targetHandles.environment
+                            regen.iblIrradianceHandle = targetHandles.irradiance
+                            regen.iblPrefilteredHandle = targetHandles.prefiltered
+                            regen.iblBrdfHandle = targetHandles.brdf
+                            regen.needsRebuild = true
+                            regen.rebuildRequested = true
+                        } else {
+                            self._activeIBLHandleIndex = nextIndex
+                            regen.iblEnvironmentHandle = finalHandles.environment
+                            regen.iblIrradianceHandle = finalHandles.irradiance
+                            regen.iblPrefilteredHandle = finalHandles.prefiltered
+                            regen.iblBrdfHandle = finalHandles.brdf
+                            regen.needsRebuild = false
+                            regen.rebuildRequested = false
+                        }
                         self._lastSkyLiveSnapshot = regen
                         self._lastSkyRequestedSnapshot = regen
                     } else {
@@ -736,13 +897,10 @@ public final class Renderer: NSObject {
                     )
                 }
             }
-            let commitTime = CACurrentMediaTime()
-            EngineLoggerContext.log(
-                "IBL rebuild commit (t=\(String(format: "%.3f", commitTime)))",
-                level: .debug,
-                category: .renderer
-            )
+            let commitCpuStart = CACurrentMediaTime()
+            commitTimestamp = commitCpuStart
             commandBuffer.commit()
+            commitCpuDt = CACurrentMediaTime() - commitCpuStart
         }
     }
 
