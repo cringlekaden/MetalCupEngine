@@ -242,6 +242,8 @@ public struct ScriptComponent {
     public var typeName: String
     public var fieldData: Data
     public var fieldDataVersion: UInt32
+    public var serializedFields: [String: ScriptFieldValue]
+    public var fieldMetadata: [String: ScriptFieldMetadata]
     public var runtimeState: RuntimeState
     public var instanceHandle: UInt64
     public var hasInstance: Bool
@@ -252,6 +254,8 @@ public struct ScriptComponent {
                 typeName: String = "",
                 fieldData: Data = Data(),
                 fieldDataVersion: UInt32 = 1,
+                serializedFields: [String: ScriptFieldValue] = [:],
+                fieldMetadata: [String: ScriptFieldMetadata] = [:],
                 runtimeState: RuntimeState = .unloaded,
                 instanceHandle: UInt64 = 0,
                 hasInstance: Bool = false,
@@ -261,10 +265,191 @@ public struct ScriptComponent {
         self.typeName = typeName
         self.fieldData = fieldData
         self.fieldDataVersion = fieldDataVersion
+        self.serializedFields = serializedFields
+        self.fieldMetadata = fieldMetadata
         self.runtimeState = runtimeState
         self.instanceHandle = instanceHandle
         self.hasInstance = hasInstance
         self.lastError = lastError
+    }
+}
+
+public enum ScriptFieldType: String, Codable, CaseIterable {
+    case bool
+    case int
+    case float
+    case vec2
+    case vec3
+    case color3
+    case string
+    case entity
+    case prefab
+
+    // Backward-compat aliases used by older serialized data.
+    case number
+    case boolean
+}
+
+public struct ScriptFieldMetadata: Equatable {
+    public var name: String
+    public var type: ScriptFieldType
+    public var defaultValue: ScriptFieldValue
+    public var minValue: Float?
+    public var maxValue: Float?
+    public var step: Float?
+    public var tooltip: String
+
+    public init(name: String,
+                type: ScriptFieldType,
+                defaultValue: ScriptFieldValue,
+                minValue: Float? = nil,
+                maxValue: Float? = nil,
+                step: Float? = nil,
+                tooltip: String = "") {
+        self.name = name
+        self.type = type
+        self.defaultValue = defaultValue
+        self.minValue = minValue
+        self.maxValue = maxValue
+        self.step = step
+        self.tooltip = tooltip
+    }
+}
+
+public enum ScriptFieldValue: Equatable {
+    case bool(Bool)
+    case int(Int32)
+    case float(Float)
+    case vec2(SIMD2<Float>)
+    case vec3(SIMD3<Float>)
+    case color3(SIMD3<Float>)
+    case string(String)
+    case entity(UUID?)
+    case prefab(AssetHandle?)
+}
+
+extension ScriptFieldValue: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case bool
+        case int
+        case float
+        case number
+        case boolean
+        case string
+        case vec2
+        case vec3
+        case color3
+        case entity
+        case prefab
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(ScriptFieldType.self, forKey: .type)
+        switch type {
+        case .bool:
+            self = .bool(try container.decode(Bool.self, forKey: .bool))
+        case .int:
+            self = .int(try container.decode(Int32.self, forKey: .int))
+        case .float:
+            self = .float(try container.decode(Float.self, forKey: .float))
+        case .vec2:
+            let values = try container.decode([Float].self, forKey: .vec2)
+            let x = values.count > 0 ? values[0] : 0.0
+            let y = values.count > 1 ? values[1] : 0.0
+            self = .vec2(SIMD2<Float>(x, y))
+        case .number:
+            self = .float(try container.decode(Float.self, forKey: .number))
+        case .boolean:
+            self = .bool(try container.decode(Bool.self, forKey: .boolean))
+        case .string:
+            self = .string(try container.decode(String.self, forKey: .string))
+        case .vec3:
+            let values = try container.decode([Float].self, forKey: .vec3)
+            let x = values.count > 0 ? values[0] : 0.0
+            let y = values.count > 1 ? values[1] : 0.0
+            let z = values.count > 2 ? values[2] : 0.0
+            self = .vec3(SIMD3<Float>(x, y, z))
+        case .color3:
+            let values = try container.decode([Float].self, forKey: .color3)
+            let x = values.count > 0 ? values[0] : 1.0
+            let y = values.count > 1 ? values[1] : 1.0
+            let z = values.count > 2 ? values[2] : 1.0
+            self = .color3(SIMD3<Float>(x, y, z))
+        case .entity:
+            if let raw = try container.decodeIfPresent(String.self, forKey: .entity), let uuid = UUID(uuidString: raw) {
+                self = .entity(uuid)
+            } else {
+                self = .entity(nil)
+            }
+        case .prefab:
+            if let raw = try container.decodeIfPresent(String.self, forKey: .prefab),
+               let uuid = UUID(uuidString: raw) {
+                self = .prefab(AssetHandle(rawValue: uuid))
+            } else {
+                self = .prefab(nil)
+            }
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .bool(value):
+            try container.encode(ScriptFieldType.bool, forKey: .type)
+            try container.encode(value, forKey: .bool)
+        case let .int(value):
+            try container.encode(ScriptFieldType.int, forKey: .type)
+            try container.encode(value, forKey: .int)
+        case let .float(value):
+            try container.encode(ScriptFieldType.float, forKey: .type)
+            try container.encode(value, forKey: .float)
+        case let .vec2(value):
+            try container.encode(ScriptFieldType.vec2, forKey: .type)
+            try container.encode([value.x, value.y], forKey: .vec2)
+        case let .string(value):
+            try container.encode(ScriptFieldType.string, forKey: .type)
+            try container.encode(value, forKey: .string)
+        case let .vec3(value):
+            try container.encode(ScriptFieldType.vec3, forKey: .type)
+            try container.encode([value.x, value.y, value.z], forKey: .vec3)
+        case let .color3(value):
+            try container.encode(ScriptFieldType.color3, forKey: .type)
+            try container.encode([value.x, value.y, value.z], forKey: .color3)
+        case let .entity(value):
+            try container.encode(ScriptFieldType.entity, forKey: .type)
+            try container.encode(value?.uuidString, forKey: .entity)
+        case let .prefab(value):
+            try container.encode(ScriptFieldType.prefab, forKey: .type)
+            try container.encode(value?.rawValue.uuidString, forKey: .prefab)
+        }
+    }
+}
+
+public struct CharacterControllerComponent {
+    public var isEnabled: Bool
+    public var height: Float
+    public var radius: Float
+    public var stepOffset: Float
+    public var slopeLimit: Float
+    public var moveSpeed: Float
+    public var jumpForce: Float
+
+    public init(isEnabled: Bool = true,
+                height: Float = 1.8,
+                radius: Float = 0.35,
+                stepOffset: Float = 0.25,
+                slopeLimit: Float = 45.0,
+                moveSpeed: Float = 4.0,
+                jumpForce: Float = 5.5) {
+        self.isEnabled = isEnabled
+        self.height = height
+        self.radius = radius
+        self.stepOffset = stepOffset
+        self.slopeLimit = slopeLimit
+        self.moveSpeed = moveSpeed
+        self.jumpForce = jumpForce
     }
 }
 

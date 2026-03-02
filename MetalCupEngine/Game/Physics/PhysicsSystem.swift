@@ -347,6 +347,49 @@ public final class PhysicsSystem {
         world.isBodySleeping(bodyId: bodyId)
     }
 
+    @discardableResult
+    public func setBodyTransform(entity: Entity,
+                                 scene: EngineScene,
+                                 position: SIMD3<Float>,
+                                 rotation: SIMD4<Float>,
+                                 activate: Bool = true) -> Bool {
+        guard let rigidbody = scene.ecs.get(RigidbodyComponent.self, for: entity),
+              let bodyId = rigidbody.bodyId else { return false }
+        world.setBodyTransform(bodyId: bodyId,
+                               position: position,
+                               rotation: rotation,
+                               activate: activate)
+        return true
+    }
+
+    @discardableResult
+    public func setBodyLinearVelocity(entity: Entity, scene: EngineScene, velocity: SIMD3<Float>) -> Bool {
+        guard let rigidbody = scene.ecs.get(RigidbodyComponent.self, for: entity),
+              let bodyId = rigidbody.bodyId else { return false }
+        let angular = world.getBodyVelocity(bodyId: bodyId)?.angular ?? SIMD3<Float>(repeating: 0.0)
+        world.setBodyVelocity(bodyId: bodyId, linear: velocity, angular: angular)
+        return true
+    }
+
+    public func bodyVelocity(entity: Entity, scene: EngineScene) -> SIMD3<Float>? {
+        guard let rigidbody = scene.ecs.get(RigidbodyComponent.self, for: entity),
+              let bodyId = rigidbody.bodyId else { return nil }
+        return world.getBodyVelocity(bodyId: bodyId)?.linear
+    }
+
+    public func isGrounded(entity: Entity, scene: EngineScene, probeDistance: Float = 0.2) -> Bool {
+        guard scene.ecs.get(TransformComponent.self, for: entity) != nil else { return false }
+        let worldTransform = scene.ecs.worldTransform(for: entity)
+        let origin = worldTransform.position + SIMD3<Float>(0.0, max(0.05, probeDistance), 0.0)
+        let hit = world.sphereCastClosest(origin: origin,
+                                          direction: SIMD3<Float>(0.0, -1.0, 0.0),
+                                          radius: 0.2,
+                                          maxDistance: max(0.05, probeDistance * 2.0))
+        guard let hit else { return false }
+        guard let entityId = hit.entityId else { return true }
+        return entityId != entity.id
+    }
+
     public func raycast(origin: SIMD3<Float>,
                         direction: SIMD3<Float>,
                         maxDistance: Float,

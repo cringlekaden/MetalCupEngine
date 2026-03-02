@@ -60,6 +60,7 @@ public struct ComponentsDocument: Codable {
     public var lightOrbit: LightOrbitComponentDTO?
     public var camera: CameraComponentDTO?
     public var script: ScriptComponentDTO?
+    public var characterController: CharacterControllerComponentDTO?
     public var sky: SkyComponentDTO?
     public var skyLight: SkyLightComponentDTO?
     public var skyLightTag: TagComponentDTO?
@@ -79,6 +80,7 @@ public struct ComponentsDocument: Codable {
         lightOrbit: LightOrbitComponentDTO? = nil,
         camera: CameraComponentDTO? = nil,
         script: ScriptComponentDTO? = nil,
+        characterController: CharacterControllerComponentDTO? = nil,
         sky: SkyComponentDTO? = nil,
         skyLight: SkyLightComponentDTO? = nil,
         skyLightTag: TagComponentDTO? = nil,
@@ -97,6 +99,7 @@ public struct ComponentsDocument: Codable {
         self.lightOrbit = lightOrbit
         self.camera = camera
         self.script = script
+        self.characterController = characterController
         self.sky = sky
         self.skyLight = skyLight
         self.skyLightTag = skyLightTag
@@ -660,19 +663,32 @@ public struct ScriptComponentDTO: Codable {
     public var typeName: String
     public var fieldDataBase64: String
     public var fieldDataVersion: UInt32
+    public var serializedFields: [String: ScriptFieldValue]
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case enabled
+        case scriptAssetHandle
+        case typeName
+        case fieldDataBase64
+        case fieldDataVersion
+        case serializedFields
+    }
 
     public init(schemaVersion: Int = 1,
                 enabled: Bool,
                 scriptAssetHandle: AssetHandle?,
                 typeName: String,
                 fieldDataBase64: String,
-                fieldDataVersion: UInt32 = 1) {
+                fieldDataVersion: UInt32 = 1,
+                serializedFields: [String: ScriptFieldValue] = [:]) {
         self.schemaVersion = schemaVersion
         self.enabled = enabled
         self.scriptAssetHandle = scriptAssetHandle
         self.typeName = typeName
         self.fieldDataBase64 = fieldDataBase64
         self.fieldDataVersion = fieldDataVersion
+        self.serializedFields = serializedFields
     }
 
     public init(component: ScriptComponent) {
@@ -682,6 +698,29 @@ public struct ScriptComponentDTO: Codable {
         self.typeName = component.typeName
         self.fieldDataBase64 = component.fieldData.base64EncodedString()
         self.fieldDataVersion = component.fieldDataVersion
+        self.serializedFields = component.serializedFields
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        scriptAssetHandle = try container.decodeIfPresent(AssetHandle.self, forKey: .scriptAssetHandle)
+        typeName = try container.decodeIfPresent(String.self, forKey: .typeName) ?? ""
+        fieldDataBase64 = try container.decodeIfPresent(String.self, forKey: .fieldDataBase64) ?? ""
+        fieldDataVersion = try container.decodeIfPresent(UInt32.self, forKey: .fieldDataVersion) ?? 1
+        serializedFields = try container.decodeIfPresent([String: ScriptFieldValue].self, forKey: .serializedFields) ?? [:]
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encodeIfPresent(scriptAssetHandle, forKey: .scriptAssetHandle)
+        try container.encode(typeName, forKey: .typeName)
+        try container.encode(fieldDataBase64, forKey: .fieldDataBase64)
+        try container.encode(fieldDataVersion, forKey: .fieldDataVersion)
+        try container.encode(serializedFields, forKey: .serializedFields)
     }
 
     public func toComponent() -> ScriptComponent {
@@ -690,7 +729,58 @@ public struct ScriptComponentDTO: Codable {
                                scriptAssetHandle: scriptAssetHandle,
                                typeName: typeName,
                                fieldData: decoded,
-                               fieldDataVersion: fieldDataVersion)
+                               fieldDataVersion: fieldDataVersion,
+                               serializedFields: serializedFields)
+    }
+}
+
+public struct CharacterControllerComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var height: Float
+    public var radius: Float
+    public var stepOffset: Float
+    public var slopeLimit: Float
+    public var moveSpeed: Float
+    public var jumpForce: Float
+
+    public init(schemaVersion: Int = 1,
+                enabled: Bool,
+                height: Float,
+                radius: Float,
+                stepOffset: Float,
+                slopeLimit: Float,
+                moveSpeed: Float,
+                jumpForce: Float) {
+        self.schemaVersion = schemaVersion
+        self.enabled = enabled
+        self.height = height
+        self.radius = radius
+        self.stepOffset = stepOffset
+        self.slopeLimit = slopeLimit
+        self.moveSpeed = moveSpeed
+        self.jumpForce = jumpForce
+    }
+
+    public init(component: CharacterControllerComponent) {
+        self.schemaVersion = 1
+        self.enabled = component.isEnabled
+        self.height = component.height
+        self.radius = component.radius
+        self.stepOffset = component.stepOffset
+        self.slopeLimit = component.slopeLimit
+        self.moveSpeed = component.moveSpeed
+        self.jumpForce = component.jumpForce
+    }
+
+    public func toComponent() -> CharacterControllerComponent {
+        CharacterControllerComponent(isEnabled: enabled,
+                                     height: height,
+                                     radius: radius,
+                                     stepOffset: stepOffset,
+                                     slopeLimit: slopeLimit,
+                                     moveSpeed: moveSpeed,
+                                     jumpForce: jumpForce)
     }
 }
 

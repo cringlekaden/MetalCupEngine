@@ -42,6 +42,7 @@ public enum SceneECSComponentType: Int32 {
     case skyLight = 16
     case skyLightTag = 17
     case skySunTag = 18
+    case characterController = 19
 }
 
 public struct SceneECSChange {
@@ -76,6 +77,7 @@ public final class SceneECS {
     private var skyLightComponents: [Entity: SkyLightComponent] = [:]
     private var skyLightTags: [Entity: SkyLightTag] = [:]
     private var skySunTags: [Entity: SkySunTag] = [:]
+    private var characterControllerComponents: [Entity: CharacterControllerComponent] = [:]
 
     private var parentByEntity: [Entity: Entity] = [:]
     private var childrenByEntity: [Entity: [Entity]] = [:]
@@ -155,6 +157,7 @@ public final class SceneECS {
         skyLightComponents.removeAll()
         skyLightTags.removeAll()
         skySunTags.removeAll()
+        characterControllerComponents.removeAll()
         parentByEntity.removeAll()
         childrenByEntity.removeAll()
         rootEntities.removeAll()
@@ -365,6 +368,17 @@ public final class SceneECS {
             if !existed {
                 enqueueChange(.componentAdded, entity: entity, componentType: .skySunTag)
             }
+        case let value as CharacterControllerComponent:
+            let previousEnabled = characterControllerComponents[entity]?.isEnabled
+            let existed = characterControllerComponents[entity] != nil
+            characterControllerComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .characterController)
+            }
+            enqueueEnabledChangedIfNeeded(previous: previousEnabled,
+                                          current: value.isEnabled,
+                                          entity: entity,
+                                          componentType: .characterController)
         default:
             return
         }
@@ -448,6 +462,10 @@ public final class SceneECS {
             if skySunTags.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .skySunTag)
             }
+        case is CharacterControllerComponent.Type:
+            if characterControllerComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .characterController)
+            }
         default:
             return
         }
@@ -494,6 +512,8 @@ public final class SceneECS {
             return skyLightTags[entity] as? T
         case is SkySunTag.Type:
             return skySunTags[entity] as? T
+        case is CharacterControllerComponent.Type:
+            return characterControllerComponents[entity] as? T
         default:
             return nil
         }
@@ -893,6 +913,9 @@ public final class SceneECS {
         }
         if skySunTags.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .skySunTag)
+        }
+        if characterControllerComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .characterController)
         }
     }
 

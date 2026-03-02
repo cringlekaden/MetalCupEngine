@@ -38,6 +38,9 @@
 		37A4EB1B2F4CDA5600AD8E55 /* lto-test.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "lto-test.xcodeproj"; sourceTree = "<group>"; };
 		37A4EB542F4CDA5600AD8E55 /* CompilerIdCXX.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = CompilerIdCXX.xcodeproj; sourceTree = "<group>"; };
 		37A4EC592F4CDA5600AD8E55 /* JoltPhysics.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = JoltPhysics.xcodeproj; sourceTree = "<group>"; };
+		37B5AF702F54FCCF00393061 /* lto-test.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "lto-test.xcodeproj"; sourceTree = "<group>"; };
+		37B5AFA92F54FCCF00393061 /* CompilerIdCXX.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = CompilerIdCXX.xcodeproj; sourceTree = "<group>"; };
+		37B5B0AE2F54FCCF00393061 /* JoltPhysics.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = JoltPhysics.xcodeproj; sourceTree = "<group>"; };
 		37EA04512F53CF9600D9C1A3 /* lto-test.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "lto-test.xcodeproj"; sourceTree = "<group>"; };
 		37EA048A2F53CF9600D9C1A3 /* CompilerIdCXX.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = CompilerIdCXX.xcodeproj; sourceTree = "<group>"; };
 		37EA058F2F53CF9600D9C1A3 /* JoltPhysics.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = JoltPhysics.xcodeproj; sourceTree = "<group>"; };
@@ -3556,6 +3559,27 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		37B5B66F2F54FCCF00393061 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		37B5B6712F54FCCF00393061 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		37B5B6732F54FCCF00393061 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
 		37EA0A602F53CF9600D9C1A3 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -3715,16 +3739,20 @@
 					ProjectRef = 37A4EB542F4CDA5600AD8E55 /* CompilerIdCXX.xcodeproj */;
 				},
 				{
-					ProductGroup = 37EA0A602F53CF9600D9C1A3 /* Products */;
-					ProjectRef = 37EA048A2F53CF9600D9C1A3 /* CompilerIdCXX.xcodeproj */;
-				},
-				{
 					ProductGroup = 374549322F4CDF5600CA8C6D /* Products */;
 					ProjectRef = 374543582F4CDF5600CA8C6D /* CompilerIdCXX.xcodeproj */;
 				},
 				{
 					ProductGroup = 37FA5BCB2F4DE8CA004B7969 /* Products */;
 					ProjectRef = 37FA55F12F4DE8CA004B7969 /* CompilerIdCXX.xcodeproj */;
+				},
+				{
+					ProductGroup = 37EA0A602F53CF9600D9C1A3 /* Products */;
+					ProjectRef = 37EA048A2F53CF9600D9C1A3 /* CompilerIdCXX.xcodeproj */;
+				},
+				{
+					ProductGroup = 37B5B6732F54FCCF00393061 /* Products */;
+					ProjectRef = 37B5AFA92F54FCCF00393061 /* CompilerIdCXX.xcodeproj */;
 				},
 				{
 					ProductGroup = 37F4B29C2F4CD8A500F6401D /* Products */;
@@ -3739,16 +3767,28 @@
 					ProjectRef = 3745445D2F4CDF5600CA8C6D /* JoltPhysics.xcodeproj */;
 				},
 				{
-					ProductGroup = 37FA5BC92F4DE8CA004B7969 /* Products */;
-					ProjectRef = 37FA56F62F4DE8CA004B7969 /* JoltPhysics.xcodeproj */;
-				},
-				{
 					ProductGroup = 37F4B4E52F4CD8AA00F6401D /* Products */;
 					ProjectRef = 37F4B4E42F4CD8AA00F6401D /* JoltPhysics.xcodeproj */;
 				},
 				{
+					ProductGroup = 37FA5BC92F4DE8CA004B7969 /* Products */;
+					ProjectRef = 37FA56F62F4DE8CA004B7969 /* JoltPhysics.xcodeproj */;
+				},
+				{
 					ProductGroup = 37EA0A622F53CF9600D9C1A3 /* Products */;
 					ProjectRef = 37EA058F2F53CF9600D9C1A3 /* JoltPhysics.xcodeproj */;
+				},
+				{
+					ProductGroup = 37B5B66F2F54FCCF00393061 /* Products */;
+					ProjectRef = 37B5B0AE2F54FCCF00393061 /* JoltPhysics.xcodeproj */;
+				},
+				{
+					ProductGroup = 37EA0A642F53CF9600D9C1A3 /* Products */;
+					ProjectRef = 37EA04512F53CF9600D9C1A3 /* lto-test.xcodeproj */;
+				},
+				{
+					ProductGroup = 37B5B6712F54FCCF00393061 /* Products */;
+					ProjectRef = 37B5AF702F54FCCF00393061 /* lto-test.xcodeproj */;
 				},
 				{
 					ProductGroup = 37FA5BC72F4DE8CA004B7969 /* Products */;
@@ -3761,10 +3801,6 @@
 				{
 					ProductGroup = 3745492E2F4CDF5600CA8C6D /* Products */;
 					ProjectRef = 3745431F2F4CDF5600CA8C6D /* lto-test.xcodeproj */;
-				},
-				{
-					ProductGroup = 37EA0A642F53CF9600D9C1A3 /* Products */;
-					ProjectRef = 37EA04512F53CF9600D9C1A3 /* lto-test.xcodeproj */;
 				},
 				{
 					ProductGroup = 37A4F12E2F4CDA5600AD8E55 /* Products */;

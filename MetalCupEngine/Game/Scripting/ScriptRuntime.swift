@@ -10,6 +10,10 @@ private typealias LuaEntityExistsCallback = @convention(c) (UnsafeMutableRawPoin
 private typealias LuaEntityGetNameCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutablePointer<CChar>?, Int32) -> UInt32
 private typealias LuaEntityGetTransformCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> UInt32
 private typealias LuaEntitySetTransformCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<Float>?, UnsafePointer<Float>?, UnsafePointer<Float>?) -> UInt32
+private typealias LuaEntityMoveCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, Float, Float, Float) -> Void
+private typealias LuaEntityJumpCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Void
+private typealias LuaEntityIsGroundedCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> UInt32
+private typealias LuaAssetGetNameCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutablePointer<CChar>?, Int32) -> UInt32
 
 private func writeCString(_ string: String, to buffer: UnsafeMutablePointer<CChar>?, max: Int32) -> Int32 {
     guard let buffer, max > 0 else { return 0 }
@@ -29,7 +33,11 @@ private func MCELuaRuntimeCreate(_ hostContext: UnsafeMutableRawPointer?,
                                  _ existsCallback: LuaEntityExistsCallback?,
                                  _ getNameCallback: LuaEntityGetNameCallback?,
                                  _ getTransformCallback: LuaEntityGetTransformCallback?,
-                                 _ setTransformCallback: LuaEntitySetTransformCallback?) -> UnsafeMutableRawPointer?
+                                 _ setTransformCallback: LuaEntitySetTransformCallback?,
+                                 _ moveCallback: LuaEntityMoveCallback?,
+                                 _ jumpCallback: LuaEntityJumpCallback?,
+                                 _ isGroundedCallback: LuaEntityIsGroundedCallback?,
+                                 _ assetGetNameCallback: LuaAssetGetNameCallback?) -> UnsafeMutableRawPointer?
 
 @_silgen_name("MCELuaRuntimeDestroy")
 private func MCELuaRuntimeDestroy(_ runtime: UnsafeMutableRawPointer?)
@@ -68,9 +76,36 @@ private func MCELuaRuntimeDestroyInstance(_ runtime: UnsafeMutableRawPointer?,
                                           _ errorBuffer: UnsafeMutablePointer<CChar>?,
                                           _ errorBufferSize: Int32) -> UInt32
 
+@_silgen_name("MCELuaRuntimeStartInstance")
+private func MCELuaRuntimeStartInstance(_ runtime: UnsafeMutableRawPointer?,
+                                        _ entityId: UnsafePointer<CChar>?,
+                                        _ errorBuffer: UnsafeMutablePointer<CChar>?,
+                                        _ errorBufferSize: Int32) -> UInt32
+
 @_silgen_name("MCELuaRuntimeHasInstance")
 private func MCELuaRuntimeHasInstance(_ runtime: UnsafeMutableRawPointer?,
                                       _ entityId: UnsafePointer<CChar>?) -> UInt32
+
+@_silgen_name("MCELuaRuntimeDispatchPhysicsEvent")
+private func MCELuaRuntimeDispatchPhysicsEvent(_ runtime: UnsafeMutableRawPointer?,
+                                               _ entityId: UnsafePointer<CChar>?,
+                                               _ phase: UnsafePointer<CChar>?,
+                                               _ otherEntityId: UnsafePointer<CChar>?,
+                                               _ errorBuffer: UnsafeMutablePointer<CChar>?,
+                                               _ errorBufferSize: Int32) -> UInt32
+
+@_silgen_name("MCELuaRuntimeSetField")
+private func MCELuaRuntimeSetField(_ runtime: UnsafeMutableRawPointer?,
+                                   _ entityId: UnsafePointer<CChar>?,
+                                   _ fieldName: UnsafePointer<CChar>?,
+                                   _ fieldType: Int32,
+                                   _ intValue: Int32,
+                                   _ numberValue: Float,
+                                   _ boolValue: UInt32,
+                                   _ stringValue: UnsafePointer<CChar>?,
+                                   _ vecX: Float,
+                                   _ vecY: Float,
+                                   _ vecZ: Float) -> UInt32
 
 public protocol ScriptRuntime: AnyObject {
     func onSceneStart(scene: EngineScene)
@@ -110,11 +145,21 @@ private enum LuaCallPhase {
     case fixedUpdate
 }
 
+private enum ScriptLifecycleState: UInt8 {
+    case uninitialized
+    case created
+    case started
+    case running
+    case faulted
+    case destroyed
+}
+
 public final class LuaScriptRuntime: ScriptRuntime {
-    private weak var engineContext: EngineContext?
+    fileprivate weak var engineContext: EngineContext?
     private weak var activeScene: EngineScene?
     private var runtimeHandle: UnsafeMutableRawPointer?
     private var trackedBindings: [UUID: ScriptBindingState] = [:]
+    private var lifecycleStates: [UUID: ScriptLifecycleState] = [:]
 
     public init(engineContext: EngineContext) {
         self.engineContext = engineContext
@@ -128,12 +173,14 @@ public final class LuaScriptRuntime: ScriptRuntime {
         activeScene = scene
         ensureRuntime()
         trackedBindings.removeAll(keepingCapacity: true)
+        lifecycleStates.removeAll(keepingCapacity: true)
         instantiateAllScripts(scene: scene)
     }
 
     public func onSceneStop(scene: EngineScene) {
         destroyAllInstances(scene: scene)
         trackedBindings.removeAll(keepingCapacity: true)
+        lifecycleStates.removeAll(keepingCapacity: true)
         activeScene = nil
         teardownRuntime()
     }
@@ -144,6 +191,7 @@ public final class LuaScriptRuntime: ScriptRuntime {
         guard runtimeHandle != nil else { return }
         destroyInstance(entityId: entityId)
         trackedBindings.removeValue(forKey: entityId)
+        lifecycleStates[entityId] = .destroyed
     }
 
     public func onComponentAdded(entityId: UUID, type: SceneECSComponentType) {
@@ -153,6 +201,7 @@ public final class LuaScriptRuntime: ScriptRuntime {
               let entity = scene.ecs.entity(with: entityId),
               let component = scene.ecs.get(ScriptComponent.self, for: entity) else { return }
         trackedBindings[entityId] = ScriptBindingState(enabled: component.enabled, handle: component.scriptAssetHandle)
+        lifecycleStates[entityId] = .uninitialized
         instantiateOrRefresh(entity: entity, component: component, forceReload: true)
     }
 
@@ -160,6 +209,7 @@ public final class LuaScriptRuntime: ScriptRuntime {
         guard type == .script else { return }
         destroyInstance(entityId: entityId)
         trackedBindings.removeValue(forKey: entityId)
+        lifecycleStates[entityId] = .destroyed
     }
 
     public func onUpdate(dt: Float) {
@@ -178,7 +228,32 @@ public final class LuaScriptRuntime: ScriptRuntime {
 
     public func onLateUpdate(dt: Float) {}
 
-    public func onPhysicsEvents(events: [PhysicsScriptEvent]) {}
+    public func onPhysicsEvents(events: [PhysicsScriptEvent]) {
+        guard let runtimeHandle, !events.isEmpty else { return }
+        var errorBuffer = [CChar](repeating: 0, count: 2048)
+        for event in events {
+            let phase: String
+            switch event.type {
+            case .collisionEnter: phase = "OnCollisionEnter"
+            case .collisionStay: phase = "OnCollisionStay"
+            case .collisionExit: phase = "OnCollisionExit"
+            case .triggerEnter: phase = "OnTriggerEnter"
+            case .triggerStay: phase = "OnTriggerStay"
+            case .triggerExit: phase = "OnTriggerExit"
+            }
+
+            dispatchPhysicsEvent(runtimeHandle: runtimeHandle,
+                                 target: event.entityA,
+                                 phase: phase,
+                                 other: event.entityB,
+                                 errorBuffer: &errorBuffer)
+            dispatchPhysicsEvent(runtimeHandle: runtimeHandle,
+                                 target: event.entityB,
+                                 phase: phase,
+                                 other: event.entityA,
+                                 errorBuffer: &errorBuffer)
+        }
+    }
 
     public func reloadScriptInstance(entityId: UUID) -> Bool {
         guard let scene = activeScene,
@@ -198,7 +273,11 @@ public final class LuaScriptRuntime: ScriptRuntime {
                                             MCELuaHostEntityExists,
                                             MCELuaHostEntityGetName,
                                             MCELuaHostEntityGetTransform,
-                                            MCELuaHostEntitySetTransform)
+                                            MCELuaHostEntitySetTransform,
+                                            MCELuaHostEntityMove,
+                                            MCELuaHostEntityJump,
+                                            MCELuaHostEntityIsGrounded,
+                                            MCELuaHostAssetGetName)
     }
 
     private func teardownRuntime() {
@@ -238,6 +317,7 @@ public final class LuaScriptRuntime: ScriptRuntime {
             guard let self else { return }
             guard component.enabled, component.scriptAssetHandle != nil else { return }
             guard let runtimeHandle else { return }
+            guard lifecycleStates[entity.id] == .running else { return }
             var script = component
             let entityId = entity.id.uuidString
             var errorBuffer = [CChar](repeating: 0, count: 2048)
@@ -266,11 +346,16 @@ public final class LuaScriptRuntime: ScriptRuntime {
                 script.lastError = errorText
                 script.hasInstance = false
                 script.instanceHandle = 0
+                lifecycleStates[entity.id] = .faulted
                 logScriptError(entityId: entity.id, scriptHandle: component.scriptAssetHandle, message: errorText)
             } else if script.hasInstance {
                 script.runtimeState = .loaded
                 script.lastError = ""
                 script.instanceHandle = 1
+                lifecycleStates[entity.id] = .running
+            }
+            if lifecycleStates[entity.id] == .running {
+                applySerializedFields(entityId: entity.id, script: script)
             }
             scene.ecs.add(script, to: entity)
         }
@@ -284,11 +369,13 @@ public final class LuaScriptRuntime: ScriptRuntime {
         script.lastError = ""
         script.instanceHandle = 0
         script.hasInstance = false
+        lifecycleStates[entity.id] = .uninitialized
 
         if !script.enabled {
             script.runtimeState = .disabled
             scene.ecs.add(script, to: entity)
             destroyInstance(entityId: entity.id)
+            lifecycleStates[entity.id] = .destroyed
             return true
         }
 
@@ -296,6 +383,7 @@ public final class LuaScriptRuntime: ScriptRuntime {
             script.runtimeState = .disabled
             scene.ecs.add(script, to: entity)
             destroyInstance(entityId: entity.id)
+            lifecycleStates[entity.id] = .destroyed
             return false
         }
 
@@ -305,9 +393,12 @@ public final class LuaScriptRuntime: ScriptRuntime {
             script.lastError = message
             scene.ecs.add(script, to: entity)
             destroyInstance(entityId: entity.id)
+            lifecycleStates[entity.id] = .faulted
             logScriptError(entityId: entity.id, scriptHandle: scriptHandle, message: message)
             return false
         }
+
+        refreshFieldMetadataAndDefaults(script: &script, scriptURL: scriptURL)
 
         var errorBuffer = [CChar](repeating: 0, count: 2048)
         let result: UInt32 = entity.id.uuidString.withCString { entityIdCString in
@@ -333,6 +424,7 @@ public final class LuaScriptRuntime: ScriptRuntime {
             script.lastError = message
             script.hasInstance = false
             script.instanceHandle = 0
+            lifecycleStates[entity.id] = .faulted
             scene.ecs.add(script, to: entity)
             logScriptError(entityId: entity.id, scriptHandle: scriptHandle, message: message)
             return false
@@ -342,6 +434,28 @@ public final class LuaScriptRuntime: ScriptRuntime {
         script.lastError = ""
         script.hasInstance = true
         script.instanceHandle = 1
+        applySerializedFields(entityId: entity.id, script: script)
+        var startErrorBuffer = [CChar](repeating: 0, count: 2048)
+        let startResult: UInt32 = entity.id.uuidString.withCString { entityIdCString in
+            MCELuaRuntimeStartInstance(runtimeHandle,
+                                       entityIdCString,
+                                       &startErrorBuffer,
+                                       Int32(startErrorBuffer.count))
+        }
+        if startResult == 0 {
+            let message = String(cString: startErrorBuffer)
+            script.runtimeState = .error
+            script.lastError = message
+            script.hasInstance = false
+            script.instanceHandle = 0
+            lifecycleStates[entity.id] = .faulted
+            scene.ecs.add(script, to: entity)
+            logScriptError(entityId: entity.id, scriptHandle: scriptHandle, message: message)
+            return false
+        }
+        lifecycleStates[entity.id] = .created
+        lifecycleStates[entity.id] = .started
+        lifecycleStates[entity.id] = .running
         scene.ecs.add(script, to: entity)
         return true
     }
@@ -355,6 +469,7 @@ public final class LuaScriptRuntime: ScriptRuntime {
             script.hasInstance = false
             script.instanceHandle = 0
             scene.ecs.add(script, to: entity)
+            lifecycleStates[entity.id] = .destroyed
         }
     }
 
@@ -363,6 +478,148 @@ public final class LuaScriptRuntime: ScriptRuntime {
         var errorBuffer = [CChar](repeating: 0, count: 2048)
         _ = entityId.uuidString.withCString { entityIdCString in
             MCELuaRuntimeDestroyInstance(runtimeHandle, entityIdCString, &errorBuffer, Int32(errorBuffer.count))
+        }
+        lifecycleStates[entityId] = .destroyed
+    }
+
+    private func dispatchPhysicsEvent(runtimeHandle: UnsafeMutableRawPointer,
+                                      target: UUID,
+                                      phase: String,
+                                      other: UUID,
+                                      errorBuffer: inout [CChar]) {
+        guard lifecycleStates[target] == .running else { return }
+        let ok: UInt32 = target.uuidString.withCString { targetCString in
+            phase.withCString { phaseCString in
+                other.uuidString.withCString { otherCString in
+                    MCELuaRuntimeDispatchPhysicsEvent(runtimeHandle,
+                                                     targetCString,
+                                                     phaseCString,
+                                                     otherCString,
+                                                     &errorBuffer,
+                                                     Int32(errorBuffer.count))
+                }
+            }
+        }
+        if ok == 0 {
+            lifecycleStates[target] = .faulted
+            let errorText = String(cString: errorBuffer)
+            logScriptError(entityId: target, scriptHandle: nil, message: errorText)
+        }
+    }
+
+    private func refreshFieldMetadataAndDefaults(script: inout ScriptComponent, scriptURL _: URL) {
+        guard let scriptHandle = script.scriptAssetHandle else {
+            script.fieldMetadata = [:]
+            script.serializedFields = [:]
+            script.fieldData = Data()
+            return
+        }
+        let descriptors = ScriptMetadataCache.shared.descriptors(scriptAssetHandle: scriptHandle,
+                                                                 typeName: script.typeName,
+                                                                 assetDatabase: engineContext?.assetDatabase)
+        guard !descriptors.isEmpty else {
+            script.fieldMetadata = [:]
+            script.serializedFields = [:]
+            script.fieldData = Data()
+            return
+        }
+
+        let decodedBlob = ScriptFieldBlobCodec.decodeFieldBlobV1(script.fieldData)
+        var merged = ScriptFieldBlobCodec.mergedValues(from: script.fieldData, schemaDescriptors: descriptors)
+        if !script.serializedFields.isEmpty {
+            for descriptor in descriptors {
+                guard let legacyValue = script.serializedFields[descriptor.name] else { continue }
+                let coercedLegacy = ScriptFieldBlobCodec.coerce(legacyValue, to: descriptor.type) ?? descriptor.defaultValue
+                if decodedBlob[descriptor.name] == nil ||
+                    shouldPreferLegacyReferenceValue(type: descriptor.type,
+                                                     blobValue: merged[descriptor.name],
+                                                     legacyValue: coercedLegacy) {
+                    merged[descriptor.name] = coercedLegacy
+                }
+            }
+        }
+        script.serializedFields = merged
+        script.fieldMetadata = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.name, $0.metadata) })
+        script.fieldData = ScriptFieldBlobCodec.encodeFieldBlobV1(merged, schemaDescriptors: descriptors)
+        script.fieldDataVersion = 1
+    }
+
+    private func applySerializedFields(entityId: UUID, script: ScriptComponent) {
+        guard let runtimeHandle else { return }
+
+        func applyValue(name: String, value: ScriptFieldValue) -> Bool {
+            let ok: UInt32 = entityId.uuidString.withCString { entityCString in
+                name.withCString { fieldName in
+                    switch value {
+                    case let .bool(boolean):
+                        return MCELuaRuntimeSetField(runtimeHandle, entityCString, fieldName, 0, 0, 0, boolean ? 1 : 0, nil, 0, 0, 0)
+                    case let .int(number):
+                        return MCELuaRuntimeSetField(runtimeHandle, entityCString, fieldName, 1, number, 0, 0, nil, 0, 0, 0)
+                    case let .float(number):
+                        return MCELuaRuntimeSetField(runtimeHandle, entityCString, fieldName, 2, 0, number, 0, nil, 0, 0, 0)
+                    case let .vec2(vec):
+                        return MCELuaRuntimeSetField(runtimeHandle, entityCString, fieldName, 3, 0, 0, 0, nil, vec.x, vec.y, 0)
+                    case let .string(string):
+                        return string.withCString { stringCString in
+                            MCELuaRuntimeSetField(runtimeHandle, entityCString, fieldName, 6, 0, 0, 0, stringCString, 0, 0, 0)
+                        }
+                    case let .vec3(vec):
+                        return MCELuaRuntimeSetField(runtimeHandle, entityCString, fieldName, 4, 0, 0, 0, nil, vec.x, vec.y, vec.z)
+                    case let .color3(vec):
+                        return MCELuaRuntimeSetField(runtimeHandle, entityCString, fieldName, 5, 0, 0, 0, nil, vec.x, vec.y, vec.z)
+                    case let .entity(entity):
+                        let entityString = entity?.uuidString ?? ""
+                        return entityString.withCString { entityValueCString in
+                            MCELuaRuntimeSetField(runtimeHandle, entityCString, fieldName, 7, 0, 0, 0, entityValueCString, 0, 0, 0)
+                        }
+                    case let .prefab(prefab):
+                        let prefabString = prefab?.rawValue.uuidString ?? ""
+                        return prefabString.withCString { prefabValueCString in
+                            MCELuaRuntimeSetField(runtimeHandle, entityCString, fieldName, 8, 0, 0, 0, prefabValueCString, 0, 0, 0)
+                        }
+                    }
+                }
+            }
+            if ok == 0 {
+                lifecycleStates[entityId] = .faulted
+                return false
+            }
+            return true
+        }
+
+        guard let scriptHandle = script.scriptAssetHandle else {
+            for (name, value) in script.serializedFields.sorted(by: { $0.key < $1.key }) {
+                if !applyValue(name: name, value: value) { return }
+            }
+            return
+        }
+        let descriptors = ScriptMetadataCache.shared.descriptors(scriptAssetHandle: scriptHandle,
+                                                                 typeName: script.typeName,
+                                                                 assetDatabase: engineContext?.assetDatabase)
+        guard !descriptors.isEmpty else {
+            for (name, value) in script.serializedFields.sorted(by: { $0.key < $1.key }) {
+                if !applyValue(name: name, value: value) { return }
+            }
+            return
+        }
+        let decodedBlob = ScriptFieldBlobCodec.decodeFieldBlobV1(script.fieldData)
+        var values = ScriptFieldBlobCodec.mergedValues(from: script.fieldData, schemaDescriptors: descriptors)
+        if !script.serializedFields.isEmpty {
+            for descriptor in descriptors {
+                guard let legacyValue = script.serializedFields[descriptor.name] else { continue }
+                let coercedLegacy = ScriptFieldBlobCodec.coerce(legacyValue, to: descriptor.type) ?? descriptor.defaultValue
+                if decodedBlob[descriptor.name] == nil ||
+                    shouldPreferLegacyReferenceValue(type: descriptor.type,
+                                                     blobValue: values[descriptor.name],
+                                                     legacyValue: coercedLegacy) {
+                    values[descriptor.name] = coercedLegacy
+                }
+            }
+        }
+        for descriptor in descriptors {
+            let name = descriptor.name
+            let value = values[name] ?? descriptor.defaultValue
+            if !applyValue(name: name, value: value) { return }
         }
     }
 
@@ -395,6 +652,23 @@ public final class LuaScriptRuntime: ScriptRuntime {
         }
         EngineLoggerContext.log("[Lua] \(message)", level: resolvedLevel, category: .scene)
     }
+
+    private func shouldPreferLegacyReferenceValue(type: ScriptFieldType,
+                                                  blobValue: ScriptFieldValue?,
+                                                  legacyValue: ScriptFieldValue) -> Bool {
+        switch type {
+        case .entity:
+            guard case .entity(nil)? = blobValue else { return false }
+            if case .entity(let uuid?) = legacyValue { return uuid != UUID(uuidString: "00000000-0000-0000-0000-000000000000") }
+            return false
+        case .prefab:
+            guard case .prefab(nil)? = blobValue else { return false }
+            if case .prefab(let handle?) = legacyValue { return handle.rawValue != UUID(uuidString: "00000000-0000-0000-0000-000000000000") }
+            return false
+        default:
+            return false
+        }
+    }
 }
 
 @_cdecl("MCELuaHostLog")
@@ -423,6 +697,24 @@ func MCELuaHostEntityGetName(_ hostContext: UnsafeMutableRawPointer?,
     guard let resolved = runtime.callbackEntity(entityId) else { return 0 }
     let name = resolved.scene.ecs.get(NameComponent.self, for: resolved.entity)?.name ?? "Entity"
     return writeCString(name, to: buffer, max: bufferSize) > 0 ? 1 : 0
+}
+
+@_cdecl("MCELuaHostAssetGetName")
+func MCELuaHostAssetGetName(_ hostContext: UnsafeMutableRawPointer?,
+                            _ assetHandleCString: UnsafePointer<CChar>?,
+                            _ buffer: UnsafeMutablePointer<CChar>?,
+                            _ bufferSize: Int32) -> UInt32 {
+    guard let hostContext,
+          let assetHandleCString,
+          let buffer,
+          bufferSize > 0 else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let handleUUID = UUID(uuidString: String(cString: assetHandleCString)),
+          let metadata = runtime.engineContext?.assetDatabase?.metadata(for: AssetHandle(rawValue: handleUUID)) else {
+        return 0
+    }
+    let displayName = URL(fileURLWithPath: metadata.sourcePath).lastPathComponent
+    return writeCString(displayName, to: buffer, max: bufferSize) > 0 ? 1 : 0
 }
 
 @_cdecl("MCELuaHostEntityGetTransform")
@@ -466,6 +758,35 @@ func MCELuaHostEntitySetTransform(_ hostContext: UnsafeMutableRawPointer?,
     let transform = TransformComponent(position: SIMD3<Float>(position[0], position[1], position[2]),
                                        rotation: TransformMath.quaternionFromEulerXYZ(SIMD3<Float>(rotationEuler[0], rotationEuler[1], rotationEuler[2])),
                                        scale: SIMD3<Float>(scale[0], scale[1], scale[2]))
-    resolved.scene.ecs.add(transform, to: resolved.entity)
-    return 1
+    return resolved.scene.setLocalTransform(transform, for: resolved.entity, source: .script) ? 1 : 0
+}
+
+@_cdecl("MCELuaHostEntityMove")
+func MCELuaHostEntityMove(_ hostContext: UnsafeMutableRawPointer?,
+                          _ entityId: UnsafePointer<CChar>?,
+                          _ x: Float,
+                          _ y: Float,
+                          _ z: Float) {
+    guard let hostContext else { return }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return }
+    resolved.scene.requestCharacterMove(entityId: resolved.entity.id, direction: SIMD3<Float>(x, y, z))
+}
+
+@_cdecl("MCELuaHostEntityJump")
+func MCELuaHostEntityJump(_ hostContext: UnsafeMutableRawPointer?,
+                          _ entityId: UnsafePointer<CChar>?) {
+    guard let hostContext else { return }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return }
+    resolved.scene.requestCharacterJump(entityId: resolved.entity.id)
+}
+
+@_cdecl("MCELuaHostEntityIsGrounded")
+func MCELuaHostEntityIsGrounded(_ hostContext: UnsafeMutableRawPointer?,
+                                _ entityId: UnsafePointer<CChar>?) -> UInt32 {
+    guard let hostContext else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return 0 }
+    return resolved.scene.isCharacterGrounded(entityId: resolved.entity.id) ? 1 : 0
 }

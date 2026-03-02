@@ -5,6 +5,25 @@
 import MetalKit
 import simd
 
+public enum TransformMutationSource {
+    case script
+    case editor
+    case physics
+}
+
+public struct FixedStepMode: OptionSet {
+    public let rawValue: Int
+
+    public static let executeScripts = FixedStepMode(rawValue: 1 << 0)
+    public static let dispatchScriptEvents = FixedStepMode(rawValue: 1 << 1)
+    public static let editorView = FixedStepMode(rawValue: 1 << 2)
+    public static let cloneIsolation = FixedStepMode(rawValue: 1 << 3)
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
+    }
+}
+
 public class EngineScene {
     public let ecs: SceneECS
     public let runtime = SceneRuntime()
@@ -22,6 +41,9 @@ public class EngineScene {
     private var lastFrameContext: FrameContext?
 
     private var debugFrameCounter: UInt64 = 0
+    private var illegalScriptTransformWarnings: Set<UUID> = []
+    private var characterMoveRequests: [UUID: SIMD3<Float>] = [:]
+    private var characterJumpRequests: Set<UUID> = []
 
     public var environmentMapHandle: AssetHandle?
 
@@ -174,6 +196,131 @@ public class EngineScene {
         return mask.contains(layerIndex: layer) ? entity : nil
     }
 
+    @discardableResult
+    public func setLocalTransform(_ transform: TransformComponent,
+                                  for entity: Entity,
+                                  source: TransformMutationSource) -> Bool {
+        guard ecs.get(TransformComponent.self, for: entity) != nil else { return false }
+        let worldTransform: TransformComponent
+        if let parent = ecs.getParent(entity) {
+            let parentWorld = ecs.worldMatrix(for: parent)
+            let localMatrix = TransformMath.makeMatrix(position: transform.position,
+                                                       rotation: transform.rotation,
+                                                       scale: transform.scale)
+            let worldMatrix = parentWorld * localMatrix
+            let decomposed = TransformMath.decomposeMatrix(worldMatrix)
+            worldTransform = TransformComponent(position: decomposed.position,
+                                               rotation: decomposed.rotation,
+                                               scale: decomposed.scale)
+        } else {
+            worldTransform = transform
+        }
+        return setWorldTransform(worldTransform, for: entity, source: source)
+    }
+
+    @discardableResult
+    public func setWorldTransform(_ worldTransform: TransformComponent,
+                                  for entity: Entity,
+                                  source: TransformMutationSource) -> Bool {
+        guard var localTransform = ecs.get(TransformComponent.self, for: entity) else { return false }
+        let rigidbody = ecs.get(RigidbodyComponent.self, for: entity)
+
+        if let rigidbody, rigidbody.isEnabled {
+            switch rigidbody.motionType {
+            case .dynamic:
+                guard source == .physics else {
+                    if source == .script {
+                        if illegalScriptTransformWarnings.insert(entity.id).inserted {
+                            EngineLoggerContext.log("Script attempted direct transform write on dynamic body \(entity.id.uuidString). Routed to physics body transform.",
+                                                    level: .warning,
+                                                    category: .scene)
+                        }
+                    }
+                    return physicsSystem?.setBodyTransform(entity: entity,
+                                                           scene: self,
+                                                           position: worldTransform.position,
+                                                           rotation: worldTransform.rotation,
+                                                           activate: true) ?? false
+                }
+            case .kinematic:
+                if source != .physics {
+                    _ = physicsSystem?.setBodyTransform(entity: entity,
+                                                        scene: self,
+                                                        position: worldTransform.position,
+                                                        rotation: worldTransform.rotation,
+                                                        activate: true)
+                }
+            case .staticBody:
+                if source != .physics {
+                    _ = physicsSystem?.setBodyTransform(entity: entity,
+                                                        scene: self,
+                                                        position: worldTransform.position,
+                                                        rotation: worldTransform.rotation,
+                                                        activate: false)
+                }
+            }
+        }
+
+        if let parent = ecs.getParent(entity) {
+            let parentWorldMatrix = ecs.worldMatrix(for: parent)
+            let desiredWorldMatrix = TransformMath.makeMatrix(position: worldTransform.position,
+                                                              rotation: worldTransform.rotation,
+                                                              scale: worldTransform.scale)
+            let desiredLocalMatrix = simd_inverse(parentWorldMatrix) * desiredWorldMatrix
+            let decomposed = TransformMath.decomposeMatrix(desiredLocalMatrix)
+            localTransform.position = decomposed.position
+            localTransform.rotation = decomposed.rotation
+            localTransform.scale = decomposed.scale
+        } else {
+            localTransform = worldTransform
+        }
+
+        ecs.add(localTransform, to: entity)
+        return true
+    }
+
+    public func requestCharacterMove(entityId: UUID, direction: SIMD3<Float>) {
+        characterMoveRequests[entityId] = direction
+    }
+
+    public func requestCharacterJump(entityId: UUID) {
+        characterJumpRequests.insert(entityId)
+    }
+
+    public func isCharacterGrounded(entityId: UUID) -> Bool {
+        guard let entity = ecs.entity(with: entityId),
+              ecs.get(CharacterControllerComponent.self, for: entity) != nil,
+              let physicsSystem else { return false }
+        return physicsSystem.isGrounded(entity: entity, scene: self, probeDistance: 0.25)
+    }
+
+    private func applyCharacterControllers() {
+        guard let physicsSystem else {
+            characterMoveRequests.removeAll(keepingCapacity: true)
+            characterJumpRequests.removeAll(keepingCapacity: true)
+            return
+        }
+        ecs.viewDeterministic(CharacterControllerComponent.self) { [weak self] entity, controller in
+            guard let self, controller.isEnabled else { return }
+            guard var velocity = physicsSystem.bodyVelocity(entity: entity, scene: self) else { return }
+            let input = characterMoveRequests[entity.id] ?? SIMD3<Float>(repeating: 0.0)
+            let inputLength = simd_length(input)
+            let moveDir = inputLength > 1e-5 ? input / inputLength : SIMD3<Float>(repeating: 0.0)
+            let targetHorizontal = SIMD3<Float>(moveDir.x * controller.moveSpeed, 0.0, moveDir.z * controller.moveSpeed)
+            velocity.x = targetHorizontal.x
+            velocity.z = targetHorizontal.z
+
+            if characterJumpRequests.contains(entity.id),
+               physicsSystem.isGrounded(entity: entity, scene: self, probeDistance: max(0.1, controller.stepOffset)) {
+                velocity.y = controller.jumpForce
+            }
+
+            _ = physicsSystem.setBodyLinearVelocity(entity: entity, scene: self, velocity: velocity)
+        }
+        characterMoveRequests.removeAll(keepingCapacity: true)
+        characterJumpRequests.removeAll(keepingCapacity: true)
+    }
+
     func updateCameras() {
         updateCamera(isPlaying: false, frame: currentFrameForUpdates())
     }
@@ -187,15 +334,29 @@ public class EngineScene {
     func doUpdate() {}
 
     func doFixedUpdate() {
+        _ = runFixedStep(mode: [.executeScripts, .dispatchScriptEvents])
+    }
+
+    @discardableResult
+    public func runFixedStep(mode: FixedStepMode,
+                             fixedDeltaOverride: Float? = nil) -> Float {
         let defaultDelta: Float = 1.0 / 60.0
-        let fixedDelta = engineContext?.physicsSettings.fixedDeltaTime
+        let fixedDelta = fixedDeltaOverride
+            ?? engineContext?.physicsSettings.fixedDeltaTime
             ?? lastFrameContext?.time.fixedDeltaTime
             ?? defaultDelta
-        engineContext?.scriptRuntime.onFixedUpdate(dt: fixedDelta)
+        dispatchScriptChanges()
+        if mode.contains(.executeScripts) {
+            engineContext?.scriptRuntime.onFixedUpdate(dt: fixedDelta)
+        }
+        applyCharacterControllers()
         physicsSystem?.fixedUpdate(scene: self, fixedDeltaTime: fixedDelta)
-        if let events = physicsSystem?.drainEvents(), !events.isEmpty {
+        if mode.contains(.dispatchScriptEvents),
+           let events = physicsSystem?.drainEvents(),
+           !events.isEmpty {
             engineContext?.scriptRuntime.onPhysicsEvents(events: events)
         }
+        return fixedDelta
     }
 
     private func dispatchScriptChanges() {
@@ -220,6 +381,13 @@ public class EngineScene {
                     runtime.onComponentRemoved(entityId: change.entityId, type: type)
                 }
             case .componentEnabled, .componentDisabled:
+                if let type = change.componentType, type == .script {
+                    if change.kind == .componentEnabled {
+                        runtime.onComponentAdded(entityId: change.entityId, type: type)
+                    } else {
+                        runtime.onComponentRemoved(entityId: change.entityId, type: type)
+                    }
+                }
                 continue
             }
         }
@@ -371,6 +539,7 @@ public class EngineScene {
                     script: shouldSerializeOverride(.script, for: entity)
                         ? ecs.get(ScriptComponent.self, for: entity).map { ScriptComponentDTO(component: $0) }
                         : nil,
+                    characterController: ecs.get(CharacterControllerComponent.self, for: entity).map { CharacterControllerComponentDTO(component: $0) },
                     sky: shouldSerializeOverride(.sky, for: entity)
                         ? ecs.get(SkyComponent.self, for: entity).map { SkyComponentDTO(environmentMapHandle: $0.environmentMapHandle) }
                         : nil,
@@ -480,6 +649,9 @@ public class EngineScene {
                 },
                 script: ecs.get(ScriptComponent.self, for: entity).map { component in
                     ScriptComponentDTO(component: component)
+                },
+                characterController: ecs.get(CharacterControllerComponent.self, for: entity).map { component in
+                    CharacterControllerComponentDTO(component: component)
                 },
                 sky: ecs.get(SkyComponent.self, for: entity).map { component in
                     SkyComponentDTO(environmentMapHandle: component.environmentMapHandle)
@@ -622,6 +794,9 @@ public class EngineScene {
                 if let script = entityDoc.components.script {
                     ecs.add(script.toComponent(), to: entity)
                 }
+                if let controller = entityDoc.components.characterController {
+                    ecs.add(controller.toComponent(), to: entity)
+                }
                 if let sky = entityDoc.components.sky {
                     ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
                 }
@@ -731,6 +906,9 @@ public class EngineScene {
             }
             if let script = entityDoc.components.script {
                 ecs.add(script.toComponent(), to: entity)
+            }
+            if let controller = entityDoc.components.characterController {
+                ecs.add(controller.toComponent(), to: entity)
             }
             if let sky = entityDoc.components.sky {
                 ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
