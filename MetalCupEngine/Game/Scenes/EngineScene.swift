@@ -4,6 +4,7 @@
 
 import MetalKit
 import simd
+import Foundation
 
 public enum TransformMutationSource {
     case script
@@ -42,8 +43,14 @@ public class EngineScene {
 
     private var debugFrameCounter: UInt64 = 0
     private var illegalScriptTransformWarnings: Set<UUID> = []
-    private var characterMoveRequests: [UUID: SIMD3<Float>] = [:]
+    private var characterMoveRequests: [UUID: SIMD2<Float>] = [:]
+    private var characterLookRequests: [UUID: SIMD2<Float>] = [:]
+    private var characterSprintRequests: [UUID: Bool] = [:]
     private var characterJumpRequests: Set<UUID> = []
+    private var characterDebugLogAccumulated: [UUID: Float] = [:]
+    private let characterControllerDebugEnabled: Bool = ProcessInfo.processInfo.environment["MCE_CHARACTER_CONTROLLER_DEBUG"] == "1"
+    private var currentInputKeys: [Bool] = []
+    private var previousInputKeys: [Bool] = []
 
     public var environmentMapHandle: AssetHandle?
 
@@ -66,6 +73,8 @@ public class EngineScene {
 
     public func onUpdate(frame: FrameContext, isPlaying: Bool = true, isPaused: Bool = false) {
         debugFrameCounter &+= 1
+        previousInputKeys = currentInputKeys
+        currentInputKeys = frame.input.keys
         lastFrameContext = frame
         dispatchScriptChanges()
         // Update order: camera -> scene constants -> sky system -> scene update -> light sync.
@@ -88,6 +97,9 @@ public class EngineScene {
         _sceneConstants.cameraPositionAndIBL.w = iblIntensity
         SkySystem.update(scene: ecs)
         let shouldRunScripts = isPlaying && !isPaused
+        if isPlaying && inputWasKeyPressed(KeyCodes.escape.rawValue) {
+            runtimeToggleCursorLockOverride()
+        }
         if shouldRunScripts {
             engineContext?.scriptRuntime.onUpdate(dt: frame.time.deltaTime)
         }
@@ -280,7 +292,20 @@ public class EngineScene {
     }
 
     public func requestCharacterMove(entityId: UUID, direction: SIMD3<Float>) {
-        characterMoveRequests[entityId] = direction
+        characterMoveRequests[entityId] = SIMD2<Float>(direction.x, direction.z)
+    }
+
+    public func requestCharacterMoveInput(entityId: UUID, input: SIMD2<Float>) {
+        characterMoveRequests[entityId] = input
+    }
+
+    public func requestCharacterSprint(entityId: UUID, isSprinting: Bool) {
+        characterSprintRequests[entityId] = isSprinting
+    }
+
+    public func requestCharacterLookInput(entityId: UUID, delta: SIMD2<Float>) {
+        let previous = characterLookRequests[entityId] ?? .zero
+        characterLookRequests[entityId] = previous + delta
     }
 
     public func requestCharacterJump(entityId: UUID) {
@@ -289,36 +314,321 @@ public class EngineScene {
 
     public func isCharacterGrounded(entityId: UUID) -> Bool {
         guard let entity = ecs.entity(with: entityId),
-              ecs.get(CharacterControllerComponent.self, for: entity) != nil,
-              let physicsSystem else { return false }
-        return physicsSystem.isGrounded(entity: entity, scene: self, probeDistance: 0.25)
+              let controller = ecs.get(CharacterControllerComponent.self, for: entity) else { return false }
+        if controller.isGrounded { return true }
+        guard let physicsSystem else { return false }
+        let probe = physicsSystem.characterGroundProbe(entity: entity,
+                                                       scene: self,
+                                                       radius: controller.radius,
+                                                       height: controller.height,
+                                                       probeDistance: controller.groundProbeDistance,
+                                                       maxSlopeDegrees: controller.maxSlope)
+        return probe.isGrounded
     }
 
-    private func applyCharacterControllers() {
+    public func characterVelocity(entityId: UUID) -> SIMD3<Float> {
+        guard let entity = ecs.entity(with: entityId),
+              let controller = ecs.get(CharacterControllerComponent.self, for: entity) else {
+            return .zero
+        }
+        return controller.velocity
+    }
+
+    private func applyCharacterControllers(fixedDelta: Float) {
         guard let physicsSystem else {
-            characterMoveRequests.removeAll(keepingCapacity: true)
             characterJumpRequests.removeAll(keepingCapacity: true)
+            characterLookRequests.removeAll(keepingCapacity: true)
             return
         }
-        ecs.viewDeterministic(CharacterControllerComponent.self) { [weak self] entity, controller in
-            guard let self, controller.isEnabled else { return }
-            guard var velocity = physicsSystem.bodyVelocity(entity: entity, scene: self) else { return }
-            let input = characterMoveRequests[entity.id] ?? SIMD3<Float>(repeating: 0.0)
-            let inputLength = simd_length(input)
-            let moveDir = inputLength > 1e-5 ? input / inputLength : SIMD3<Float>(repeating: 0.0)
-            let targetHorizontal = SIMD3<Float>(moveDir.x * controller.moveSpeed, 0.0, moveDir.z * controller.moveSpeed)
-            velocity.x = targetHorizontal.x
-            velocity.z = targetHorizontal.z
+        ecs.viewDeterministic(CharacterControllerComponent.self) { [weak self] entity, component in
+            guard let self, component.isEnabled else { return }
+            guard var controller = ecs.get(CharacterControllerComponent.self, for: entity),
+                  let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
+                  rigidbody.isEnabled,
+                  rigidbody.motionType == .kinematic,
+                  let transform = ecs.get(TransformComponent.self, for: entity) else { return }
 
-            if characterJumpRequests.contains(entity.id),
-               physicsSystem.isGrounded(entity: entity, scene: self, probeDistance: max(0.1, controller.stepOffset)) {
-                velocity.y = controller.jumpForce
+            let moveInput = characterMoveRequests[entity.id] ?? controller.moveInput
+            let lookInput = characterLookRequests[entity.id] ?? controller.lookInput
+            let sprinting = characterSprintRequests[entity.id] ?? controller.wantsSprint
+            controller.moveInput = moveInput
+            controller.lookInput = lookInput
+            controller.wantsSprint = sprinting
+
+            let characterForwardAxis = -TransformMath.localForward
+            if !controller.lookInitialized {
+                let currentRotation = simd_quatf(vector: transform.rotation)
+                let currentForward = currentRotation.act(characterForwardAxis)
+                controller.yawRadians = atan2(-currentForward.x, -currentForward.z)
+                controller.pitchRadians = 0.0
+                controller.lookInitialized = true
             }
 
-            _ = physicsSystem.setBodyLinearVelocity(entity: entity, scene: self, velocity: velocity)
+            let lookSensitivity = max(0.0, controller.lookSensitivity)
+            // Character look convention:
+            // - Positive mouse/input X should yaw to the right around +Y.
+            // - We accumulate yaw only in fixed-step to avoid double-applying with render update.
+            controller.yawRadians -= lookInput.x * lookSensitivity
+            let minPitch = controller.minPitchDegrees * (.pi / 180.0)
+            let maxPitch = controller.maxPitchDegrees * (.pi / 180.0)
+            controller.pitchRadians = simd_clamp(controller.pitchRadians + lookInput.y * lookSensitivity,
+                                                 min(minPitch, maxPitch),
+                                                 max(minPitch, maxPitch))
+            controller.lookInput = .zero
+
+            let upAxis = SIMD3<Float>(0.0, 1.0, 0.0)
+            let yawQuat = simd_quatf(angle: controller.yawRadians, axis: upAxis)
+            let yawRotation = yawQuat.vector
+
+            let normalizedInput: SIMD2<Float> = {
+                let len = simd_length(moveInput)
+                guard len > 1e-5 else { return .zero }
+                return moveInput / min(1.0, len)
+            }()
+
+            let forward = simd_normalize(yawQuat.act(characterForwardAxis))
+            let right = simd_normalize(yawQuat.act(SIMD3<Float>(1.0, 0.0, 0.0)))
+            // Gameplay convention:
+            // - TransformMath.localForward (+Z) is "forward" for movement input.
+            // - Script input uses W => +Z and S => -Z.
+            // Character look basis is currently derived from the view-facing axis, so we invert
+            // moveInput.y here to keep W moving forward relative to yaw.
+            var desiredHorizontal = right * normalizedInput.x - forward * normalizedInput.y
+            if simd_length_squared(desiredHorizontal) > 1e-6 {
+                desiredHorizontal = simd_normalize(desiredHorizontal)
+            }
+            let speedMultiplier = sprinting ? max(1.0, controller.sprintMultiplier) : 1.0
+            let horizontalVelocity = desiredHorizontal * max(0.0, controller.moveSpeed) * speedMultiplier
+
+            let preProbe = physicsSystem.characterGroundProbe(entity: entity,
+                                                              scene: self,
+                                                              radius: controller.radius,
+                                                              height: controller.height,
+                                                              probeDistance: controller.groundProbeDistance,
+                                                              maxSlopeDegrees: controller.maxSlope,
+                                                              worldPositionOverride: ecs.worldTransform(for: entity).position)
+            let preGrounded = preProbe.isGrounded || controller.groundedStickyFrames > 0
+            let groundedDownwardBias: Float = -0.5
+
+            if characterJumpRequests.contains(entity.id), preGrounded {
+                controller.verticalVelocity = max(0.0, controller.jumpSpeed)
+                controller.isGrounded = false
+                controller.groundedStickyFrames = 0
+            } else if preGrounded {
+                controller.verticalVelocity = groundedDownwardBias
+            } else if !preGrounded {
+                let gravityY = controller.useGravityOverride ? controller.gravity : (engineContext?.physicsSettings.gravity.y ?? -9.81)
+                controller.verticalVelocity += gravityY * fixedDelta
+            }
+
+            let worldTransform = ecs.worldTransform(for: entity)
+            let worldScale = worldTransform.scale
+            let absScale = SIMD3<Float>(abs(worldScale.x), abs(worldScale.y), abs(worldScale.z))
+            let defaultRadius = max(0.05, controller.radius)
+            let defaultStandingHalfHeight = max(defaultRadius, controller.height * 0.5)
+            let defaultCapsuleHalfHeight = max(0.02, defaultStandingHalfHeight - defaultRadius)
+            var castRadius = defaultRadius
+            var castHalfHeight = defaultCapsuleHalfHeight
+            var castOffset = SIMD3<Float>.zero
+            let yawOffsetQuat = simd_quatf(vector: yawRotation)
+            if let collider = ecs.get(ColliderComponent.self, for: entity),
+               let solidCapsule = collider.allShapes().first(where: { $0.isEnabled && !$0.isTrigger && $0.shapeType == .capsule }) {
+                castRadius = max(0.02, solidCapsule.capsuleRadius * max(absScale.x, absScale.z))
+                castHalfHeight = max(0.02, solidCapsule.capsuleHalfHeight * absScale.y)
+                castOffset = yawOffsetQuat.act(solidCapsule.offset * worldScale)
+            }
+            let horizontalDelta = SIMD3<Float>(horizontalVelocity.x, 0.0, horizontalVelocity.z) * fixedDelta
+            let verticalDelta = controller.verticalVelocity * fixedDelta
+            let includeVerticalInSweep = verticalDelta > 0.0 || !preGrounded
+            let sweepDelta = includeVerticalInSweep
+                ? horizontalDelta + SIMD3<Float>(0.0, verticalDelta, 0.0)
+                : horizontalDelta
+            let sweepStart = worldTransform.position
+            let sweep = physicsSystem.sweepCharacter(entity: entity,
+                                                     scene: self,
+                                                     startPosition: sweepStart,
+                                                     desiredDelta: sweepDelta,
+                                                     radius: castRadius,
+                                                     halfHeight: castHalfHeight,
+                                                     offset: castOffset,
+                                                     rotationOffset: TransformMath.identityQuaternion,
+                                                     maxSlideIterations: 3,
+                                                     layerMask: .all)
+            var finalPosition = sweep.finalPosition
+            var activeSweep = sweep
+            var stepUpEnd = sweepStart
+            var stepForwardEnd = sweepStart
+            var stepApplied = false
+
+            let maxStepOffset = min(max(0.0, controller.stepOffset), 0.5)
+            if maxStepOffset > 0.001 && activeSweep.didCollide && simd_length_squared(horizontalDelta) > 1.0e-8 && preGrounded {
+                let stepUpSweep = physicsSystem.sweepCharacter(entity: entity,
+                                                               scene: self,
+                                                               startPosition: sweepStart,
+                                                               desiredDelta: SIMD3<Float>(0.0, maxStepOffset, 0.0),
+                                                               radius: castRadius,
+                                                               halfHeight: castHalfHeight,
+                                                               offset: castOffset,
+                                                               rotationOffset: TransformMath.identityQuaternion,
+                                                               maxSlideIterations: 1,
+                                                               layerMask: .all)
+                let stepForwardSweep = physicsSystem.sweepCharacter(entity: entity,
+                                                                    scene: self,
+                                                                    startPosition: stepUpSweep.finalPosition,
+                                                                    desiredDelta: horizontalDelta,
+                                                                    radius: castRadius,
+                                                                    halfHeight: castHalfHeight,
+                                                                    offset: castOffset,
+                                                                    rotationOffset: TransformMath.identityQuaternion,
+                                                                    maxSlideIterations: 3,
+                                                                    layerMask: .all)
+                stepUpEnd = stepUpSweep.finalPosition
+                stepForwardEnd = stepForwardSweep.finalPosition
+                let stepProbe = physicsSystem.characterGroundProbe(entity: entity,
+                                                                   scene: self,
+                                                                   radius: controller.radius,
+                                                                   height: controller.height,
+                                                                   probeDistance: maxStepOffset + max(0.0, controller.groundSnapDistance),
+                                                                   maxSlopeDegrees: controller.maxSlope,
+                                                                   worldPositionOverride: stepForwardSweep.finalPosition)
+                if stepProbe.isGrounded && stepProbe.distance <= maxStepOffset + max(0.0, controller.groundSnapDistance) {
+                    var steppedPosition = stepForwardSweep.finalPosition
+                    steppedPosition.y -= stepProbe.distance
+                    if stepForwardSweep.travelFraction >= activeSweep.travelFraction {
+                        finalPosition = steppedPosition
+                        activeSweep = stepForwardSweep
+                        stepApplied = true
+                    }
+                }
+            }
+
+            let depenetration = physicsSystem.resolveCharacterPenetration(entity: entity,
+                                                                          scene: self,
+                                                                          position: finalPosition,
+                                                                          radius: castRadius,
+                                                                          halfHeight: castHalfHeight,
+                                                                          offset: castOffset,
+                                                                          maxIterations: 4,
+                                                                          skinWidth: max(0.01, castRadius * 0.08))
+            finalPosition = depenetration.position
+
+            let downwardTravel = max(0.0, -verticalDelta)
+            let snapDistance = min(max(0.0, controller.groundSnapDistance), 0.5)
+            let postProbeDistance = min(max(0.02, controller.groundProbeDistance) + downwardTravel + snapDistance, 1.25)
+            let postProbe = physicsSystem.characterGroundProbe(entity: entity,
+                                                               scene: self,
+                                                               radius: controller.radius,
+                                                               height: controller.height,
+                                                               probeDistance: postProbeDistance,
+                                                               maxSlopeDegrees: controller.maxSlope,
+                                                               worldPositionOverride: finalPosition)
+
+            let snapStart = finalPosition
+            var snapEnd = finalPosition
+            var snapApplied = false
+            if postProbe.isGrounded && controller.verticalVelocity <= 0.0 {
+                controller.verticalVelocity = groundedDownwardBias
+                controller.groundedStickyFrames = 2
+                controller.isGrounded = true
+                controller.lastGroundNormal = postProbe.hitNormal
+                if snapDistance > 0.0 && postProbe.distance > 1.0e-4 {
+                    let snapAmount = min(postProbe.distance, snapDistance)
+                    finalPosition.y -= snapAmount
+                    snapEnd = finalPosition
+                    snapApplied = snapAmount > 1.0e-5
+                }
+            } else {
+                controller.groundedStickyFrames = max(0, controller.groundedStickyFrames - 1)
+                controller.isGrounded = controller.groundedStickyFrames > 0
+            }
+
+            controller.debugProbeStart = finalPosition + SIMD3<Float>(0.0, max(0.002, castRadius * 0.05), 0.0)
+            controller.debugProbeEnd = controller.debugProbeStart + SIMD3<Float>(0.0, -postProbeDistance, 0.0)
+            controller.debugProbeHadHit = postProbe.isGrounded
+            controller.debugProbeHitPoint = postProbe.hitPosition
+            controller.debugSweepStart = sweepStart
+            controller.debugSweepEnd = activeSweep.finalPosition
+            controller.debugStepUpEnd = stepUpEnd
+            controller.debugStepForwardEnd = stepForwardEnd
+            controller.debugStepDidApply = stepApplied
+            controller.debugDepenetrationEnd = depenetration.position
+            controller.debugPenetrationDepth = depenetration.maxDepth
+            controller.debugSnapStart = snapStart
+            controller.debugSnapEnd = snapEnd
+            controller.debugSnapDidApply = snapApplied
+            controller.debugPushEnd = sweepStart
+            controller.debugPushDidApply = false
+            controller.debugSweepNormal = activeSweep.hitNormal
+            controller.debugSweepDidCollide = activeSweep.didCollide
+
+            let pushStrength = max(0.0, controller.pushStrength)
+            if pushStrength > 0.0 && activeSweep.didCollide && activeSweep.hitBodyId != 0 {
+                var horizontalPush = horizontalVelocity
+                horizontalPush.y = 0.0
+                let speed = simd_length(horizontalPush)
+                if speed > 1.0e-4 {
+                    let dir = horizontalPush / speed
+                    let tangent = dir - activeSweep.hitNormal * simd_dot(dir, activeSweep.hitNormal)
+                    let tangentDir: SIMD3<Float> = {
+                        let len = simd_length(tangent)
+                        guard len > 1.0e-5 else { return .zero }
+                        return tangent / len
+                    }()
+                    let impulse = tangentDir * pushStrength * speed * fixedDelta
+                    if physicsSystem.pushDynamicBody(bodyId: activeSweep.hitBodyId, scene: self, impulse: impulse) {
+                        controller.debugPushEnd = sweepStart + impulse
+                        controller.debugPushDidApply = true
+                    }
+                }
+            }
+
+            controller.velocity = SIMD3<Float>(horizontalVelocity.x, controller.verticalVelocity, horizontalVelocity.z)
+            _ = physicsSystem.setKinematicTarget(entity: entity,
+                                                 scene: self,
+                                                 position: finalPosition,
+                                                 rotation: yawRotation,
+                                                 fixedDeltaTime: fixedDelta)
+
+            // Intentionally do not write `visualEntityId` transforms here.
+            // Artist/model local rotation fixups (for example +90deg X) must remain untouched at runtime.
+            if let pivotEntityId = controller.cameraPivotEntityId,
+               let pivotEntity = ecs.entity(with: pivotEntityId),
+               var pivotTransform = ecs.get(TransformComponent.self, for: pivotEntity) {
+                let pitchQuat = simd_quatf(angle: controller.pitchRadians, axis: SIMD3<Float>(1.0, 0.0, 0.0))
+                pivotTransform.rotation = pitchQuat.vector
+                _ = setLocalTransform(pivotTransform, for: pivotEntity, source: .physics)
+            }
+
+            if characterControllerDebugEnabled {
+                let previousTime = characterDebugLogAccumulated[entity.id] ?? 0.0
+                let accumulated = previousTime + fixedDelta
+                if accumulated >= 1.0 {
+                    let motion = rigidbody.motionType.rawValue
+                    EngineLoggerContext.log(
+                        String(
+                            format: "CharacterController Debug id=%@ motion=%u pos=(%.3f,%.3f,%.3f) grounded=%@ lastHitNormal=(%.3f,%.3f,%.3f) desiredDelta=%.4f collided=%@ depen=%.4f push=%@",
+                            entity.id.uuidString,
+                            motion,
+                            finalPosition.x, finalPosition.y, finalPosition.z,
+                            controller.isGrounded ? "true" : "false",
+                            activeSweep.hitNormal.x, activeSweep.hitNormal.y, activeSweep.hitNormal.z,
+                            simd_length(sweepDelta),
+                            activeSweep.didCollide ? "true" : "false",
+                            simd_length(depenetration.correction),
+                            controller.debugPushDidApply ? "true" : "false"
+                        ),
+                        level: .debug,
+                        category: .scene
+                    )
+                    characterDebugLogAccumulated[entity.id] = accumulated - 1.0
+                } else {
+                    characterDebugLogAccumulated[entity.id] = accumulated
+                }
+            }
+            ecs.add(controller, to: entity)
         }
-        characterMoveRequests.removeAll(keepingCapacity: true)
         characterJumpRequests.removeAll(keepingCapacity: true)
+        characterLookRequests.removeAll(keepingCapacity: true)
     }
 
     func updateCameras() {
@@ -349,7 +659,7 @@ public class EngineScene {
         if mode.contains(.executeScripts) {
             engineContext?.scriptRuntime.onFixedUpdate(dt: fixedDelta)
         }
-        applyCharacterControllers()
+        applyCharacterControllers(fixedDelta: fixedDelta)
         physicsSystem?.fixedUpdate(scene: self, fixedDeltaTime: fixedDelta)
         if mode.contains(.dispatchScriptEvents),
            let events = physicsSystem?.drainEvents(),
@@ -1278,6 +1588,24 @@ public class EngineScene {
             textInput: ""
         )
         return FrameContext(time: frameTime, input: inputState)
+    }
+
+    public func inputIsKeyDown(_ keyCode: UInt16) -> Bool {
+        let index = Int(keyCode)
+        guard index >= 0, index < currentInputKeys.count else { return false }
+        return currentInputKeys[index]
+    }
+
+    public func inputWasKeyPressed(_ keyCode: UInt16) -> Bool {
+        let index = Int(keyCode)
+        guard index >= 0, index < currentInputKeys.count else { return false }
+        let current = currentInputKeys[index]
+        let previous = index < previousInputKeys.count ? previousInputKeys[index] : false
+        return current && !previous
+    }
+
+    public func inputMouseDelta() -> SIMD2<Float> {
+        lastFrameContext?.input.mouseDelta ?? .zero
     }
 
     private func layerIndex(for entity: Entity) -> Int32 {

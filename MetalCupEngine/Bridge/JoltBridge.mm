@@ -634,16 +634,27 @@ extern "C" void MCEPhysicsSetBodyTransform(void *worldPtr,
     if (!bodyInterface.IsAdded(bodyId)) { return; }
     const RVec3 position(posX, posY, posZ);
     const Quat rotation(rotX, rotY, rotZ, rotW);
-    const EMotionType motionType = bodyInterface.GetMotionType(bodyId);
-    if (motionType == EMotionType::Kinematic) {
-        // This bridge API does not receive a fixed dt parameter, so use a stable default.
-        bodyInterface.MoveKinematic(bodyId, position, rotation, 1.0f / 60.0f);
-        return;
-    }
     bodyInterface.SetPositionAndRotation(bodyId,
                                          position,
                                          rotation,
                                          activate != 0 ? EActivation::Activate : EActivation::DontActivate);
+}
+
+extern "C" void MCEPhysicsMoveKinematic(void *worldPtr,
+                                        uint64_t bodyIdValue,
+                                        float posX, float posY, float posZ,
+                                        float rotX, float rotY, float rotZ, float rotW,
+                                        float dt) {
+    if (!worldPtr || bodyIdValue == 0 || dt <= 0.0f) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    BodyInterface &bodyInterface = world->physicsSystem.GetBodyInterface();
+    BodyID bodyId(bodyIdValue);
+    if (!bodyInterface.IsAdded(bodyId)) { return; }
+    if (bodyInterface.GetMotionType(bodyId) != EMotionType::Kinematic) { return; }
+    bodyInterface.MoveKinematic(bodyId,
+                                RVec3(posX, posY, posZ),
+                                Quat(rotX, rotY, rotZ, rotW),
+                                dt);
 }
 
 extern "C" uint32_t MCEPhysicsGetBodyTransform(void *worldPtr,
@@ -832,6 +843,55 @@ extern "C" uint32_t MCEPhysicsSphereCastClosest(void *worldPtr,
     ClosestHitCollisionCollector<CastShapeCollector> collector;
     world->physicsSystem.GetNarrowPhaseQuery().CastShape(shapeCast, castSettings, RVec3::sZero(), collector);
     if (!collector.HadHit()) { return 0; }
+    const ShapeCastResult &hit = collector.mHit;
+    BodyLockRead lock(world->physicsSystem.GetBodyLockInterface(), hit.mBodyID2);
+    if (!lock.Succeeded()) { return 0; }
+    const Body &body = lock.GetBody();
+    const RVec3 hitPosition = shapeCast.GetPointOnRay(hit.mFraction);
+    const Vec3 normal = -hit.mPenetrationAxis.Normalized();
+    positionOut[0] = static_cast<float>(hitPosition.GetX());
+    positionOut[1] = static_cast<float>(hitPosition.GetY());
+    positionOut[2] = static_cast<float>(hitPosition.GetZ());
+    normalOut[0] = normal.GetX();
+    normalOut[1] = normal.GetY();
+    normalOut[2] = normal.GetZ();
+    *distanceOut = hit.mFraction * maxDistance;
+    *bodyIdOut = static_cast<uint64_t>(hit.mBodyID2.GetIndexAndSequenceNumber());
+    *userDataOut = body.GetUserData();
+    return 1;
+}
+
+extern "C" uint32_t MCEPhysicsCapsuleCastClosest(void *worldPtr,
+                                                 float originX, float originY, float originZ,
+                                                 float rotX, float rotY, float rotZ, float rotW,
+                                                 float dirX, float dirY, float dirZ,
+                                                 float halfHeight,
+                                                 float radius,
+                                                 float maxDistance,
+                                                 float *positionOut,
+                                                 float *normalOut,
+                                                 float *distanceOut,
+                                                 uint64_t *bodyIdOut,
+                                                 uint64_t *userDataOut) {
+    if (!worldPtr || !positionOut || !normalOut || !distanceOut || !bodyIdOut || !userDataOut) { return 0; }
+    if (maxDistance <= 0.0f || radius <= 0.0f || halfHeight <= 0.0f) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    Vec3 dir(dirX, dirY, dirZ);
+    if (dir.LengthSq() < 1.0e-8f) { return 0; }
+    dir = dir.Normalized();
+
+    CapsuleShapeSettings capsuleSettings(halfHeight, radius);
+    RefConst<Shape> shape = capsuleSettings.Create().Get();
+    if (!shape) { return 0; }
+
+    const RMat44 startTransform = RMat44::sRotationTranslation(Quat(rotX, rotY, rotZ, rotW),
+                                                               RVec3(originX, originY, originZ));
+    RShapeCast shapeCast(shape, Vec3::sReplicate(1.0f), startTransform, dir * maxDistance);
+    ShapeCastSettings castSettings;
+    ClosestHitCollisionCollector<CastShapeCollector> collector;
+    world->physicsSystem.GetNarrowPhaseQuery().CastShape(shapeCast, castSettings, RVec3::sZero(), collector);
+    if (!collector.HadHit()) { return 0; }
+
     const ShapeCastResult &hit = collector.mHit;
     BodyLockRead lock(world->physicsSystem.GetBodyLockInterface(), hit.mBodyID2);
     if (!lock.Succeeded()) { return 0; }

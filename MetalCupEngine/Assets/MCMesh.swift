@@ -170,6 +170,8 @@ public class MCMesh {
 
     var boundsCenter: SIMD3<Float> { localBoundsCenter }
     var boundsRadius: Float { localBoundsRadius }
+    public var editorBoundsCenter: SIMD3<Float> { localBoundsCenter }
+    public var editorBoundsRadius: Float { localBoundsRadius }
 
     init(device: MTLDevice, graphics: Graphics, assetManager: AssetManager? = nil) {
         self.device = device

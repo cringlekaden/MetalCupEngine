@@ -742,7 +742,45 @@ public struct CharacterControllerComponentDTO: Codable {
     public var stepOffset: Float
     public var slopeLimit: Float
     public var moveSpeed: Float
-    public var jumpForce: Float
+    public var sprintMultiplier: Float
+    public var jumpSpeed: Float
+    public var useGravityOverride: Bool
+    public var gravity: Float
+    public var groundProbeDistance: Float
+    public var maxSlope: Float
+    public var groundSnapDistance: Float
+    public var lookSensitivity: Float
+    public var minPitchDegrees: Float
+    public var maxPitchDegrees: Float
+    public var pushStrength: Float
+    public var visualEntityId: UUID?
+    public var cameraPivotEntityId: UUID?
+    public var debugDraw: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case enabled
+        case height
+        case radius
+        case stepOffset
+        case slopeLimit
+        case moveSpeed
+        case jumpForce
+        case sprintMultiplier
+        case jumpSpeed
+        case useGravityOverride
+        case gravity
+        case groundProbeDistance
+        case maxSlope
+        case groundSnapDistance
+        case lookSensitivity
+        case minPitchDegrees
+        case maxPitchDegrees
+        case pushStrength
+        case visualEntityId
+        case cameraPivotEntityId
+        case debugDraw
+    }
 
     public init(schemaVersion: Int = 1,
                 enabled: Bool,
@@ -751,7 +789,20 @@ public struct CharacterControllerComponentDTO: Codable {
                 stepOffset: Float,
                 slopeLimit: Float,
                 moveSpeed: Float,
-                jumpForce: Float) {
+                sprintMultiplier: Float,
+                jumpSpeed: Float,
+                useGravityOverride: Bool,
+                gravity: Float,
+                groundProbeDistance: Float,
+                maxSlope: Float,
+                groundSnapDistance: Float = 0.1,
+                lookSensitivity: Float = 0.01,
+                minPitchDegrees: Float = -80.0,
+                maxPitchDegrees: Float = 80.0,
+                pushStrength: Float = 10.0,
+                visualEntityId: UUID? = nil,
+                cameraPivotEntityId: UUID? = nil,
+                debugDraw: Bool = false) {
         self.schemaVersion = schemaVersion
         self.enabled = enabled
         self.height = height
@@ -759,18 +810,98 @@ public struct CharacterControllerComponentDTO: Codable {
         self.stepOffset = stepOffset
         self.slopeLimit = slopeLimit
         self.moveSpeed = moveSpeed
-        self.jumpForce = jumpForce
+        self.sprintMultiplier = sprintMultiplier
+        self.jumpSpeed = jumpSpeed
+        self.useGravityOverride = useGravityOverride
+        self.gravity = gravity
+        self.groundProbeDistance = groundProbeDistance
+        self.maxSlope = maxSlope
+        self.groundSnapDistance = groundSnapDistance
+        self.lookSensitivity = lookSensitivity
+        self.minPitchDegrees = minPitchDegrees
+        self.maxPitchDegrees = maxPitchDegrees
+        self.pushStrength = pushStrength
+        self.visualEntityId = visualEntityId
+        self.cameraPivotEntityId = cameraPivotEntityId
+        self.debugDraw = debugDraw
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        self.height = try container.decodeIfPresent(Float.self, forKey: .height) ?? 1.8
+        self.radius = try container.decodeIfPresent(Float.self, forKey: .radius) ?? 0.35
+        self.stepOffset = try container.decodeIfPresent(Float.self, forKey: .stepOffset) ?? 0.25
+        self.slopeLimit = try container.decodeIfPresent(Float.self, forKey: .slopeLimit) ?? 45.0
+        self.moveSpeed = try container.decodeIfPresent(Float.self, forKey: .moveSpeed) ?? 4.0
+        self.sprintMultiplier = try container.decodeIfPresent(Float.self, forKey: .sprintMultiplier) ?? 1.5
+        if let jumpSpeed = try container.decodeIfPresent(Float.self, forKey: .jumpSpeed) {
+            self.jumpSpeed = jumpSpeed
+        } else {
+            self.jumpSpeed = try container.decodeIfPresent(Float.self, forKey: .jumpForce) ?? 5.5
+        }
+        self.useGravityOverride = try container.decodeIfPresent(Bool.self, forKey: .useGravityOverride) ?? false
+        self.gravity = try container.decodeIfPresent(Float.self, forKey: .gravity) ?? -9.81
+        self.groundProbeDistance = try container.decodeIfPresent(Float.self, forKey: .groundProbeDistance) ?? 0.25
+        self.maxSlope = try container.decodeIfPresent(Float.self, forKey: .maxSlope) ?? self.slopeLimit
+        self.groundSnapDistance = try container.decodeIfPresent(Float.self, forKey: .groundSnapDistance) ?? 0.1
+        self.lookSensitivity = try container.decodeIfPresent(Float.self, forKey: .lookSensitivity) ?? 0.01
+        self.minPitchDegrees = try container.decodeIfPresent(Float.self, forKey: .minPitchDegrees) ?? -80.0
+        self.maxPitchDegrees = try container.decodeIfPresent(Float.self, forKey: .maxPitchDegrees) ?? 80.0
+        self.pushStrength = try container.decodeIfPresent(Float.self, forKey: .pushStrength) ?? 10.0
+        self.visualEntityId = try container.decodeIfPresent(UUID.self, forKey: .visualEntityId)
+        self.cameraPivotEntityId = try container.decodeIfPresent(UUID.self, forKey: .cameraPivotEntityId)
+        self.debugDraw = try container.decodeIfPresent(Bool.self, forKey: .debugDraw) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(height, forKey: .height)
+        try container.encode(radius, forKey: .radius)
+        try container.encode(stepOffset, forKey: .stepOffset)
+        try container.encode(slopeLimit, forKey: .slopeLimit)
+        try container.encode(moveSpeed, forKey: .moveSpeed)
+        try container.encode(sprintMultiplier, forKey: .sprintMultiplier)
+        try container.encode(jumpSpeed, forKey: .jumpSpeed)
+        try container.encode(useGravityOverride, forKey: .useGravityOverride)
+        try container.encode(gravity, forKey: .gravity)
+        try container.encode(groundProbeDistance, forKey: .groundProbeDistance)
+        try container.encode(maxSlope, forKey: .maxSlope)
+        try container.encode(groundSnapDistance, forKey: .groundSnapDistance)
+        try container.encode(lookSensitivity, forKey: .lookSensitivity)
+        try container.encode(minPitchDegrees, forKey: .minPitchDegrees)
+        try container.encode(maxPitchDegrees, forKey: .maxPitchDegrees)
+        try container.encode(pushStrength, forKey: .pushStrength)
+        try container.encodeIfPresent(visualEntityId, forKey: .visualEntityId)
+        try container.encodeIfPresent(cameraPivotEntityId, forKey: .cameraPivotEntityId)
+        try container.encode(debugDraw, forKey: .debugDraw)
     }
 
     public init(component: CharacterControllerComponent) {
-        self.schemaVersion = 1
+        self.schemaVersion = 2
         self.enabled = component.isEnabled
         self.height = component.height
         self.radius = component.radius
         self.stepOffset = component.stepOffset
         self.slopeLimit = component.slopeLimit
         self.moveSpeed = component.moveSpeed
-        self.jumpForce = component.jumpForce
+        self.sprintMultiplier = component.sprintMultiplier
+        self.jumpSpeed = component.jumpSpeed
+        self.useGravityOverride = component.useGravityOverride
+        self.gravity = component.gravity
+        self.groundProbeDistance = component.groundProbeDistance
+        self.maxSlope = component.maxSlope
+        self.groundSnapDistance = component.groundSnapDistance
+        self.lookSensitivity = component.lookSensitivity
+        self.minPitchDegrees = component.minPitchDegrees
+        self.maxPitchDegrees = component.maxPitchDegrees
+        self.pushStrength = component.pushStrength
+        self.visualEntityId = component.visualEntityId
+        self.cameraPivotEntityId = component.cameraPivotEntityId
+        self.debugDraw = component.debugDraw
     }
 
     public func toComponent() -> CharacterControllerComponent {
@@ -780,7 +911,20 @@ public struct CharacterControllerComponentDTO: Codable {
                                      stepOffset: stepOffset,
                                      slopeLimit: slopeLimit,
                                      moveSpeed: moveSpeed,
-                                     jumpForce: jumpForce)
+                                     sprintMultiplier: sprintMultiplier,
+                                     jumpSpeed: jumpSpeed,
+                                     useGravityOverride: useGravityOverride,
+                                     gravity: gravity,
+                                     groundProbeDistance: groundProbeDistance,
+                                     maxSlope: maxSlope,
+                                     groundSnapDistance: groundSnapDistance,
+                                     lookSensitivity: lookSensitivity,
+                                     minPitchDegrees: minPitchDegrees,
+                                     maxPitchDegrees: maxPitchDegrees,
+                                     pushStrength: pushStrength,
+                                     visualEntityId: visualEntityId,
+                                     cameraPivotEntityId: cameraPivotEntityId,
+                                     debugDraw: debugDraw)
     }
 }
 

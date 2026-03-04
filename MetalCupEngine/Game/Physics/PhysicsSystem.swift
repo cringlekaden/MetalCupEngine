@@ -7,6 +7,46 @@ import Foundation
 import simd
 
 public final class PhysicsSystem {
+    public struct CharacterGroundProbe {
+        public var isGrounded: Bool
+        public var hitPosition: SIMD3<Float>
+        public var hitNormal: SIMD3<Float>
+        public var distance: Float
+
+        public init(isGrounded: Bool = false,
+                    hitPosition: SIMD3<Float> = .zero,
+                    hitNormal: SIMD3<Float> = SIMD3<Float>(0.0, 1.0, 0.0),
+                    distance: Float = 0.0) {
+            self.isGrounded = isGrounded
+            self.hitPosition = hitPosition
+            self.hitNormal = hitNormal
+            self.distance = distance
+        }
+    }
+
+    public struct CharacterSweepResult {
+        public var finalPosition: SIMD3<Float>
+        public var didCollide: Bool
+        public var hitNormal: SIMD3<Float>
+        public var hitPosition: SIMD3<Float>
+        public var hitBodyId: UInt64
+        public var travelFraction: Float
+
+        public init(finalPosition: SIMD3<Float>,
+                    didCollide: Bool,
+                    hitNormal: SIMD3<Float> = SIMD3<Float>(0.0, 1.0, 0.0),
+                    hitPosition: SIMD3<Float> = .zero,
+                    hitBodyId: UInt64 = 0,
+                    travelFraction: Float = 1.0) {
+            self.finalPosition = finalPosition
+            self.didCollide = didCollide
+            self.hitNormal = hitNormal
+            self.hitPosition = hitPosition
+            self.hitBodyId = hitBodyId
+            self.travelFraction = travelFraction
+        }
+    }
+
     private static let positionWritebackEpsilon: Float = 1e-4
     private static let rotationWritebackEpsilon: Float = 1e-4
     private static let minimumScaleEpsilon: Float = 1e-4
@@ -25,6 +65,7 @@ public final class PhysicsSystem {
     private var sensorBodyIdsByEntity: [UUID: [UInt64]] = [:]
     private var runtimeSignatureByEntity: [UUID: Int] = [:]
     private var runtimeWorldScaleByEntity: [UUID: SIMD3<Float>] = [:]
+    private var pendingKinematicTargets: [UInt64: KinematicTarget] = [:]
 #if DEBUG
     private var warnedScaleEntities: Set<UUID> = []
     private var hasSteppedOnce: Bool = false
@@ -87,7 +128,7 @@ public final class PhysicsSystem {
     }
 
     public func pullTransformsFromPhysics(scene: EngineScene) {
-        pullDynamicTransforms(ecs: scene.ecs)
+        pullSimulatedTransforms(ecs: scene.ecs)
     }
 
     public func buildBodies(scene: EngineScene) {
@@ -143,6 +184,7 @@ public final class PhysicsSystem {
         activeCollisionPairs.removeAll(keepingCapacity: true)
         collisionEvents.removeAll(keepingCapacity: true)
         scriptEvents.removeAll(keepingCapacity: true)
+        pendingKinematicTargets.removeAll(keepingCapacity: true)
     }
 
     public func fixedUpdate(scene: EngineScene, fixedDeltaTime: Float) {
@@ -151,7 +193,7 @@ public final class PhysicsSystem {
         let ecs = scene.ecs
         syncRuntimeBindings(scene: scene)
         syncSensorBodiesToParents(ecs: ecs)
-        pushKinematicTransforms(ecs: ecs)
+        pushKinematicTransforms(ecs: ecs, fixedDeltaTime: fixedDeltaTime)
         world.step(dt: fixedDeltaTime)
         updateOverlapEvents()
 #if DEBUG
@@ -172,7 +214,7 @@ public final class PhysicsSystem {
             debugLoggedPostStep = true
         }
 #endif
-        pullDynamicTransforms(ecs: ecs)
+        pullSimulatedTransforms(ecs: ecs)
         hasSteppedOnce = true
     }
 
@@ -259,6 +301,51 @@ public final class PhysicsSystem {
                 debugDraw.submitLine(origin, origin + yAxis, color: SIMD4<Float>(0.2, 1.0, 0.2, 1.0))
                 debugDraw.submitLine(origin, origin + zAxis, color: SIMD4<Float>(0.2, 0.4, 1.0, 1.0))
             }
+
+            if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
+               controller.debugDraw {
+                let probeColor = SIMD4<Float>(0.2, 0.9, 1.0, 0.95)
+                debugDraw.submitLine(controller.debugProbeStart, controller.debugProbeEnd, color: probeColor)
+                if controller.debugProbeHadHit {
+                    let hit = controller.debugProbeHitPoint
+                    let size = max(0.02, debugDraw.lineThickness * 2.0)
+                    debugDraw.submitLine(hit + SIMD3<Float>(-size, 0.0, 0.0), hit + SIMD3<Float>(size, 0.0, 0.0), color: probeColor)
+                    debugDraw.submitLine(hit + SIMD3<Float>(0.0, 0.0, -size), hit + SIMD3<Float>(0.0, 0.0, size), color: probeColor)
+                }
+                if controller.debugSweepDidCollide {
+                    let origin = ecs.worldTransform(for: entity).position
+                    let normal = simd_length_squared(controller.debugSweepNormal) > 1.0e-6
+                        ? simd_normalize(controller.debugSweepNormal)
+                        : SIMD3<Float>(0.0, 1.0, 0.0)
+                    debugDraw.submitLine(origin, origin + normal * 0.4, color: SIMD4<Float>(1.0, 0.4, 0.15, 0.95))
+                }
+                debugDraw.submitLine(controller.debugSweepStart,
+                                     controller.debugSweepEnd,
+                                     color: SIMD4<Float>(1.0, 0.8, 0.25, 0.95))
+                if controller.debugStepDidApply {
+                    debugDraw.submitLine(controller.debugSweepStart,
+                                         controller.debugStepUpEnd,
+                                         color: SIMD4<Float>(1.0, 0.95, 0.35, 0.95))
+                    debugDraw.submitLine(controller.debugStepUpEnd,
+                                         controller.debugStepForwardEnd,
+                                         color: SIMD4<Float>(1.0, 0.95, 0.35, 0.95))
+                }
+                if controller.debugPenetrationDepth > 0.0001 {
+                    debugDraw.submitLine(controller.debugSweepEnd,
+                                         controller.debugDepenetrationEnd,
+                                         color: SIMD4<Float>(1.0, 0.25, 0.25, 0.95))
+                }
+                if controller.debugSnapDidApply {
+                    debugDraw.submitLine(controller.debugSnapStart,
+                                         controller.debugSnapEnd,
+                                         color: SIMD4<Float>(0.45, 1.0, 0.45, 0.95))
+                }
+                if controller.debugPushDidApply {
+                    debugDraw.submitLine(controller.debugSweepEnd,
+                                         controller.debugPushEnd,
+                                         color: SIMD4<Float>(0.9, 0.35, 1.0, 0.95))
+                }
+            }
         }
 
         if drawContacts,
@@ -301,7 +388,7 @@ public final class PhysicsSystem {
         }
     }
 
-    private func pushKinematicTransforms(ecs: SceneECS) {
+    private func pushKinematicTransforms(ecs: SceneECS, fixedDeltaTime: Float) {
         ecs.forEachEntity { entity in
             guard let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
                   rigidbody.isEnabled,
@@ -310,10 +397,20 @@ public final class PhysicsSystem {
                   ecs.get(TransformComponent.self, for: entity) != nil else {
                 return
             }
+            if let target = pendingKinematicTargets.removeValue(forKey: bodyId) {
+                world.moveKinematic(bodyId: bodyId,
+                                    position: target.position,
+                                    rotation: target.rotation,
+                                    dt: target.dt)
+                return
+            }
             let worldTransform = ecs.worldTransform(for: entity)
-            let rotation = worldTransform.rotation
-            world.setBodyTransform(bodyId: bodyId, position: worldTransform.position, rotation: rotation)
+            world.moveKinematic(bodyId: bodyId,
+                                position: worldTransform.position,
+                                rotation: worldTransform.rotation,
+                                dt: fixedDeltaTime)
         }
+        pendingKinematicTargets.removeAll(keepingCapacity: true)
     }
 
     func bodyTransform(bodyId: UInt64) -> (position: SIMD3<Float>, rotation: SIMD4<Float>)? {
@@ -359,6 +456,7 @@ public final class PhysicsSystem {
                                position: position,
                                rotation: rotation,
                                activate: activate)
+        pendingKinematicTargets.removeValue(forKey: bodyId)
         return true
     }
 
@@ -366,8 +464,28 @@ public final class PhysicsSystem {
     public func setBodyLinearVelocity(entity: Entity, scene: EngineScene, velocity: SIMD3<Float>) -> Bool {
         guard let rigidbody = scene.ecs.get(RigidbodyComponent.self, for: entity),
               let bodyId = rigidbody.bodyId else { return false }
+        guard rigidbody.motionType != .kinematic else {
+            return false
+        }
         let angular = world.getBodyVelocity(bodyId: bodyId)?.angular ?? SIMD3<Float>(repeating: 0.0)
         world.setBodyVelocity(bodyId: bodyId, linear: velocity, angular: angular)
+        return true
+    }
+
+    @discardableResult
+    public func setKinematicTarget(entity: Entity,
+                                   scene: EngineScene,
+                                   position: SIMD3<Float>,
+                                   rotation: SIMD4<Float>,
+                                   fixedDeltaTime: Float) -> Bool {
+        guard let rigidbody = scene.ecs.get(RigidbodyComponent.self, for: entity),
+              rigidbody.isEnabled,
+              rigidbody.motionType == .kinematic,
+              let bodyId = rigidbody.bodyId else { return false }
+        let dt = max(1.0e-4, fixedDeltaTime)
+        pendingKinematicTargets[bodyId] = KinematicTarget(position: position,
+                                                          rotation: TransformMath.normalizedQuaternion(rotation),
+                                                          dt: dt)
         return true
     }
 
@@ -377,17 +495,223 @@ public final class PhysicsSystem {
         return world.getBodyVelocity(bodyId: bodyId)?.linear
     }
 
+    @discardableResult
+    public func pushDynamicBody(bodyId: UInt64,
+                                scene: EngineScene,
+                                impulse: SIMD3<Float>) -> Bool {
+        guard simd_length_squared(impulse) > 1.0e-8,
+              let entityId = world.entityIdForBody(bodyId),
+              let entity = scene.ecs.entity(with: entityId),
+              let rigidbody = scene.ecs.get(RigidbodyComponent.self, for: entity),
+              rigidbody.isEnabled,
+              rigidbody.motionType == .dynamic,
+              let velocity = world.getBodyVelocity(bodyId: bodyId) else { return false }
+        let inverseMass = 1.0 / max(0.001, rigidbody.mass)
+        let deltaV = impulse * inverseMass
+        let maxPushDelta: Float = 4.0
+        let clampedDeltaV: SIMD3<Float> = {
+            let len = simd_length(deltaV)
+            guard len > maxPushDelta else { return deltaV }
+            return deltaV / len * maxPushDelta
+        }()
+        world.setBodyVelocity(bodyId: bodyId,
+                              linear: velocity.linear + clampedDeltaV,
+                              angular: velocity.angular)
+        world.setBodyActive(bodyId: bodyId, isActive: true)
+        return true
+    }
+
+    public func sweepCharacter(entity: Entity,
+                               scene: EngineScene,
+                               startPosition: SIMD3<Float>,
+                               desiredDelta: SIMD3<Float>,
+                               radius: Float,
+                               halfHeight: Float,
+                               offset: SIMD3<Float>,
+                               rotationOffset _: SIMD4<Float>,
+                               maxSlideIterations: Int = 2,
+                               layerMask: LayerMask = .all) -> CharacterSweepResult {
+        guard scene.ecs.get(TransformComponent.self, for: entity) != nil else {
+            return CharacterSweepResult(finalPosition: startPosition, didCollide: false)
+        }
+        let safeRadius = max(0.02, radius)
+        let safeHalfHeight = max(0.02, halfHeight)
+        let capsuleRotation = TransformMath.identityQuaternion
+        let worldOffset = offset
+
+        let requestedDistance = simd_length(desiredDelta)
+        if requestedDistance <= 1.0e-6 {
+            return CharacterSweepResult(finalPosition: startPosition, didCollide: false)
+        }
+
+        var remainingDelta = desiredDelta
+        var resolvedDelta = SIMD3<Float>.zero
+        var didCollide = false
+        var lastNormal = SIMD3<Float>(0.0, 1.0, 0.0)
+        var lastHitPosition = SIMD3<Float>.zero
+        var lastHitBodyId: UInt64 = 0
+        let skinWidth = max(0.002, safeRadius * 0.05)
+        let maxIterations = max(1, maxSlideIterations)
+        let castBasePosition = startPosition
+
+        for _ in 0..<maxIterations {
+            let segmentLength = simd_length(remainingDelta)
+            if segmentLength <= 1.0e-6 { break }
+            let castDirection = remainingDelta / segmentLength
+            let castOrigin = castBasePosition + resolvedDelta + worldOffset
+            guard let hit = filteredCapsuleCast(origin: castOrigin,
+                                                rotation: capsuleRotation,
+                                                direction: castDirection,
+                                                halfHeight: safeHalfHeight,
+                                                radius: safeRadius,
+                                                maxDistance: segmentLength + skinWidth,
+                                                ignoreEntityId: entity.id,
+                                                layerMask: layerMask,
+                                                includeTriggers: false) else {
+                resolvedDelta += remainingDelta
+                break
+            }
+
+            didCollide = true
+            let clampedDistance = max(0.0, min(segmentLength, hit.distance - skinWidth))
+            resolvedDelta += castDirection * clampedDistance
+            let normal = simd_length_squared(hit.normal) > 1.0e-6 ? simd_normalize(hit.normal) : SIMD3<Float>(0.0, 1.0, 0.0)
+            lastNormal = normal
+            lastHitPosition = hit.position
+            lastHitBodyId = hit.bodyId
+            let remainingDistance = max(0.0, segmentLength - clampedDistance)
+            if remainingDistance <= 1.0e-4 {
+                remainingDelta = .zero
+                break
+            }
+            let remainderDirection = remainingDelta / segmentLength
+            let remainder = remainderDirection * remainingDistance
+            let normalComponent = simd_dot(remainder, normal)
+            var slide = remainder - normal * normalComponent
+            if simd_length_squared(slide) <= 1.0e-8 {
+                remainingDelta = .zero
+                break
+            }
+            if simd_dot(slide, remainingDelta) <= 0 {
+                remainingDelta = .zero
+                break
+            }
+            slide *= max(0.0, 1.0 - min(1.0, skinWidth / max(remainingDistance, 1.0e-4)))
+            remainingDelta = slide
+        }
+
+        let finalPosition = startPosition + resolvedDelta
+        let traveled = simd_length(resolvedDelta)
+        let travelFraction = requestedDistance > 1.0e-6 ? min(1.0, traveled / requestedDistance) : 1.0
+        return CharacterSweepResult(finalPosition: finalPosition,
+                                    didCollide: didCollide,
+                                    hitNormal: lastNormal,
+                                    hitPosition: lastHitPosition,
+                                    hitBodyId: lastHitBodyId,
+                                    travelFraction: travelFraction)
+    }
+
+    public func resolveCharacterPenetration(entity: Entity,
+                                            scene: EngineScene,
+                                            position: SIMD3<Float>,
+                                            radius: Float,
+                                            halfHeight: Float,
+                                            offset: SIMD3<Float>,
+                                            maxIterations: Int = 4,
+                                            skinWidth: Float = 0.02) -> (position: SIMD3<Float>, correction: SIMD3<Float>, maxDepth: Float) {
+        let safeSkin = max(0.002, skinWidth)
+        var current = position
+        var accumulated = SIMD3<Float>.zero
+        var maxDepth: Float = 0.0
+        let directions: [SIMD3<Float>] = [
+            SIMD3<Float>(0.0, 1.0, 0.0),
+            SIMD3<Float>(1.0, 0.0, 0.0),
+            SIMD3<Float>(-1.0, 0.0, 0.0),
+            SIMD3<Float>(0.0, 0.0, 1.0),
+            SIMD3<Float>(0.0, 0.0, -1.0)
+        ]
+
+        for _ in 0..<max(1, maxIterations) {
+            var correction = SIMD3<Float>.zero
+            var iterationMaxDepth: Float = 0.0
+            for direction in directions {
+                guard let hit = filteredCapsuleCast(origin: current + offset,
+                                                    rotation: TransformMath.identityQuaternion,
+                                                    direction: direction,
+                                                    halfHeight: halfHeight,
+                                                    radius: radius,
+                                                    maxDistance: safeSkin + 0.03,
+                                                    ignoreEntityId: entity.id,
+                                                    layerMask: .all,
+                                                    includeTriggers: false) else {
+                    continue
+                }
+                if hit.distance >= safeSkin { continue }
+                let depth = safeSkin - hit.distance
+                correction -= direction * depth
+                iterationMaxDepth = max(iterationMaxDepth, depth)
+            }
+            if simd_length_squared(correction) <= 1.0e-10 { break }
+            let correctionLen = simd_length(correction)
+            let maxCorrection = safeSkin * 2.0
+            if correctionLen > maxCorrection {
+                correction = correction / correctionLen * maxCorrection
+            }
+            current += correction
+            accumulated += correction
+            maxDepth = max(maxDepth, iterationMaxDepth)
+        }
+
+        return (position: current, correction: accumulated, maxDepth: maxDepth)
+    }
+
     public func isGrounded(entity: Entity, scene: EngineScene, probeDistance: Float = 0.2) -> Bool {
-        guard scene.ecs.get(TransformComponent.self, for: entity) != nil else { return false }
-        let worldTransform = scene.ecs.worldTransform(for: entity)
-        let origin = worldTransform.position + SIMD3<Float>(0.0, max(0.05, probeDistance), 0.0)
-        let hit = world.sphereCastClosest(origin: origin,
-                                          direction: SIMD3<Float>(0.0, -1.0, 0.0),
-                                          radius: 0.2,
-                                          maxDistance: max(0.05, probeDistance * 2.0))
-        guard let hit else { return false }
-        guard let entityId = hit.entityId else { return true }
-        return entityId != entity.id
+        let probe = characterGroundProbe(entity: entity,
+                                         scene: scene,
+                                         radius: 0.2,
+                                         height: 1.8,
+                                         probeDistance: probeDistance,
+                                         maxSlopeDegrees: 89.0)
+        return probe.isGrounded
+    }
+
+    public func characterGroundProbe(entity: Entity,
+                                     scene: EngineScene,
+                                     radius: Float,
+                                     height: Float,
+                                     probeDistance: Float,
+                                     maxSlopeDegrees: Float,
+                                     worldPositionOverride: SIMD3<Float>? = nil) -> CharacterGroundProbe {
+        guard let capsule = characterCapsuleState(entity: entity,
+                                                  scene: scene,
+                                                  fallbackRadius: radius,
+                                                  fallbackHeight: height,
+                                                  worldPositionOverride: worldPositionOverride) else {
+            return CharacterGroundProbe()
+        }
+        let probe = max(0.02, probeDistance)
+        let castRadius = max(0.01, capsule.radius - 0.002)
+        let skinWidth = max(0.002, castRadius * 0.05)
+        let origin = capsule.center + SIMD3<Float>(0.0, skinWidth, 0.0)
+        let castDistance = probe + skinWidth + 0.02
+        let hit = filteredCapsuleCast(origin: origin,
+                                      rotation: capsule.rotation,
+                                      direction: SIMD3<Float>(0.0, -1.0, 0.0),
+                                      halfHeight: capsule.halfHeight,
+                                      radius: castRadius,
+                                      maxDistance: castDistance,
+                                      ignoreEntityId: entity.id,
+                                      layerMask: .all,
+                                      includeTriggers: false)
+        guard let hit else { return CharacterGroundProbe() }
+        let slopeCos = cos(max(0.0, min(maxSlopeDegrees, 89.0)) * (Float.pi / 180.0))
+        let normal = simd_normalize(hit.normal)
+        let isGrounded = normal.y >= slopeCos
+        let distanceToGround = max(0.0, hit.distance - skinWidth)
+        return CharacterGroundProbe(isGrounded: isGrounded,
+                                    hitPosition: hit.position,
+                                    hitNormal: normal,
+                                    distance: distanceToGround)
     }
 
     public func raycast(origin: SIMD3<Float>,
@@ -425,11 +749,11 @@ public final class PhysicsSystem {
         world.sphereCastClosest(origin: origin, direction: direction, radius: radius, maxDistance: maxDistance)
     }
 
-    private func pullDynamicTransforms(ecs: SceneECS) {
+    private func pullSimulatedTransforms(ecs: SceneECS) {
         ecs.forEachEntity { entity in
             guard let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
                   rigidbody.isEnabled,
-                  rigidbody.motionType == .dynamic,
+                  (rigidbody.motionType == .dynamic || rigidbody.motionType == .kinematic),
                   let bodyId = rigidbody.bodyId,
                   var localTransform = ecs.get(TransformComponent.self, for: entity) else {
                 return
@@ -461,6 +785,102 @@ public final class PhysicsSystem {
             }
             ecs.add(localTransform, to: entity)
         }
+    }
+
+    private func filteredCapsuleCast(origin: SIMD3<Float>,
+                                     rotation: SIMD4<Float>,
+                                     direction: SIMD3<Float>,
+                                     halfHeight: Float,
+                                     radius: Float,
+                                     maxDistance: Float,
+                                     ignoreEntityId: UUID,
+                                     layerMask: LayerMask,
+                                     includeTriggers: Bool) -> PhysicsRaycastHit? {
+        let directionLength = simd_length(direction)
+        guard directionLength > 1e-6, maxDistance > 0 else { return nil }
+        let normalizedDirection = direction / directionLength
+        var currentOrigin = origin
+        var traveledDistance: Float = 0.0
+        var remainingDistance = maxDistance
+        let maxIterations = 64
+        let epsilonStep: Float = 0.005
+        for _ in 0..<maxIterations {
+            guard let candidate = world.capsuleCastClosest(origin: currentOrigin,
+                                                           rotation: rotation,
+                                                           direction: normalizedDirection,
+                                                           halfHeight: halfHeight,
+                                                           radius: radius,
+                                                           maxDistance: remainingDistance) else {
+                return nil
+            }
+            let isSelf = candidate.entityId == ignoreEntityId
+            let isTrigger = world.isTriggerBody(candidate.bodyId)
+            let layer = world.collisionLayerForBody(candidate.bodyId)
+            let layerPasses = layerMask.contains(layerIndex: layer)
+            let triggerPasses = includeTriggers || !isTrigger
+            let absoluteDistance = traveledDistance + candidate.distance
+            if !isSelf && layerPasses && triggerPasses {
+                var accepted = candidate
+                accepted.distance = absoluteDistance
+                return accepted
+            }
+            let selfSkip = isSelf ? max(radius * 0.75, 0.05) : epsilonStep
+            let advance = max(candidate.distance + max(epsilonStep, selfSkip), epsilonStep)
+            traveledDistance += advance
+            if traveledDistance >= maxDistance {
+                return nil
+            }
+            remainingDistance = maxDistance - traveledDistance
+            currentOrigin = origin + normalizedDirection * traveledDistance
+        }
+        return nil
+    }
+
+    private func characterCapsuleState(entity: Entity,
+                                       scene: EngineScene,
+                                       fallbackRadius: Float,
+                                       fallbackHeight: Float,
+                                       worldPositionOverride: SIMD3<Float>? = nil) -> CharacterCapsuleState? {
+        guard scene.ecs.get(TransformComponent.self, for: entity) != nil else { return nil }
+        let worldTransform = scene.ecs.worldTransform(for: entity)
+        let bodyPosition = worldPositionOverride ?? worldTransform.position
+        let bodyRotation = TransformMath.normalizedQuaternion(worldTransform.rotation)
+        let yaw = atan2(2.0 * (bodyRotation.w * bodyRotation.y + bodyRotation.x * bodyRotation.z),
+                        1.0 - 2.0 * (bodyRotation.y * bodyRotation.y + bodyRotation.z * bodyRotation.z))
+        let yawRotation = simd_quatf(angle: yaw, axis: SIMD3<Float>(0.0, 1.0, 0.0)).vector
+        let sourceShape: ColliderShape
+        if let collider = scene.ecs.get(ColliderComponent.self, for: entity) {
+            let solidCapsule = collider.allShapes().first { $0.isEnabled && !$0.isTrigger && $0.shapeType == .capsule }
+            if let solidCapsule {
+                sourceShape = solidCapsule
+            } else {
+                let safeRadius = max(0.05, fallbackRadius)
+                let standingHalfHeight = max(safeRadius, fallbackHeight * 0.5)
+                sourceShape = ColliderShape(shapeType: .capsule,
+                                            sphereRadius: safeRadius,
+                                            capsuleHalfHeight: max(0.05, standingHalfHeight - safeRadius),
+                                            capsuleRadius: safeRadius)
+            }
+        } else {
+            let safeRadius = max(0.05, fallbackRadius)
+            let standingHalfHeight = max(safeRadius, fallbackHeight * 0.5)
+            sourceShape = ColliderShape(shapeType: .capsule,
+                                        sphereRadius: safeRadius,
+                                        capsuleHalfHeight: max(0.05, standingHalfHeight - safeRadius),
+                                        capsuleRadius: safeRadius)
+        }
+        let scaled = PhysicsMath.scaledShape(from: sourceShape, scale: worldTransform.scale)
+        let radius = max(0.02, scaled.capsuleRadius)
+        let halfHeight = max(0.02, scaled.capsuleHalfHeight)
+        let rotationOffset = TransformMath.identityQuaternion
+        let capsuleRotation = TransformMath.identityQuaternion
+        let offsetWorld = simd_quatf(vector: yawRotation).act(scaled.offset)
+        return CharacterCapsuleState(center: bodyPosition + offsetWorld,
+                                     rotation: capsuleRotation,
+                                     radius: radius,
+                                     halfHeight: halfHeight,
+                                     offset: scaled.offset,
+                                     rotationOffset: rotationOffset)
     }
 
     private static func buildBodyCreation(rigidbody: RigidbodyComponent,
@@ -551,6 +971,11 @@ public final class PhysicsSystem {
             if bodyId != 0 {
                 rigidbody.bodyId = bodyId
                 createdMainBody = true
+                EngineLoggerContext.log(
+                    "Physics body created entity=\(entity.id.uuidString) motionType=\(rigidbody.motionType.rawValue) layer=\(layer) isSensor=false solidShapes=\(solidShapes.count)",
+                    level: .debug,
+                    category: .scene
+                )
             }
         }
 
@@ -578,6 +1003,11 @@ public final class PhysicsSystem {
                     rigidbody.bodyId = sensorBodyId
                     createdMainBody = true
                 }
+                EngineLoggerContext.log(
+                    "Physics body created entity=\(entity.id.uuidString) motionType=\(triggerMotionType.rawValue) layer=\(layer) isSensor=true solidShapes=0",
+                    level: .debug,
+                    category: .scene
+                )
             }
         }
 
@@ -898,7 +1328,7 @@ public final class PhysicsSystem {
                   let preserved = preservedStateByEntity[entity.id] else { continue }
             restoreMotionStateIfPossible(preserved, to: bodyId)
         }
-        pullDynamicTransforms(ecs: ecs)
+        pullSimulatedTransforms(ecs: ecs)
         hasSteppedOnce = true
     }
 
@@ -991,6 +1421,21 @@ private struct BodyMotionState {
     let linearVelocity: SIMD3<Float>
     let angularVelocity: SIMD3<Float>
     let isSleeping: Bool
+}
+
+private struct KinematicTarget {
+    let position: SIMD3<Float>
+    let rotation: SIMD4<Float>
+    let dt: Float
+}
+
+private struct CharacterCapsuleState {
+    let center: SIMD3<Float>
+    let rotation: SIMD4<Float>
+    let radius: Float
+    let halfHeight: Float
+    let offset: SIMD3<Float>
+    let rotationOffset: SIMD4<Float>
 }
 
 private enum PhysicsMath {

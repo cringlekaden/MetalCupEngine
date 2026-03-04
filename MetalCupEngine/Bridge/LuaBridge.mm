@@ -4,6 +4,7 @@
 #import <Foundation/Foundation.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <mutex>
 #include <set>
@@ -25,8 +26,18 @@ namespace {
     using LuaEntityGetTransformCallback = uint32_t (*)(void *hostContext, const char *entityId, float *positionOut, float *rotationEulerOut, float *scaleOut);
     using LuaEntitySetTransformCallback = uint32_t (*)(void *hostContext, const char *entityId, const float *position, const float *rotationEuler, const float *scale);
     using LuaEntityMoveCallback = void (*)(void *hostContext, const char *entityId, float x, float y, float z);
+    using LuaEntitySetMoveInputCallback = void (*)(void *hostContext, const char *entityId, float x, float z);
+    using LuaEntitySetLookInputCallback = void (*)(void *hostContext, const char *entityId, float deltaX, float deltaY);
+    using LuaEntitySetSprintCallback = void (*)(void *hostContext, const char *entityId, uint32_t enabled);
     using LuaEntityJumpCallback = void (*)(void *hostContext, const char *entityId);
     using LuaEntityIsGroundedCallback = uint32_t (*)(void *hostContext, const char *entityId);
+    using LuaEntityGetVelocityCallback = uint32_t (*)(void *hostContext, const char *entityId, float *velocityOut);
+    using LuaInputIsKeyDownCallback = uint32_t (*)(void *hostContext, uint16_t keyCode);
+    using LuaInputWasKeyPressedCallback = uint32_t (*)(void *hostContext, uint16_t keyCode);
+    using LuaInputGetMouseDeltaCallback = uint32_t (*)(void *hostContext, float *deltaOut);
+    using LuaInputSetCursorModeCallback = void (*)(void *hostContext, int32_t mode);
+    using LuaInputGetCursorModeCallback = int32_t (*)(void *hostContext);
+    using LuaInputToggleCursorModeLockedCallback = void (*)(void *hostContext);
     using LuaAssetGetNameCallback = uint32_t (*)(void *hostContext, const char *assetHandle, char *buffer, int32_t bufferSize);
 
     static constexpr int kEntityIdBufferSize = 64;
@@ -53,8 +64,18 @@ namespace {
         LuaEntityGetTransformCallback entityGetTransformCallback = nullptr;
         LuaEntitySetTransformCallback entitySetTransformCallback = nullptr;
         LuaEntityMoveCallback entityMoveCallback = nullptr;
+        LuaEntitySetMoveInputCallback entitySetMoveInputCallback = nullptr;
+        LuaEntitySetLookInputCallback entitySetLookInputCallback = nullptr;
+        LuaEntitySetSprintCallback entitySetSprintCallback = nullptr;
         LuaEntityJumpCallback entityJumpCallback = nullptr;
         LuaEntityIsGroundedCallback entityIsGroundedCallback = nullptr;
+        LuaEntityGetVelocityCallback entityGetVelocityCallback = nullptr;
+        LuaInputIsKeyDownCallback inputIsKeyDownCallback = nullptr;
+        LuaInputWasKeyPressedCallback inputWasKeyPressedCallback = nullptr;
+        LuaInputGetMouseDeltaCallback inputGetMouseDeltaCallback = nullptr;
+        LuaInputSetCursorModeCallback inputSetCursorModeCallback = nullptr;
+        LuaInputGetCursorModeCallback inputGetCursorModeCallback = nullptr;
+        LuaInputToggleCursorModeLockedCallback inputToggleCursorModeLockedCallback = nullptr;
         LuaAssetGetNameCallback assetGetNameCallback = nullptr;
         lua_State *L = nullptr;
         std::unordered_map<std::string, LuaScriptInstance> instances;
@@ -348,6 +369,132 @@ namespace {
         return 1;
     }
 
+    static int LuaEntitySetMoveInput(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entitySetMoveInputCallback) { return 0; }
+        int first = 1;
+        if (lua_istable(L, 1)) {
+            first = 2;
+        }
+        float x = static_cast<float>(luaL_optnumber(L, first, 0.0));
+        float z = static_cast<float>(luaL_optnumber(L, first + 1, 0.0));
+        host->entitySetMoveInputCallback(host->hostContext, BoundEntityId(L), x, z);
+        return 0;
+    }
+
+    static int LuaEntitySetLookInput(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entitySetLookInputCallback) { return 0; }
+        int first = 1;
+        if (lua_istable(L, 1)) {
+            first = 2;
+        }
+        float deltaX = static_cast<float>(luaL_optnumber(L, first, 0.0));
+        float deltaY = static_cast<float>(luaL_optnumber(L, first + 1, 0.0));
+        host->entitySetLookInputCallback(host->hostContext, BoundEntityId(L), deltaX, deltaY);
+        return 0;
+    }
+
+    static int LuaEntitySetSprint(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entitySetSprintCallback) { return 0; }
+        const int argIndex = lua_istable(L, 1) ? 2 : 1;
+        const int enabled = lua_toboolean(L, argIndex);
+        host->entitySetSprintCallback(host->hostContext, BoundEntityId(L), enabled != 0 ? 1u : 0u);
+        return 0;
+    }
+
+    static int LuaEntityGetVelocity(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entityGetVelocityCallback) {
+            float zero[3] = {0.0f, 0.0f, 0.0f};
+            PushVec3Table(L, zero);
+            return 1;
+        }
+        float velocity[3] = {0, 0, 0};
+        host->entityGetVelocityCallback(host->hostContext, BoundEntityId(L), velocity);
+        PushVec3Table(L, velocity);
+        return 1;
+    }
+
+    static int LuaInputIsKeyDown(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host || !host->inputIsKeyDownCallback) {
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+        const uint16_t key = static_cast<uint16_t>(luaL_optinteger(L, 1, 0));
+        lua_pushboolean(L, host->inputIsKeyDownCallback(host->hostContext, key) != 0 ? 1 : 0);
+        return 1;
+    }
+
+    static int LuaInputWasKeyPressed(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host || !host->inputWasKeyPressedCallback) {
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+        const uint16_t key = static_cast<uint16_t>(luaL_optinteger(L, 1, 0));
+        lua_pushboolean(L, host->inputWasKeyPressedCallback(host->hostContext, key) != 0 ? 1 : 0);
+        return 1;
+    }
+
+    static int LuaInputGetMouseDelta(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host || !host->inputGetMouseDeltaCallback) {
+            PushVec2Table(L, 0.0f, 0.0f);
+            return 1;
+        }
+        float delta[2] = {0.0f, 0.0f};
+        host->inputGetMouseDeltaCallback(host->hostContext, delta);
+        PushVec2Table(L, delta[0], delta[1]);
+        return 1;
+    }
+
+    static int LuaInputSetCursorMode(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host || !host->inputSetCursorModeCallback) { return 0; }
+        const char *mode = luaL_optstring(L, 1, "Normal");
+        const int32_t value = (strcmp(mode, "Locked") == 0) ? 1 : 0;
+        host->inputSetCursorModeCallback(host->hostContext, value);
+        return 0;
+    }
+
+    static int LuaInputGetCursorMode(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host || !host->inputGetCursorModeCallback) {
+            lua_pushstring(L, "Normal");
+            return 1;
+        }
+        const int32_t mode = host->inputGetCursorModeCallback(host->hostContext);
+        lua_pushstring(L, mode == 1 ? "Locked" : "Normal");
+        return 1;
+    }
+
+    static int LuaInputToggleCursorModeLocked(lua_State *L) {
+        LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
+        if (!host || !host->inputToggleCursorModeLockedCallback) { return 0; }
+        host->inputToggleCursorModeLockedCallback(host->hostContext);
+        return 0;
+    }
+
+    static int LuaEntityGetCharacterController(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host) {
+            lua_pushnil(L);
+            return 1;
+        }
+        const char *entityId = BoundEntityId(L);
+        lua_createtable(L, 0, 6);
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetMoveInput, 2); lua_setfield(L, -2, "SetMoveInput");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetLookInput, 2); lua_setfield(L, -2, "SetLookInput");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetSprint, 2); lua_setfield(L, -2, "SetSprint");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityJump, 2); lua_setfield(L, -2, "Jump");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityIsGrounded, 2); lua_setfield(L, -2, "IsGrounded");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityGetVelocity, 2); lua_setfield(L, -2, "GetVelocity");
+        return 1;
+    }
+
     static int LuaEntityRefIsValid(lua_State *L) {
         LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
         if (!host || !host->entityExistsCallback) {
@@ -435,7 +582,7 @@ namespace {
     }
 
     static void PushEntityRef(lua_State *L, LuaScriptHost *host, const char *entityId, bool includeControllerAPI) {
-        lua_createtable(L, 0, includeControllerAPI ? 15 : 12);
+        lua_createtable(L, 0, includeControllerAPI ? 16 : 12);
         lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityRefIsValid, 2); lua_setfield(L, -2, "IsValid");
         lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityRefGetUUID, 2); lua_setfield(L, -2, "GetUUID");
         lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityGetName, 2); lua_setfield(L, -2, "GetName");
@@ -450,7 +597,9 @@ namespace {
         lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityGetScale, 2); lua_setfield(L, -2, "GetScale");
         lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetScale, 2); lua_setfield(L, -2, "SetScale");
         if (includeControllerAPI) {
+            lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityGetCharacterController, 2); lua_setfield(L, -2, "GetCharacterController");
             lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityMove, 2); lua_setfield(L, -2, "Move");
+            lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetLookInput, 2); lua_setfield(L, -2, "SetLookInput");
             lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityJump, 2); lua_setfield(L, -2, "Jump");
             lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityIsGrounded, 2); lua_setfield(L, -2, "IsGrounded");
         }
@@ -530,6 +679,38 @@ namespace {
         lua_pushlightuserdata(L, host);
         lua_pushcclosure(L, LuaPrint, 1);
         lua_setglobal(L, "print");
+
+        lua_createtable(L, 0, 7);
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaInputIsKeyDown, 1);
+        lua_setfield(L, -2, "IsKeyDown");
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaInputWasKeyPressed, 1);
+        lua_setfield(L, -2, "WasKeyPressed");
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaInputGetMouseDelta, 1);
+        lua_setfield(L, -2, "GetMouseDelta");
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaInputSetCursorMode, 1);
+        lua_setfield(L, -2, "SetCursorMode");
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaInputGetCursorMode, 1);
+        lua_setfield(L, -2, "GetCursorMode");
+        lua_pushlightuserdata(L, host);
+        lua_pushcclosure(L, LuaInputToggleCursorModeLocked, 1);
+        lua_setfield(L, -2, "ToggleCursorModeLocked");
+        lua_setglobal(L, "Input");
+
+        lua_createtable(L, 0, 8);
+        lua_pushinteger(L, 0x0D); lua_setfield(L, -2, "W");
+        lua_pushinteger(L, 0x00); lua_setfield(L, -2, "A");
+        lua_pushinteger(L, 0x01); lua_setfield(L, -2, "S");
+        lua_pushinteger(L, 0x02); lua_setfield(L, -2, "D");
+        lua_pushinteger(L, 0x31); lua_setfield(L, -2, "Space");
+        lua_pushinteger(L, 0x38); lua_setfield(L, -2, "LeftShift");
+        lua_pushinteger(L, 0x7B); lua_setfield(L, -2, "LeftArrow");
+        lua_pushinteger(L, 0x7C); lua_setfield(L, -2, "RightArrow");
+        lua_setglobal(L, "Key");
     }
 
     static void SetDeltaTime(LuaScriptHost *host, float dt) {
@@ -581,6 +762,9 @@ namespace {
         lua_pop(L, 1);
         instance.lastError = outError;
         instance.faulted = true;
+        if (host->inputSetCursorModeCallback) {
+            host->inputSetCursorModeCallback(host->hostContext, 0);
+        }
         LogError(host, outError);
         return false;
     }
@@ -642,6 +826,20 @@ namespace {
         instance.onDestroyRef = FunctionRefFromField(L, moduleIndex, "OnDestroy");
 
         lua_createtable(L, 0, 1);
+        // Copy non-function script fields onto self so exposed/default values are available in methods.
+        lua_pushnil(L);
+        while (lua_next(L, moduleIndex) != 0) {
+            // Stack: ... self key value
+            if (lua_type(L, -2) == LUA_TSTRING && lua_type(L, -1) != LUA_TFUNCTION) {
+                const char *key = lua_tostring(L, -2);
+                if (key && strcmp(key, "Exposed") != 0 && strcmp(key, "Fields") != 0) {
+                    lua_pushvalue(L, -2); // key copy
+                    lua_pushvalue(L, -2); // value copy
+                    lua_settable(L, -5);  // self[key] = value
+                }
+            }
+            lua_pop(L, 1); // pop value, keep key for lua_next
+        }
         PushEntityRef(L, host, entityId.c_str(), true);
         lua_setfield(L, -2, "entity");
         instance.selfRef = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -701,6 +899,9 @@ namespace {
         lua_getfield(L, entryIndex, "type");
         const char *typeCString = lua_tostring(L, -1);
         std::string type = typeCString ? std::string(typeCString) : std::string();
+        std::transform(type.begin(), type.end(), type.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
         lua_pop(L, 1);
         if (type.empty()) {
             error = "Schema field '" + fieldName + "' is missing required 'type'.";
@@ -885,7 +1086,11 @@ extern "C" uint32_t MCELuaExtractScriptSchema(const char *scriptPath,
 
     bool resolved = false;
     if (lua_istable(L, -1)) {
-        lua_getfield(L, -1, "Fields");
+        lua_getfield(L, -1, "Exposed");
+        if (!lua_istable(L, -1)) {
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "Fields");
+        }
         if (lua_istable(L, -1)) {
             resolved = CollectSchemaDescriptors(L, lua_gettop(L), descriptors, error);
         }
@@ -895,7 +1100,11 @@ extern "C" uint32_t MCELuaExtractScriptSchema(const char *scriptPath,
     if (!resolved && typeName && typeName[0] != 0) {
         lua_getglobal(L, typeName);
         if (lua_istable(L, -1)) {
-            lua_getfield(L, -1, "Fields");
+            lua_getfield(L, -1, "Exposed");
+            if (!lua_istable(L, -1)) {
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "Fields");
+            }
             if (lua_istable(L, -1)) {
                 resolved = CollectSchemaDescriptors(L, lua_gettop(L), descriptors, error);
             }
@@ -929,8 +1138,18 @@ extern "C" void *MCELuaRuntimeCreate(void *hostContext,
                                      LuaEntityGetTransformCallback entityGetTransformCallback,
                                      LuaEntitySetTransformCallback entitySetTransformCallback,
                                      LuaEntityMoveCallback entityMoveCallback,
+                                     LuaEntitySetMoveInputCallback entitySetMoveInputCallback,
+                                     LuaEntitySetLookInputCallback entitySetLookInputCallback,
+                                     LuaEntitySetSprintCallback entitySetSprintCallback,
                                      LuaEntityJumpCallback entityJumpCallback,
                                      LuaEntityIsGroundedCallback entityIsGroundedCallback,
+                                     LuaEntityGetVelocityCallback entityGetVelocityCallback,
+                                     LuaInputIsKeyDownCallback inputIsKeyDownCallback,
+                                     LuaInputWasKeyPressedCallback inputWasKeyPressedCallback,
+                                     LuaInputGetMouseDeltaCallback inputGetMouseDeltaCallback,
+                                     LuaInputSetCursorModeCallback inputSetCursorModeCallback,
+                                     LuaInputGetCursorModeCallback inputGetCursorModeCallback,
+                                     LuaInputToggleCursorModeLockedCallback inputToggleCursorModeLockedCallback,
                                      LuaAssetGetNameCallback assetGetNameCallback) {
     LuaScriptHost *host = new LuaScriptHost();
     host->hostContext = hostContext;
@@ -940,8 +1159,18 @@ extern "C" void *MCELuaRuntimeCreate(void *hostContext,
     host->entityGetTransformCallback = entityGetTransformCallback;
     host->entitySetTransformCallback = entitySetTransformCallback;
     host->entityMoveCallback = entityMoveCallback;
+    host->entitySetMoveInputCallback = entitySetMoveInputCallback;
+    host->entitySetLookInputCallback = entitySetLookInputCallback;
+    host->entitySetSprintCallback = entitySetSprintCallback;
     host->entityJumpCallback = entityJumpCallback;
     host->entityIsGroundedCallback = entityIsGroundedCallback;
+    host->entityGetVelocityCallback = entityGetVelocityCallback;
+    host->inputIsKeyDownCallback = inputIsKeyDownCallback;
+    host->inputWasKeyPressedCallback = inputWasKeyPressedCallback;
+    host->inputGetMouseDeltaCallback = inputGetMouseDeltaCallback;
+    host->inputSetCursorModeCallback = inputSetCursorModeCallback;
+    host->inputGetCursorModeCallback = inputGetCursorModeCallback;
+    host->inputToggleCursorModeLockedCallback = inputToggleCursorModeLockedCallback;
     host->assetGetNameCallback = assetGetNameCallback;
     host->L = luaL_newstate();
     if (!host->L) {
@@ -963,6 +1192,9 @@ extern "C" void *MCELuaRuntimeCreate(void *hostContext,
 extern "C" void MCELuaRuntimeDestroy(void *runtimePtr) {
     LuaScriptHost *host = static_cast<LuaScriptHost *>(runtimePtr);
     if (!host) { return; }
+    if (host->inputSetCursorModeCallback) {
+        host->inputSetCursorModeCallback(host->hostContext, 0);
+    }
     if (host->L) {
         for (auto &entry : host->instances) {
             ClearInstanceRefs(host->L, entry.second);

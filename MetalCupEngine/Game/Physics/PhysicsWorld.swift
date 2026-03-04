@@ -60,6 +60,13 @@ private func MCEPhysicsSetBodyTransform(_ world: UnsafeMutableRawPointer?,
                                         _ rotX: Float, _ rotY: Float, _ rotZ: Float, _ rotW: Float,
                                         _ activate: UInt32)
 
+@_silgen_name("MCEPhysicsMoveKinematic")
+private func MCEPhysicsMoveKinematic(_ world: UnsafeMutableRawPointer?,
+                                     _ bodyId: UInt64,
+                                     _ posX: Float, _ posY: Float, _ posZ: Float,
+                                     _ rotX: Float, _ rotY: Float, _ rotZ: Float, _ rotW: Float,
+                                     _ dt: Float)
+
 @_silgen_name("MCEPhysicsGetBodyTransform")
 private func MCEPhysicsGetBodyTransform(_ world: UnsafeMutableRawPointer?,
                                         _ bodyId: UInt64,
@@ -122,6 +129,20 @@ private func MCEPhysicsSphereCastClosest(_ world: UnsafeMutableRawPointer?,
                                          _ distanceOut: UnsafeMutablePointer<Float>?,
                                          _ bodyIdOut: UnsafeMutablePointer<UInt64>?,
                                          _ userDataOut: UnsafeMutablePointer<UInt64>?) -> UInt32
+
+@_silgen_name("MCEPhysicsCapsuleCastClosest")
+private func MCEPhysicsCapsuleCastClosest(_ world: UnsafeMutableRawPointer?,
+                                          _ originX: Float, _ originY: Float, _ originZ: Float,
+                                          _ rotX: Float, _ rotY: Float, _ rotZ: Float, _ rotW: Float,
+                                          _ dirX: Float, _ dirY: Float, _ dirZ: Float,
+                                          _ halfHeight: Float,
+                                          _ radius: Float,
+                                          _ maxDistance: Float,
+                                          _ positionOut: UnsafeMutablePointer<Float>?,
+                                          _ normalOut: UnsafeMutablePointer<Float>?,
+                                          _ distanceOut: UnsafeMutablePointer<Float>?,
+                                          _ bodyIdOut: UnsafeMutablePointer<UInt64>?,
+                                          _ userDataOut: UnsafeMutablePointer<UInt64>?) -> UInt32
 
 @_silgen_name("MCEPhysicsCopyOverlapEvents")
 private func MCEPhysicsCopyOverlapEvents(_ world: UnsafeMutableRawPointer?,
@@ -484,6 +505,19 @@ public final class PhysicsWorld {
                                    activate ? 1 : 0)
     }
 
+    func moveKinematic(bodyId: UInt64, position: SIMD3<Float>, rotation: SIMD4<Float>, dt: Float) {
+        guard let handle, dt > 0.0 else { return }
+#if DEBUG
+        // Rotation quaternion ordering is (x, y, z, w) when sent over the C bridge.
+#endif
+        let sanitized = PhysicsWorld.sanitizedQuaternion(rotation)
+        MCEPhysicsMoveKinematic(handle,
+                                bodyId,
+                                position.x, position.y, position.z,
+                                sanitized.x, sanitized.y, sanitized.z, sanitized.w,
+                                dt)
+    }
+
     func getBodyTransform(bodyId: UInt64) -> (position: SIMD3<Float>, rotation: SIMD4<Float>)? {
         guard let handle else { return nil }
         var position = SIMD3<Float>(0, 0, 0)
@@ -662,6 +696,46 @@ public final class PhysicsWorld {
                                                    &distance,
                                                    &bodyId,
                                                    &userData) != 0
+            }
+        }
+        guard hit else { return nil }
+        let entityId = entityForUserData[userData]
+        return PhysicsRaycastHit(position: position,
+                                 normal: normal,
+                                 distance: distance,
+                                 bodyId: bodyId,
+                                 entityId: entityId)
+    }
+
+    func capsuleCastClosest(origin: SIMD3<Float>,
+                            rotation: SIMD4<Float>,
+                            direction: SIMD3<Float>,
+                            halfHeight: Float,
+                            radius: Float,
+                            maxDistance: Float) -> PhysicsRaycastHit? {
+        guard let handle else { return nil }
+        var position = SIMD3<Float>(0, 0, 0)
+        var normal = SIMD3<Float>(0, 1, 0)
+        var distance: Float = 0.0
+        var bodyId: UInt64 = 0
+        var userData: UInt64 = 0
+        let sanitizedRotation = PhysicsWorld.sanitizedQuaternion(rotation)
+        let hit = withUnsafeMutableBytes(of: &position) { posBytes in
+            withUnsafeMutableBytes(of: &normal) { normBytes in
+                let posPtr = posBytes.bindMemory(to: Float.self).baseAddress
+                let normPtr = normBytes.bindMemory(to: Float.self).baseAddress
+                return MCEPhysicsCapsuleCastClosest(handle,
+                                                    origin.x, origin.y, origin.z,
+                                                    sanitizedRotation.x, sanitizedRotation.y, sanitizedRotation.z, sanitizedRotation.w,
+                                                    direction.x, direction.y, direction.z,
+                                                    halfHeight,
+                                                    radius,
+                                                    maxDistance,
+                                                    posPtr,
+                                                    normPtr,
+                                                    &distance,
+                                                    &bodyId,
+                                                    &userData) != 0
             }
         }
         guard hit else { return nil }

@@ -4,6 +4,9 @@
 
 import Foundation
 import simd
+#if canImport(AppKit)
+import AppKit
+#endif
 
 private typealias LuaLogCallback = @convention(c) (UnsafeMutableRawPointer?, Int32, UnsafePointer<CChar>?) -> Void
 private typealias LuaEntityExistsCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> UInt32
@@ -11,9 +14,77 @@ private typealias LuaEntityGetNameCallback = @convention(c) (UnsafeMutableRawPoi
 private typealias LuaEntityGetTransformCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) -> UInt32
 private typealias LuaEntitySetTransformCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<Float>?, UnsafePointer<Float>?, UnsafePointer<Float>?) -> UInt32
 private typealias LuaEntityMoveCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, Float, Float, Float) -> Void
+private typealias LuaEntitySetMoveInputCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, Float, Float) -> Void
+private typealias LuaEntitySetLookInputCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, Float, Float) -> Void
+private typealias LuaEntitySetSprintCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UInt32) -> Void
 private typealias LuaEntityJumpCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Void
 private typealias LuaEntityIsGroundedCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> UInt32
+private typealias LuaEntityGetVelocityCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutablePointer<Float>?) -> UInt32
+private typealias LuaInputIsKeyDownCallback = @convention(c) (UnsafeMutableRawPointer?, UInt16) -> UInt32
+private typealias LuaInputWasKeyPressedCallback = @convention(c) (UnsafeMutableRawPointer?, UInt16) -> UInt32
+private typealias LuaInputGetMouseDeltaCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutablePointer<Float>?) -> UInt32
+private typealias LuaInputSetCursorModeCallback = @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void
+private typealias LuaInputGetCursorModeCallback = @convention(c) (UnsafeMutableRawPointer?) -> Int32
+private typealias LuaInputToggleCursorModeLockedCallback = @convention(c) (UnsafeMutableRawPointer?) -> Void
 private typealias LuaAssetGetNameCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutablePointer<CChar>?, Int32) -> UInt32
+
+public enum RuntimeCursorMode: Int32 {
+    case normal = 0
+    case locked = 1
+}
+
+private struct RuntimeCursorState {
+    var scriptDesiredLocked: Bool = false
+    var escOverrideLocked: Bool? = nil
+    var appliedLocked: Bool = false
+}
+
+private var runtimeCursorState = RuntimeCursorState()
+
+private func applyPlatformCursorMode(locked: Bool) {
+#if canImport(AppKit)
+    if locked {
+        if !runtimeCursorState.appliedLocked {
+            NSCursor.hide()
+            CGAssociateMouseAndMouseCursorPosition(0)
+        }
+    } else if runtimeCursorState.appliedLocked {
+        CGAssociateMouseAndMouseCursorPosition(1)
+        NSCursor.unhide()
+    }
+#endif
+    runtimeCursorState.appliedLocked = locked
+}
+
+private func effectiveCursorLocked() -> Bool {
+    runtimeCursorState.escOverrideLocked ?? runtimeCursorState.scriptDesiredLocked
+}
+
+private func applyEffectiveCursorMode() {
+    applyPlatformCursorMode(locked: effectiveCursorLocked())
+}
+
+public func runtimeSetScriptCursorMode(_ mode: RuntimeCursorMode) {
+    runtimeCursorState.scriptDesiredLocked = (mode == .locked)
+    if runtimeCursorState.escOverrideLocked == nil {
+        applyEffectiveCursorMode()
+    }
+}
+
+public func runtimeGetCursorMode() -> RuntimeCursorMode {
+    runtimeCursorState.appliedLocked ? .locked : .normal
+}
+
+public func runtimeToggleCursorLockOverride() {
+    runtimeCursorState.escOverrideLocked = !effectiveCursorLocked()
+    applyEffectiveCursorMode()
+}
+
+public func runtimeForceCursorNormal() {
+    runtimeCursorState.escOverrideLocked = nil
+    runtimeCursorState.scriptDesiredLocked = false
+    applyPlatformCursorMode(locked: false)
+}
 
 private func writeCString(_ string: String, to buffer: UnsafeMutablePointer<CChar>?, max: Int32) -> Int32 {
     guard let buffer, max > 0 else { return 0 }
@@ -35,8 +106,18 @@ private func MCELuaRuntimeCreate(_ hostContext: UnsafeMutableRawPointer?,
                                  _ getTransformCallback: LuaEntityGetTransformCallback?,
                                  _ setTransformCallback: LuaEntitySetTransformCallback?,
                                  _ moveCallback: LuaEntityMoveCallback?,
+                                 _ setMoveInputCallback: LuaEntitySetMoveInputCallback?,
+                                 _ setLookInputCallback: LuaEntitySetLookInputCallback?,
+                                 _ setSprintCallback: LuaEntitySetSprintCallback?,
                                  _ jumpCallback: LuaEntityJumpCallback?,
                                  _ isGroundedCallback: LuaEntityIsGroundedCallback?,
+                                 _ getVelocityCallback: LuaEntityGetVelocityCallback?,
+                                 _ inputIsKeyDownCallback: LuaInputIsKeyDownCallback?,
+                                 _ inputWasKeyPressedCallback: LuaInputWasKeyPressedCallback?,
+                                 _ inputGetMouseDeltaCallback: LuaInputGetMouseDeltaCallback?,
+                                 _ inputSetCursorModeCallback: LuaInputSetCursorModeCallback?,
+                                 _ inputGetCursorModeCallback: LuaInputGetCursorModeCallback?,
+                                 _ inputToggleCursorModeLockedCallback: LuaInputToggleCursorModeLockedCallback?,
                                  _ assetGetNameCallback: LuaAssetGetNameCallback?) -> UnsafeMutableRawPointer?
 
 @_silgen_name("MCELuaRuntimeDestroy")
@@ -156,7 +237,7 @@ private enum ScriptLifecycleState: UInt8 {
 
 public final class LuaScriptRuntime: ScriptRuntime {
     fileprivate weak var engineContext: EngineContext?
-    private weak var activeScene: EngineScene?
+    fileprivate weak var activeScene: EngineScene?
     private var runtimeHandle: UnsafeMutableRawPointer?
     private var trackedBindings: [UUID: ScriptBindingState] = [:]
     private var lifecycleStates: [UUID: ScriptLifecycleState] = [:]
@@ -275,13 +356,24 @@ public final class LuaScriptRuntime: ScriptRuntime {
                                             MCELuaHostEntityGetTransform,
                                             MCELuaHostEntitySetTransform,
                                             MCELuaHostEntityMove,
+                                            MCELuaHostEntitySetMoveInput,
+                                            MCELuaHostEntitySetLookInput,
+                                            MCELuaHostEntitySetSprint,
                                             MCELuaHostEntityJump,
                                             MCELuaHostEntityIsGrounded,
+                                            MCELuaHostEntityGetVelocity,
+                                            MCELuaHostInputIsKeyDown,
+                                            MCELuaHostInputWasKeyPressed,
+                                            MCELuaHostInputGetMouseDelta,
+                                            MCELuaHostInputSetCursorMode,
+                                            MCELuaHostInputGetCursorMode,
+                                            MCELuaHostInputToggleCursorModeLocked,
                                             MCELuaHostAssetGetName)
     }
 
     private func teardownRuntime() {
         guard runtimeHandle != nil else { return }
+        runtimeForceCursorNormal()
         MCELuaRuntimeDestroy(runtimeHandle)
         runtimeHandle = nil
     }
@@ -789,4 +881,99 @@ func MCELuaHostEntityIsGrounded(_ hostContext: UnsafeMutableRawPointer?,
     let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
     guard let resolved = runtime.callbackEntity(entityId) else { return 0 }
     return resolved.scene.isCharacterGrounded(entityId: resolved.entity.id) ? 1 : 0
+}
+
+@_cdecl("MCELuaHostEntitySetMoveInput")
+func MCELuaHostEntitySetMoveInput(_ hostContext: UnsafeMutableRawPointer?,
+                                  _ entityId: UnsafePointer<CChar>?,
+                                  _ x: Float,
+                                  _ z: Float) {
+    guard let hostContext else { return }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return }
+    resolved.scene.requestCharacterMoveInput(entityId: resolved.entity.id, input: SIMD2<Float>(x, z))
+}
+
+@_cdecl("MCELuaHostEntitySetLookInput")
+func MCELuaHostEntitySetLookInput(_ hostContext: UnsafeMutableRawPointer?,
+                                  _ entityId: UnsafePointer<CChar>?,
+                                  _ deltaX: Float,
+                                  _ deltaY: Float) {
+    guard let hostContext else { return }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return }
+    resolved.scene.requestCharacterLookInput(entityId: resolved.entity.id, delta: SIMD2<Float>(deltaX, deltaY))
+}
+
+@_cdecl("MCELuaHostEntitySetSprint")
+func MCELuaHostEntitySetSprint(_ hostContext: UnsafeMutableRawPointer?,
+                               _ entityId: UnsafePointer<CChar>?,
+                               _ enabled: UInt32) {
+    guard let hostContext else { return }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return }
+    resolved.scene.requestCharacterSprint(entityId: resolved.entity.id, isSprinting: enabled != 0)
+}
+
+@_cdecl("MCELuaHostEntityGetVelocity")
+func MCELuaHostEntityGetVelocity(_ hostContext: UnsafeMutableRawPointer?,
+                                 _ entityId: UnsafePointer<CChar>?,
+                                 _ velocityOut: UnsafeMutablePointer<Float>?) -> UInt32 {
+    guard let hostContext, let velocityOut else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return 0 }
+    let velocity = resolved.scene.characterVelocity(entityId: resolved.entity.id)
+    velocityOut[0] = velocity.x
+    velocityOut[1] = velocity.y
+    velocityOut[2] = velocity.z
+    return 1
+}
+
+@_cdecl("MCELuaHostInputIsKeyDown")
+func MCELuaHostInputIsKeyDown(_ hostContext: UnsafeMutableRawPointer?,
+                              _ keyCode: UInt16) -> UInt32 {
+    guard let hostContext else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let scene = runtime.activeScene else { return 0 }
+    return scene.inputIsKeyDown(keyCode) ? 1 : 0
+}
+
+@_cdecl("MCELuaHostInputWasKeyPressed")
+func MCELuaHostInputWasKeyPressed(_ hostContext: UnsafeMutableRawPointer?,
+                                  _ keyCode: UInt16) -> UInt32 {
+    guard let hostContext else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let scene = runtime.activeScene else { return 0 }
+    return scene.inputWasKeyPressed(keyCode) ? 1 : 0
+}
+
+@_cdecl("MCELuaHostInputGetMouseDelta")
+func MCELuaHostInputGetMouseDelta(_ hostContext: UnsafeMutableRawPointer?,
+                                  _ deltaOut: UnsafeMutablePointer<Float>?) -> UInt32 {
+    guard let hostContext, let deltaOut else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let scene = runtime.activeScene else { return 0 }
+    let delta = scene.inputMouseDelta()
+    deltaOut[0] = delta.x
+    deltaOut[1] = delta.y
+    return 1
+}
+
+@_cdecl("MCELuaHostInputSetCursorMode")
+func MCELuaHostInputSetCursorMode(_ hostContext: UnsafeMutableRawPointer?,
+                                  _ mode: Int32) {
+    _ = hostContext
+    runtimeSetScriptCursorMode(mode == RuntimeCursorMode.locked.rawValue ? .locked : .normal)
+}
+
+@_cdecl("MCELuaHostInputGetCursorMode")
+func MCELuaHostInputGetCursorMode(_ hostContext: UnsafeMutableRawPointer?) -> Int32 {
+    _ = hostContext
+    return runtimeGetCursorMode().rawValue
+}
+
+@_cdecl("MCELuaHostInputToggleCursorModeLocked")
+func MCELuaHostInputToggleCursorModeLocked(_ hostContext: UnsafeMutableRawPointer?) {
+    _ = hostContext
+    runtimeToggleCursorLockOverride()
 }

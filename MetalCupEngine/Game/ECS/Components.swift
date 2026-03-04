@@ -434,7 +434,51 @@ public struct CharacterControllerComponent {
     public var stepOffset: Float
     public var slopeLimit: Float
     public var moveSpeed: Float
-    public var jumpForce: Float
+    public var sprintMultiplier: Float
+    public var jumpSpeed: Float
+    public var useGravityOverride: Bool
+    public var gravity: Float
+    public var groundProbeDistance: Float
+    public var maxSlope: Float
+    public var groundSnapDistance: Float
+    public var lookSensitivity: Float
+    public var minPitchDegrees: Float
+    public var maxPitchDegrees: Float
+    public var pushStrength: Float
+    public var visualEntityId: UUID?
+    public var cameraPivotEntityId: UUID?
+    public var debugDraw: Bool
+
+    // Runtime state
+    public var moveInput: SIMD2<Float>
+    public var lookInput: SIMD2<Float>
+    public var wantsSprint: Bool
+    public var verticalVelocity: Float
+    public var velocity: SIMD3<Float>
+    public var isGrounded: Bool
+    public var groundedStickyFrames: Int
+    public var lastGroundNormal: SIMD3<Float>
+    public var yawRadians: Float
+    public var pitchRadians: Float
+    public var lookInitialized: Bool
+    public var debugProbeStart: SIMD3<Float>
+    public var debugProbeEnd: SIMD3<Float>
+    public var debugProbeHitPoint: SIMD3<Float>
+    public var debugProbeHadHit: Bool
+    public var debugSweepStart: SIMD3<Float>
+    public var debugSweepEnd: SIMD3<Float>
+    public var debugStepUpEnd: SIMD3<Float>
+    public var debugStepForwardEnd: SIMD3<Float>
+    public var debugStepDidApply: Bool
+    public var debugDepenetrationEnd: SIMD3<Float>
+    public var debugPenetrationDepth: Float
+    public var debugSnapStart: SIMD3<Float>
+    public var debugSnapEnd: SIMD3<Float>
+    public var debugSnapDidApply: Bool
+    public var debugPushEnd: SIMD3<Float>
+    public var debugPushDidApply: Bool
+    public var debugSweepNormal: SIMD3<Float>
+    public var debugSweepDidCollide: Bool
 
     public init(isEnabled: Bool = true,
                 height: Float = 1.8,
@@ -442,14 +486,98 @@ public struct CharacterControllerComponent {
                 stepOffset: Float = 0.25,
                 slopeLimit: Float = 45.0,
                 moveSpeed: Float = 4.0,
-                jumpForce: Float = 5.5) {
+                sprintMultiplier: Float = 1.5,
+                jumpSpeed: Float = 5.5,
+                useGravityOverride: Bool = false,
+                gravity: Float = -9.81,
+                groundProbeDistance: Float = 0.25,
+                maxSlope: Float = 45.0,
+                groundSnapDistance: Float = 0.1,
+                lookSensitivity: Float = 0.01,
+                minPitchDegrees: Float = -80.0,
+                maxPitchDegrees: Float = 80.0,
+                pushStrength: Float = 10.0,
+                visualEntityId: UUID? = nil,
+                cameraPivotEntityId: UUID? = nil,
+                debugDraw: Bool = false,
+                moveInput: SIMD2<Float> = .zero,
+                lookInput: SIMD2<Float> = .zero,
+                wantsSprint: Bool = false,
+                verticalVelocity: Float = 0.0,
+                velocity: SIMD3<Float> = .zero,
+                isGrounded: Bool = false,
+                groundedStickyFrames: Int = 0,
+                lastGroundNormal: SIMD3<Float> = SIMD3<Float>(0.0, 1.0, 0.0),
+                yawRadians: Float = 0.0,
+                pitchRadians: Float = 0.0,
+                lookInitialized: Bool = false,
+                debugProbeStart: SIMD3<Float> = .zero,
+                debugProbeEnd: SIMD3<Float> = .zero,
+                debugProbeHitPoint: SIMD3<Float> = .zero,
+                debugProbeHadHit: Bool = false,
+                debugSweepStart: SIMD3<Float> = .zero,
+                debugSweepEnd: SIMD3<Float> = .zero,
+                debugStepUpEnd: SIMD3<Float> = .zero,
+                debugStepForwardEnd: SIMD3<Float> = .zero,
+                debugStepDidApply: Bool = false,
+                debugDepenetrationEnd: SIMD3<Float> = .zero,
+                debugPenetrationDepth: Float = 0.0,
+                debugSnapStart: SIMD3<Float> = .zero,
+                debugSnapEnd: SIMD3<Float> = .zero,
+                debugSnapDidApply: Bool = false,
+                debugPushEnd: SIMD3<Float> = .zero,
+                debugPushDidApply: Bool = false,
+                debugSweepNormal: SIMD3<Float> = SIMD3<Float>(0.0, 1.0, 0.0),
+                debugSweepDidCollide: Bool = false) {
         self.isEnabled = isEnabled
         self.height = height
         self.radius = radius
         self.stepOffset = stepOffset
         self.slopeLimit = slopeLimit
         self.moveSpeed = moveSpeed
-        self.jumpForce = jumpForce
+        self.sprintMultiplier = sprintMultiplier
+        self.jumpSpeed = jumpSpeed
+        self.useGravityOverride = useGravityOverride
+        self.gravity = gravity
+        self.groundProbeDistance = groundProbeDistance
+        self.maxSlope = maxSlope
+        self.groundSnapDistance = groundSnapDistance
+        self.lookSensitivity = lookSensitivity
+        self.minPitchDegrees = minPitchDegrees
+        self.maxPitchDegrees = maxPitchDegrees
+        self.pushStrength = pushStrength
+        self.visualEntityId = visualEntityId
+        self.cameraPivotEntityId = cameraPivotEntityId
+        self.debugDraw = debugDraw
+        self.moveInput = moveInput
+        self.lookInput = lookInput
+        self.wantsSprint = wantsSprint
+        self.verticalVelocity = verticalVelocity
+        self.velocity = velocity
+        self.isGrounded = isGrounded
+        self.groundedStickyFrames = groundedStickyFrames
+        self.lastGroundNormal = lastGroundNormal
+        self.yawRadians = yawRadians
+        self.pitchRadians = pitchRadians
+        self.lookInitialized = lookInitialized
+        self.debugProbeStart = debugProbeStart
+        self.debugProbeEnd = debugProbeEnd
+        self.debugProbeHitPoint = debugProbeHitPoint
+        self.debugProbeHadHit = debugProbeHadHit
+        self.debugSweepStart = debugSweepStart
+        self.debugSweepEnd = debugSweepEnd
+        self.debugStepUpEnd = debugStepUpEnd
+        self.debugStepForwardEnd = debugStepForwardEnd
+        self.debugStepDidApply = debugStepDidApply
+        self.debugDepenetrationEnd = debugDepenetrationEnd
+        self.debugPenetrationDepth = debugPenetrationDepth
+        self.debugSnapStart = debugSnapStart
+        self.debugSnapEnd = debugSnapEnd
+        self.debugSnapDidApply = debugSnapDidApply
+        self.debugPushEnd = debugPushEnd
+        self.debugPushDidApply = debugPushDidApply
+        self.debugSweepNormal = debugSweepNormal
+        self.debugSweepDidCollide = debugSweepDidCollide
     }
 }
 
