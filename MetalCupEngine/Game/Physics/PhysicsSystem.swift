@@ -304,6 +304,13 @@ public final class PhysicsSystem {
 
             if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
                controller.debugDraw {
+                let controllerColor = SIMD4<Float>(0.9, 0.95, 0.3, 0.9)
+                let controllerRadius = max(0.02, controller.radius)
+                let controllerHalfHeight = max(0.02, controller.height * 0.5 - controllerRadius)
+                debugDraw.submitWireCapsule(transform: worldMatrix,
+                                            radius: controllerRadius,
+                                            halfHeight: controllerHalfHeight,
+                                            color: controllerColor)
                 let probeColor = SIMD4<Float>(0.2, 0.9, 1.0, 0.95)
                 debugDraw.submitLine(controller.debugProbeStart, controller.debugProbeEnd, color: probeColor)
                 if controller.debugProbeHadHit {
@@ -318,6 +325,13 @@ public final class PhysicsSystem {
                         ? simd_normalize(controller.debugSweepNormal)
                         : SIMD3<Float>(0.0, 1.0, 0.0)
                     debugDraw.submitLine(origin, origin + normal * 0.4, color: SIMD4<Float>(1.0, 0.4, 0.15, 0.95))
+                }
+                let desiredVelocity = controller.debugDesiredVelocity
+                if simd_length_squared(desiredVelocity) > 1.0e-6 {
+                    let origin = ecs.worldTransform(for: entity).position
+                    debugDraw.submitLine(origin,
+                                         origin + desiredVelocity * 0.1,
+                                         color: SIMD4<Float>(0.25, 1.0, 0.45, 0.95))
                 }
                 debugDraw.submitLine(controller.debugSweepStart,
                                      controller.debugSweepEnd,
@@ -390,6 +404,10 @@ public final class PhysicsSystem {
 
     private func pushKinematicTransforms(ecs: SceneECS, fixedDeltaTime: Float) {
         ecs.forEachEntity { entity in
+            if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
+               controller.isEnabled {
+                return
+            }
             guard let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
                   rigidbody.isEnabled,
                   rigidbody.motionType == .kinematic,
@@ -493,6 +511,66 @@ public final class PhysicsSystem {
         guard let rigidbody = scene.ecs.get(RigidbodyComponent.self, for: entity),
               let bodyId = rigidbody.bodyId else { return nil }
         return world.getBodyVelocity(bodyId: bodyId)?.linear
+    }
+
+    func createCharacter(desc: PhysicsCharacterCreation) -> UInt64 {
+        world.createCharacter(desc: desc)
+    }
+
+    func destroyCharacter(handle: UInt64) {
+        world.destroyCharacter(handle: handle)
+    }
+
+    func setCharacterShapeCapsule(handle: UInt64, radius: Float, height: Float) {
+        world.setCharacterShapeCapsule(handle: handle, radius: radius, height: height)
+    }
+
+    func setCharacterMaxSlope(handle: UInt64, radians: Float) {
+        world.setCharacterMaxSlope(handle: handle, radians: radians)
+    }
+
+    func setCharacterStepOffset(handle: UInt64, meters: Float) {
+        world.setCharacterStepOffset(handle: handle, meters: meters)
+    }
+
+    func setCharacterGravity(handle: UInt64, value: Float) {
+        world.setCharacterGravity(handle: handle, value: value)
+    }
+
+    func setCharacterJumpSpeed(handle: UInt64, value: Float) {
+        world.setCharacterJumpSpeed(handle: handle, value: value)
+    }
+
+    func setCharacterUpVector(handle: UInt64, up: SIMD3<Float>) {
+        world.setCharacterUpVector(handle: handle, up: up)
+    }
+
+    @discardableResult
+    func updateCharacter(handle: UInt64,
+                         dt: Float,
+                         desiredVelocity: SIMD3<Float>,
+                         jumpRequested: Bool) -> Bool {
+        world.updateCharacter(handle: handle, dt: dt, desiredVelocity: desiredVelocity, jumpRequested: jumpRequested)
+    }
+
+    func characterPosition(handle: UInt64) -> SIMD3<Float>? {
+        world.characterPosition(handle: handle)
+    }
+
+    func characterRotation(handle: UInt64) -> SIMD4<Float>? {
+        world.characterRotation(handle: handle)
+    }
+
+    func characterIsGrounded(handle: UInt64) -> Bool {
+        world.characterIsGrounded(handle: handle)
+    }
+
+    func characterGroundNormal(handle: UInt64) -> SIMD3<Float> {
+        world.characterGroundNormal(handle: handle)
+    }
+
+    func characterGroundVelocity(handle: UInt64) -> SIMD3<Float> {
+        world.characterGroundVelocity(handle: handle)
     }
 
     @discardableResult
@@ -751,6 +829,10 @@ public final class PhysicsSystem {
 
     private func pullSimulatedTransforms(ecs: SceneECS) {
         ecs.forEachEntity { entity in
+            if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
+               controller.isEnabled {
+                return
+            }
             guard let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
                   rigidbody.isEnabled,
                   (rigidbody.motionType == .dynamic || rigidbody.motionType == .kinematic),

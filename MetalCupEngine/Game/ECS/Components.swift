@@ -453,14 +453,15 @@ public struct CharacterControllerComponent {
     public var moveInput: SIMD2<Float>
     public var lookInput: SIMD2<Float>
     public var wantsSprint: Bool
+    public var characterHandle: UInt64
     public var verticalVelocity: Float
     public var velocity: SIMD3<Float>
     public var isGrounded: Bool
-    public var groundedStickyFrames: Int
     public var lastGroundNormal: SIMD3<Float>
     public var yawRadians: Float
     public var pitchRadians: Float
     public var lookInitialized: Bool
+    public var debugDesiredVelocity: SIMD3<Float>
     public var debugProbeStart: SIMD3<Float>
     public var debugProbeEnd: SIMD3<Float>
     public var debugProbeHitPoint: SIMD3<Float>
@@ -503,14 +504,15 @@ public struct CharacterControllerComponent {
                 moveInput: SIMD2<Float> = .zero,
                 lookInput: SIMD2<Float> = .zero,
                 wantsSprint: Bool = false,
+                characterHandle: UInt64 = 0,
                 verticalVelocity: Float = 0.0,
                 velocity: SIMD3<Float> = .zero,
                 isGrounded: Bool = false,
-                groundedStickyFrames: Int = 0,
                 lastGroundNormal: SIMD3<Float> = SIMD3<Float>(0.0, 1.0, 0.0),
                 yawRadians: Float = 0.0,
                 pitchRadians: Float = 0.0,
                 lookInitialized: Bool = false,
+                debugDesiredVelocity: SIMD3<Float> = .zero,
                 debugProbeStart: SIMD3<Float> = .zero,
                 debugProbeEnd: SIMD3<Float> = .zero,
                 debugProbeHitPoint: SIMD3<Float> = .zero,
@@ -552,14 +554,15 @@ public struct CharacterControllerComponent {
         self.moveInput = moveInput
         self.lookInput = lookInput
         self.wantsSprint = wantsSprint
+        self.characterHandle = characterHandle
         self.verticalVelocity = verticalVelocity
         self.velocity = velocity
         self.isGrounded = isGrounded
-        self.groundedStickyFrames = groundedStickyFrames
         self.lastGroundNormal = lastGroundNormal
         self.yawRadians = yawRadians
         self.pitchRadians = pitchRadians
         self.lookInitialized = lookInitialized
+        self.debugDesiredVelocity = debugDesiredVelocity
         self.debugProbeStart = debugProbeStart
         self.debugProbeEnd = debugProbeEnd
         self.debugProbeHitPoint = debugProbeHitPoint

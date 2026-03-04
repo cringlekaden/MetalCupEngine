@@ -39,10 +39,10 @@ public final class AssetManager {
     private let textureWorkQueue: MTLCommandQueue?
     private let errorTexture: MTLTexture
 
-    public init(device: MTLDevice, graphics: Graphics) {
+    public init(device: MTLDevice, graphics: Graphics, commandQueue: MTLCommandQueue? = nil) {
         self.device = device
         self.graphics = graphics
-        self.textureWorkQueue = device.makeCommandQueue()
+        self.textureWorkQueue = commandQueue ?? device.makeCommandQueue()
         self.errorTexture = AssetManager.makeErrorTexture(device: device)
     }
 
@@ -435,7 +435,6 @@ public final class AssetManager {
                   destinationOrigin: .init(x: 0, y: 0, z: 0))
         blit.endEncoding()
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
         return mipTexture
     }
 

@@ -153,6 +153,68 @@ private func MCEPhysicsCopyOverlapEvents(_ world: UnsafeMutableRawPointer?,
                                          _ isBeginOut: UnsafeMutablePointer<UInt32>?,
                                          _ maxEvents: UInt32) -> UInt32
 
+@_silgen_name("MCECharacter_Create")
+private func MCECharacter_Create(_ world: UnsafeMutableRawPointer?,
+                                 _ radius: Float,
+                                 _ height: Float,
+                                 _ posX: Float, _ posY: Float, _ posZ: Float,
+                                 _ rotX: Float, _ rotY: Float, _ rotZ: Float, _ rotW: Float,
+                                 _ objectLayer: UInt32,
+                                 _ ignoreBodyId: UInt64) -> UInt64
+
+@_silgen_name("MCECharacter_Destroy")
+private func MCECharacter_Destroy(_ world: UnsafeMutableRawPointer?, _ handle: UInt64)
+
+@_silgen_name("MCECharacter_SetShapeCapsule")
+private func MCECharacter_SetShapeCapsule(_ world: UnsafeMutableRawPointer?, _ handle: UInt64, _ radius: Float, _ height: Float)
+
+@_silgen_name("MCECharacter_SetMaxSlope")
+private func MCECharacter_SetMaxSlope(_ world: UnsafeMutableRawPointer?, _ handle: UInt64, _ radians: Float)
+
+@_silgen_name("MCECharacter_SetStepOffset")
+private func MCECharacter_SetStepOffset(_ world: UnsafeMutableRawPointer?, _ handle: UInt64, _ meters: Float)
+
+@_silgen_name("MCECharacter_SetGravity")
+private func MCECharacter_SetGravity(_ world: UnsafeMutableRawPointer?, _ handle: UInt64, _ value: Float)
+
+@_silgen_name("MCECharacter_SetJumpSpeed")
+private func MCECharacter_SetJumpSpeed(_ world: UnsafeMutableRawPointer?, _ handle: UInt64, _ value: Float)
+
+@_silgen_name("MCECharacter_SetUpVector")
+private func MCECharacter_SetUpVector(_ world: UnsafeMutableRawPointer?,
+                                      _ handle: UInt64,
+                                      _ x: Float, _ y: Float, _ z: Float)
+
+@_silgen_name("MCECharacter_Update")
+private func MCECharacter_Update(_ world: UnsafeMutableRawPointer?,
+                                 _ handle: UInt64,
+                                 _ dt: Float,
+                                 _ desiredVelX: Float, _ desiredVelY: Float, _ desiredVelZ: Float,
+                                 _ jumpRequested: UInt32) -> UInt32
+
+@_silgen_name("MCECharacter_GetPosition")
+private func MCECharacter_GetPosition(_ world: UnsafeMutableRawPointer?,
+                                      _ handle: UInt64,
+                                      _ positionOut: UnsafeMutablePointer<Float>?) -> UInt32
+
+@_silgen_name("MCECharacter_GetRotation")
+private func MCECharacter_GetRotation(_ world: UnsafeMutableRawPointer?,
+                                      _ handle: UInt64,
+                                      _ rotationOut: UnsafeMutablePointer<Float>?) -> UInt32
+
+@_silgen_name("MCECharacter_IsGrounded")
+private func MCECharacter_IsGrounded(_ world: UnsafeMutableRawPointer?, _ handle: UInt64) -> UInt32
+
+@_silgen_name("MCECharacter_GetGroundNormal")
+private func MCECharacter_GetGroundNormal(_ world: UnsafeMutableRawPointer?,
+                                          _ handle: UInt64,
+                                          _ normalOut: UnsafeMutablePointer<Float>?) -> UInt32
+
+@_silgen_name("MCECharacter_GetGroundVelocity")
+private func MCECharacter_GetGroundVelocity(_ world: UnsafeMutableRawPointer?,
+                                            _ handle: UInt64,
+                                            _ velocityOut: UnsafeMutablePointer<Float>?) -> UInt32
+
 public struct PhysicsSettings {
     public static let maxCollisionLayers: Int = 16
     public static let minimumCapacity: UInt32 = 1024
@@ -345,6 +407,29 @@ public struct PhysicsSettings {
             hasher.combine(row)
         }
         return hasher.finalize()
+    }
+}
+
+public struct PhysicsCharacterCreation {
+    public var radius: Float
+    public var height: Float
+    public var position: SIMD3<Float>
+    public var rotation: SIMD4<Float>
+    public var collisionLayer: Int32
+    public var ignoreBodyId: UInt64
+
+    public init(radius: Float,
+                height: Float,
+                position: SIMD3<Float>,
+                rotation: SIMD4<Float>,
+                collisionLayer: Int32 = 0,
+                ignoreBodyId: UInt64 = 0) {
+        self.radius = radius
+        self.height = height
+        self.position = position
+        self.rotation = rotation
+        self.collisionLayer = collisionLayer
+        self.ignoreBodyId = ignoreBodyId
     }
 }
 
@@ -564,6 +649,119 @@ public final class PhysicsWorld {
     func setBodyActive(bodyId: UInt64, isActive: Bool) {
         guard let handle else { return }
         MCEPhysicsSetBodyActivation(handle, bodyId, isActive ? 1 : 0)
+    }
+
+    func createCharacter(desc: PhysicsCharacterCreation) -> UInt64 {
+        guard let handle else { return 0 }
+        let rotation = PhysicsWorld.sanitizedQuaternion(desc.rotation)
+        let layer = UInt32(max(0, min(Int(desc.collisionLayer), PhysicsSettings.maxCollisionLayers - 1)))
+        return MCECharacter_Create(handle,
+                                   max(0.02, desc.radius),
+                                   max(0.1, desc.height),
+                                   desc.position.x, desc.position.y, desc.position.z,
+                                   rotation.x, rotation.y, rotation.z, rotation.w,
+                                   layer,
+                                   desc.ignoreBodyId)
+    }
+
+    func destroyCharacter(handle characterHandle: UInt64) {
+        guard let handle, characterHandle != 0 else { return }
+        MCECharacter_Destroy(handle, characterHandle)
+    }
+
+    func setCharacterShapeCapsule(handle characterHandle: UInt64, radius: Float, height: Float) {
+        guard let handle, characterHandle != 0 else { return }
+        MCECharacter_SetShapeCapsule(handle, characterHandle, max(0.02, radius), max(0.1, height))
+    }
+
+    func setCharacterMaxSlope(handle characterHandle: UInt64, radians: Float) {
+        guard let handle, characterHandle != 0 else { return }
+        MCECharacter_SetMaxSlope(handle, characterHandle, radians)
+    }
+
+    func setCharacterStepOffset(handle characterHandle: UInt64, meters: Float) {
+        guard let handle, characterHandle != 0 else { return }
+        MCECharacter_SetStepOffset(handle, characterHandle, max(0.0, meters))
+    }
+
+    func setCharacterGravity(handle characterHandle: UInt64, value: Float) {
+        guard let handle, characterHandle != 0 else { return }
+        MCECharacter_SetGravity(handle, characterHandle, value)
+    }
+
+    func setCharacterJumpSpeed(handle characterHandle: UInt64, value: Float) {
+        guard let handle, characterHandle != 0 else { return }
+        MCECharacter_SetJumpSpeed(handle, characterHandle, max(0.0, value))
+    }
+
+    func setCharacterUpVector(handle characterHandle: UInt64, up: SIMD3<Float>) {
+        guard let handle, characterHandle != 0 else { return }
+        let length = simd_length(up)
+        let normalized = length > 1.0e-5 ? (up / length) : SIMD3<Float>(0.0, 1.0, 0.0)
+        MCECharacter_SetUpVector(handle, characterHandle, normalized.x, normalized.y, normalized.z)
+    }
+
+    @discardableResult
+    func updateCharacter(handle characterHandle: UInt64,
+                         dt: Float,
+                         desiredVelocity: SIMD3<Float>,
+                         jumpRequested: Bool) -> Bool {
+        guard let handle, characterHandle != 0, dt > 0.0 else { return false }
+        return MCECharacter_Update(handle,
+                                   characterHandle,
+                                   dt,
+                                   desiredVelocity.x, desiredVelocity.y, desiredVelocity.z,
+                                   jumpRequested ? 1 : 0) != 0
+    }
+
+    func characterPosition(handle characterHandle: UInt64) -> SIMD3<Float>? {
+        guard let handle, characterHandle != 0 else { return nil }
+        var position = SIMD3<Float>(0, 0, 0)
+        let success = withUnsafeMutableBytes(of: &position) { bytes in
+            let ptr = bytes.bindMemory(to: Float.self).baseAddress
+            return MCECharacter_GetPosition(handle, characterHandle, ptr) != 0
+        }
+        return success ? position : nil
+    }
+
+    func characterRotation(handle characterHandle: UInt64) -> SIMD4<Float>? {
+        guard let handle, characterHandle != 0 else { return nil }
+        var rotation = SIMD4<Float>(0, 0, 0, 1)
+        let success = withUnsafeMutableBytes(of: &rotation) { bytes in
+            let ptr = bytes.bindMemory(to: Float.self).baseAddress
+            return MCECharacter_GetRotation(handle, characterHandle, ptr) != 0
+        }
+        return success ? TransformMath.normalizedQuaternion(rotation) : nil
+    }
+
+    func characterIsGrounded(handle characterHandle: UInt64) -> Bool {
+        guard let handle, characterHandle != 0 else { return false }
+        return MCECharacter_IsGrounded(handle, characterHandle) != 0
+    }
+
+    func characterGroundNormal(handle characterHandle: UInt64) -> SIMD3<Float> {
+        guard let handle, characterHandle != 0 else { return SIMD3<Float>(0.0, 1.0, 0.0) }
+        var normal = SIMD3<Float>(0.0, 1.0, 0.0)
+        let success = withUnsafeMutableBytes(of: &normal) { bytes in
+            let ptr = bytes.bindMemory(to: Float.self).baseAddress
+            return MCECharacter_GetGroundNormal(handle, characterHandle, ptr) != 0
+        }
+        if !success { return SIMD3<Float>(0.0, 1.0, 0.0) }
+        let len = simd_length(normal)
+        if len > 1.0e-5 {
+            return normal / len
+        }
+        return SIMD3<Float>(0.0, 1.0, 0.0)
+    }
+
+    func characterGroundVelocity(handle characterHandle: UInt64) -> SIMD3<Float> {
+        guard let handle, characterHandle != 0 else { return .zero }
+        var velocity = SIMD3<Float>.zero
+        _ = withUnsafeMutableBytes(of: &velocity) { bytes in
+            let ptr = bytes.bindMemory(to: Float.self).baseAddress
+            MCECharacter_GetGroundVelocity(handle, characterHandle, ptr) != 0
+        }
+        return velocity
     }
 
     func lastContacts() -> [PhysicsContact] {

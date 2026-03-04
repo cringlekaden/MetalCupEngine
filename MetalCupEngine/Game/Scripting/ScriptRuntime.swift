@@ -75,8 +75,18 @@ public func runtimeGetCursorMode() -> RuntimeCursorMode {
     runtimeCursorState.appliedLocked ? .locked : .normal
 }
 
+public func runtimeIsCursorLocked() -> Bool {
+    runtimeCursorState.appliedLocked
+}
+
 public func runtimeToggleCursorLockOverride() {
     runtimeCursorState.escOverrideLocked = !effectiveCursorLocked()
+    applyEffectiveCursorMode()
+}
+
+public func runtimePrepareForPlayStart(lockCursor: Bool) {
+    runtimeCursorState.escOverrideLocked = nil
+    runtimeCursorState.scriptDesiredLocked = lockCursor
     applyEffectiveCursorMode()
 }
 
@@ -953,6 +963,11 @@ func MCELuaHostInputGetMouseDelta(_ hostContext: UnsafeMutableRawPointer?,
     guard let hostContext, let deltaOut else { return 0 }
     let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
     guard let scene = runtime.activeScene else { return 0 }
+    guard runtimeIsCursorLocked() else {
+        deltaOut[0] = 0.0
+        deltaOut[1] = 0.0
+        return 1
+    }
     let delta = scene.inputMouseDelta()
     deltaOut[0] = delta.x
     deltaOut[1] = delta.y

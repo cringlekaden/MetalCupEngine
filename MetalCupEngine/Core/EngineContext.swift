@@ -53,7 +53,7 @@ public final class EngineContext {
         self.preferences = preferences ?? Preferences()
         let resolvedGraphics = graphics ?? Graphics(resourceRegistry: resolvedResources, device: device, preferences: self.preferences)
         self.graphics = resolvedGraphics
-        self.assets = assets ?? AssetManager(device: device, graphics: resolvedGraphics)
+        self.assets = assets ?? AssetManager(device: device, graphics: resolvedGraphics, commandQueue: commandQueue)
         self.fallbackTextures = FallbackTextureLibrary(device: device, preferences: self.preferences)
         self.debugDraw = debugDraw ?? DebugDraw()
         self.pickingSystem = pickingSystem ?? PickingSystem()

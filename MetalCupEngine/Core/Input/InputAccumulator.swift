@@ -65,4 +65,16 @@ public final class InputAccumulator {
         textInput = ""
         return state
     }
+
+    public func resetForRuntimeStart(clearKeys: Bool = false, clearMouseButtons: Bool = false) {
+        mouseDelta = .zero
+        scrollDelta = 0.0
+        textInput = ""
+        if clearKeys {
+            keys = [Bool](repeating: false, count: keys.count)
+        }
+        if clearMouseButtons {
+            mouseButtons = [Bool](repeating: false, count: mouseButtons.count)
+        }
+    }
 }

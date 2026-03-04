@@ -578,7 +578,6 @@ public final class Renderer: NSObject {
         quadMesh.drawPrimitives(encoder, frameContext: frameContext)
         encoder.endEncoding()
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
     }
 
     private func renderProceduralSkyToEnvironmentMap(params: SkyParams, targetEnvironment: MTLTexture, frameContext: RendererFrameContext, commandBuffer: MTLCommandBuffer) {

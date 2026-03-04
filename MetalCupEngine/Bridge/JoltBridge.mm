@@ -43,10 +43,13 @@
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
+#include <Jolt/Physics/Collision/ShapeFilter.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cfloat>
 #include <cstring>
 #include <sstream>
 #include <mutex>
@@ -281,6 +284,20 @@ namespace {
     };
 
     struct JoltWorld {
+        struct CharacterRecord {
+            Ref<CharacterVirtual> character;
+            ObjectLayer objectLayer = 0;
+            BodyID ignoreBodyID;
+            bool hasIgnoreBodyID = false;
+            Vec3 up = Vec3::sAxisY();
+            float gravity = -9.81f;
+            float stepOffset = 0.25f;
+            float jumpSpeed = 5.5f;
+            float radius = 0.35f;
+            float height = 1.8f;
+            CharacterVirtual::ExtendedUpdateSettings updateSettings;
+        };
+
         uint32_t layerCount;
         std::array<uint32_t, kMaxCollisionLayers> collisionMatrix;
         PhysicsSystem physicsSystem;
@@ -296,6 +313,8 @@ namespace {
         std::atomic<uint32_t> overlapWriteIndex;
         std::atomic<uint32_t> activeOverlapCount;
         std::unordered_map<uint64_t, OverlapEvent> activeOverlaps;
+        std::unordered_map<uint64_t, CharacterRecord> characters;
+        std::atomic<uint64_t> nextCharacterHandle;
         std::mutex overlapMutex;
         ContactCollector contactCollector;
         bool useSingleThreaded;
@@ -318,6 +337,7 @@ namespace {
         , contactWriteIndex(0)
         , overlapWriteIndex(0)
         , activeOverlapCount(0)
+        , nextCharacterHandle(1)
         , contactCollector(contacts, &contactWriteIndex, overlapEvents, &overlapWriteIndex, &activeOverlapCount, &activeOverlaps, &overlapMutex)
         , useSingleThreaded(singleThreaded) {
             const uint32_t fullMask = layerCount >= 32 ? 0xffffffffu : ((1u << layerCount) - 1u);
@@ -465,6 +485,17 @@ namespace {
         if (layerCount == 0) { return 0; }
         return static_cast<ObjectLayer>(std::min(collisionLayer, layerCount - 1));
     }
+
+    static RefConst<Shape> BuildCharacterCapsuleShape(float radius, float height) {
+        const float safeRadius = std::max(0.02f, radius);
+        const float safeHeight = std::max(safeRadius * 2.0f + 0.02f, height);
+        const float capsuleHalfHeight = std::max(0.02f, safeHeight * 0.5f - safeRadius);
+        RefConst<Shape> capsule = CapsuleShapeSettings(capsuleHalfHeight, safeRadius).Create().Get();
+        if (!capsule) { return nullptr; }
+        const Vec3 offset(0.0f, capsuleHalfHeight + safeRadius, 0.0f);
+        return RotatedTranslatedShapeSettings(offset, Quat::sIdentity(), capsule).Create().Get();
+    }
+
 }
 
 extern "C" void *MCEPhysicsCreateWorld(float gravityX,
@@ -907,6 +938,233 @@ extern "C" uint32_t MCEPhysicsCapsuleCastClosest(void *worldPtr,
     *distanceOut = hit.mFraction * maxDistance;
     *bodyIdOut = static_cast<uint64_t>(hit.mBodyID2.GetIndexAndSequenceNumber());
     *userDataOut = body.GetUserData();
+    return 1;
+}
+
+extern "C" uint64_t MCECharacter_Create(void *worldPtr,
+                                        float radius,
+                                        float height,
+                                        float posX, float posY, float posZ,
+                                        float rotX, float rotY, float rotZ, float rotW,
+                                        uint32_t objectLayer,
+                                        uint64_t ignoreBodyId) {
+    if (!worldPtr) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    JoltWorld::CharacterRecord record;
+    record.objectLayer = ObjectLayerFromCollisionLayer(objectLayer, world->layerCount);
+    record.radius = std::max(0.02f, radius);
+    record.height = std::max(record.radius * 2.0f + 0.02f, height);
+    record.hasIgnoreBodyID = ignoreBodyId != 0;
+    if (record.hasIgnoreBodyID) {
+        record.ignoreBodyID = BodyID(ignoreBodyId);
+    }
+
+    CharacterVirtualSettings settings;
+    settings.mShape = BuildCharacterCapsuleShape(record.radius, record.height);
+    if (!settings.mShape) { return 0; }
+    settings.mSupportingVolume = Plane(Vec3::sAxisY(), -std::max(record.radius, record.height * 0.5f));
+    settings.mMaxSlopeAngle = DegreesToRadians(50.0f);
+    settings.mMass = 70.0f;
+    settings.mMaxStrength = 0.0f;
+    settings.mEnhancedInternalEdgeRemoval = true;
+
+    record.character = new CharacterVirtual(&settings,
+                                            RVec3(posX, posY, posZ),
+                                            Quat(rotX, rotY, rotZ, rotW),
+                                            0,
+                                            &world->physicsSystem);
+    if (record.character == nullptr) {
+        return 0;
+    }
+    record.character->SetUp(record.up);
+    record.updateSettings.mWalkStairsStepUp = record.up * record.stepOffset;
+    record.updateSettings.mStickToFloorStepDown = -record.up * std::max(0.0f, record.stepOffset + 0.05f);
+
+    const uint64_t handle = world->nextCharacterHandle.fetch_add(1, std::memory_order_relaxed);
+    world->characters.emplace(handle, std::move(record));
+    return handle;
+}
+
+extern "C" void MCECharacter_Destroy(void *worldPtr, uint64_t handle) {
+    if (!worldPtr || handle == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    world->characters.erase(handle);
+}
+
+extern "C" void MCECharacter_SetShapeCapsule(void *worldPtr, uint64_t handle, float radius, float height) {
+    if (!worldPtr || handle == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return; }
+    JoltWorld::CharacterRecord &record = it->second;
+    record.radius = std::max(0.02f, radius);
+    record.height = std::max(record.radius * 2.0f + 0.02f, height);
+    RefConst<Shape> shape = BuildCharacterCapsuleShape(record.radius, record.height);
+    if (!shape) { return; }
+    TempAllocatorMalloc allocator;
+    const auto &broadPhaseLayerFilter = world->physicsSystem.GetDefaultBroadPhaseLayerFilter(record.objectLayer);
+    const auto &objectLayerFilter = world->physicsSystem.GetDefaultLayerFilter(record.objectLayer);
+    IgnoreSingleBodyFilter ignoreBodyFilter(record.hasIgnoreBodyID ? record.ignoreBodyID : BodyID());
+    BodyFilter bodyFilter;
+    const BodyFilter &resolvedBodyFilter = record.hasIgnoreBodyID ? static_cast<const BodyFilter &>(ignoreBodyFilter) : bodyFilter;
+    ShapeFilter shapeFilter;
+    if (record.character->SetShape(shape,
+                                   FLT_MAX,
+                                   broadPhaseLayerFilter,
+                                   objectLayerFilter,
+                                   resolvedBodyFilter,
+                                   shapeFilter,
+                                   allocator)) {
+        record.character->SetInnerBodyShape(shape);
+    }
+}
+
+extern "C" void MCECharacter_SetMaxSlope(void *worldPtr, uint64_t handle, float radians) {
+    if (!worldPtr || handle == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return; }
+    const float minSlope = DegreesToRadians(1.0f);
+    const float maxSlope = DegreesToRadians(89.0f);
+    it->second.character->SetMaxSlopeAngle(std::clamp(radians, minSlope, maxSlope));
+}
+
+extern "C" void MCECharacter_SetStepOffset(void *worldPtr, uint64_t handle, float meters) {
+    if (!worldPtr || handle == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return; }
+    JoltWorld::CharacterRecord &record = it->second;
+    record.stepOffset = std::max(0.0f, meters);
+    record.updateSettings.mWalkStairsStepUp = record.up * record.stepOffset;
+    record.updateSettings.mStickToFloorStepDown = -record.up * std::max(0.0f, record.stepOffset + 0.05f);
+}
+
+extern "C" void MCECharacter_SetGravity(void *worldPtr, uint64_t handle, float value) {
+    if (!worldPtr || handle == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return; }
+    it->second.gravity = value;
+}
+
+extern "C" void MCECharacter_SetJumpSpeed(void *worldPtr, uint64_t handle, float value) {
+    if (!worldPtr || handle == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return; }
+    it->second.jumpSpeed = std::max(0.0f, value);
+}
+
+extern "C" void MCECharacter_SetUpVector(void *worldPtr, uint64_t handle, float x, float y, float z) {
+    if (!worldPtr || handle == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return; }
+    Vec3 up(x, y, z);
+    if (up.LengthSq() <= 1.0e-8f) {
+        up = Vec3::sAxisY();
+    } else {
+        up = up.Normalized();
+    }
+    JoltWorld::CharacterRecord &record = it->second;
+    record.up = up;
+    record.character->SetUp(up);
+    record.updateSettings.mWalkStairsStepUp = up * record.stepOffset;
+    record.updateSettings.mStickToFloorStepDown = -up * std::max(0.0f, record.stepOffset + 0.05f);
+}
+
+extern "C" uint32_t MCECharacter_Update(void *worldPtr,
+                                        uint64_t handle,
+                                        float dt,
+                                        float desiredVelX,
+                                        float desiredVelY,
+                                        float desiredVelZ,
+                                        uint32_t jumpRequested) {
+    if (!worldPtr || handle == 0 || dt <= 0.0f) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return 0; }
+    JoltWorld::CharacterRecord &record = it->second;
+    const auto currentGroundState = record.character->GetGroundState();
+    Vec3 velocity(desiredVelX, desiredVelY, desiredVelZ);
+    if (jumpRequested != 0 && (currentGroundState == CharacterBase::EGroundState::OnGround || currentGroundState == CharacterBase::EGroundState::OnSteepGround)) {
+        velocity += record.up * record.jumpSpeed;
+    }
+    record.character->SetLinearVelocity(velocity);
+    const auto &broadPhaseLayerFilter = world->physicsSystem.GetDefaultBroadPhaseLayerFilter(record.objectLayer);
+    const auto &objectLayerFilter = world->physicsSystem.GetDefaultLayerFilter(record.objectLayer);
+    IgnoreSingleBodyFilter ignoreBodyFilter(record.hasIgnoreBodyID ? record.ignoreBodyID : BodyID());
+    BodyFilter bodyFilter;
+    const BodyFilter &resolvedBodyFilter = record.hasIgnoreBodyID ? static_cast<const BodyFilter &>(ignoreBodyFilter) : bodyFilter;
+    ShapeFilter shapeFilter;
+    TempAllocatorMalloc allocator;
+    record.character->ExtendedUpdate(dt,
+                                     record.up * record.gravity,
+                                     record.updateSettings,
+                                     broadPhaseLayerFilter,
+                                     objectLayerFilter,
+                                     resolvedBodyFilter,
+                                     shapeFilter,
+                                     allocator);
+    return 1;
+}
+
+extern "C" uint32_t MCECharacter_GetPosition(void *worldPtr, uint64_t handle, float *positionOut) {
+    if (!worldPtr || handle == 0 || !positionOut) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return 0; }
+    const RVec3 position = it->second.character->GetPosition();
+    positionOut[0] = static_cast<float>(position.GetX());
+    positionOut[1] = static_cast<float>(position.GetY());
+    positionOut[2] = static_cast<float>(position.GetZ());
+    return 1;
+}
+
+extern "C" uint32_t MCECharacter_GetRotation(void *worldPtr, uint64_t handle, float *rotationOut) {
+    if (!worldPtr || handle == 0 || !rotationOut) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return 0; }
+    const Quat rotation = it->second.character->GetRotation();
+    rotationOut[0] = rotation.GetX();
+    rotationOut[1] = rotation.GetY();
+    rotationOut[2] = rotation.GetZ();
+    rotationOut[3] = rotation.GetW();
+    return 1;
+}
+
+extern "C" uint32_t MCECharacter_IsGrounded(void *worldPtr, uint64_t handle) {
+    if (!worldPtr || handle == 0) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return 0; }
+    const auto groundState = it->second.character->GetGroundState();
+    return groundState == CharacterBase::EGroundState::OnGround ? 1 : 0;
+}
+
+extern "C" uint32_t MCECharacter_GetGroundNormal(void *worldPtr, uint64_t handle, float *normalOut) {
+    if (!worldPtr || handle == 0 || !normalOut) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return 0; }
+    const Vec3 normal = it->second.character->GetGroundNormal();
+    normalOut[0] = normal.GetX();
+    normalOut[1] = normal.GetY();
+    normalOut[2] = normal.GetZ();
+    return 1;
+}
+
+extern "C" uint32_t MCECharacter_GetGroundVelocity(void *worldPtr, uint64_t handle, float *velocityOut) {
+    if (!worldPtr || handle == 0 || !velocityOut) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return 0; }
+    const Vec3 velocity = it->second.character->GetGroundVelocity();
+    velocityOut[0] = velocity.GetX();
+    velocityOut[1] = velocity.GetY();
+    velocityOut[2] = velocity.GetZ();
     return 1;
 }
 
