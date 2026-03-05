@@ -27,6 +27,8 @@ enum ShaderBindings {
         static let lightIndexList = 9
         static let lightIndexCount = 10
         static let lightClusterParams = 11
+        static let tileLightGrid = 12
+        static let tileParams = 13
     }
 
     enum FragmentTexture {
@@ -76,6 +78,12 @@ enum ShaderBindings {
         static let cullUniforms = 3
         static let lightGrid = 4
         static let lightIndexList = 5
+        static let tileParams = 6
+        static let tileLightGrid = 7
+        static let tileLightIndexList = 8
+        static let tileLightIndexCount = 9
+        static let forwardPlusStats = 10
+        static let clearUniforms = 11
     }
 
     enum ComputeTexture {

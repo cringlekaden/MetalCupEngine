@@ -55,6 +55,8 @@ public enum FragmentBufferIndex {
     public static let lightIndexList = ShaderBindings.FragmentBuffer.lightIndexList
     public static let lightIndexCount = ShaderBindings.FragmentBuffer.lightIndexCount
     public static let lightClusterParams = ShaderBindings.FragmentBuffer.lightClusterParams
+    public static let tileLightGrid = ShaderBindings.FragmentBuffer.tileLightGrid
+    public static let tileParams = ShaderBindings.FragmentBuffer.tileParams
 }
 
 public enum FragmentTextureIndex {
@@ -215,13 +217,28 @@ public struct LightData: sizeable {
 
 public struct ForwardPlusClusterParams: sizeable {
     public static let abiVersion: UInt32 = 1
-    public static let expectedMetalStride: Int = 32
-    public static let expectedMetalAlignment: Int = 16
+    public static let expectedMetalStride: Int = 64
+    public static let expectedMetalAlignment: Int = 4
 
-    /// header: x=abiVersion, y=zSliceCount, z=tileCountX, w=tileCountY
-    public var header = SIMD4<UInt32>(ForwardPlusClusterParams.abiVersion, 1, 0, 0)
-    /// tileAndViewport: x=tileSizeX, y=tileSizeY, z=viewportX, w=viewportY
-    public var tileAndViewport = SIMD4<UInt32>(16, 16, 0, 0)
+    public var abiVersion: UInt32 = ForwardPlusClusterParams.abiVersion
+    public var clusterCountX: UInt32 = 1
+    public var clusterCountY: UInt32 = 1
+    public var clusterCountZ: UInt32 = 1
+
+    public var totalClusterCount: UInt32 = 1
+    public var tileSizeX: UInt32 = 16
+    public var tileSizeY: UInt32 = 16
+    public var padding0: UInt32 = 0
+
+    public var viewportWidth: UInt32 = 1
+    public var viewportHeight: UInt32 = 1
+    public var padding1: UInt32 = 0
+    public var padding2: UInt32 = 0
+
+    public var nearPlane: Float = 0.1
+    public var farPlane: Float = 1000.0
+    public var logDepthScale: Float = 1.0
+    public var logDepthBias: Float = 1.0
 }
 
 public struct ForwardPlusIndexHeader: sizeable {
@@ -234,6 +251,83 @@ public struct ForwardPlusIndexHeader: sizeable {
     public var totalIndexCount: UInt32 = 0
     public var overflowClusterCount: UInt32 = 0
     public var maxIndexCapacity: UInt32 = 0
+}
+
+public struct ForwardPlusTileParams: sizeable {
+    public static let abiVersion: UInt32 = 1
+    public static let expectedMetalStride: Int = 32
+    public static let expectedMetalAlignment: Int = 4
+
+    public var abiVersion: UInt32 = ForwardPlusTileParams.abiVersion
+    public var tileCountX: UInt32 = 1
+    public var tileCountY: UInt32 = 1
+    public var maxLightsPerTile: UInt32 = 1
+
+    public var tileSizeX: UInt32 = 16
+    public var tileSizeY: UInt32 = 16
+    public var viewportWidth: UInt32 = 1
+    public var viewportHeight: UInt32 = 1
+}
+
+public struct ForwardPlusTileIndexHeader: sizeable {
+    public static let abiVersion: UInt32 = 1
+    public static let expectedMetalStride: Int = 16
+    public static let expectedMetalAlignment: Int = 4
+
+    public var abiVersion: UInt32 = ForwardPlusTileIndexHeader.abiVersion
+    public var totalIndexCount: UInt32 = 0
+    public var overflowTileCount: UInt32 = 0
+    public var maxIndexCapacity: UInt32 = 0
+}
+
+public struct ForwardPlusStats: sizeable {
+    public static let expectedMetalStride: Int = 64
+    public static let expectedMetalAlignment: Int = 4
+
+    public var tileOverflowCount: UInt32 = 0
+    public var clusterOverflowCount: UInt32 = 0
+    public var tileIndicesWritten: UInt32 = 0
+    public var clusterIndicesWritten: UInt32 = 0
+
+    public var tileCountX: UInt32 = 0
+    public var tileCountY: UInt32 = 0
+    public var totalTiles: UInt32 = 0
+    public var missingDepthFrames: UInt32 = 0
+
+    public var clusterCountX: UInt32 = 0
+    public var clusterCountY: UInt32 = 0
+    public var clusterCountZ: UInt32 = 0
+    public var totalClusters: UInt32 = 0
+
+    public var reserved0: UInt32 = 0
+    public var reserved1: UInt32 = 0
+    public var reserved2: UInt32 = 0
+    public var reserved3: UInt32 = 0
+}
+
+public struct ForwardPlusClearUniforms: sizeable {
+    public static let expectedMetalStride: Int = 64
+    public static let expectedMetalAlignment: Int = 4
+
+    public var abiVersion: UInt32 = ForwardPlusConfig.abiVersion
+    public var tileCountX: UInt32 = 1
+    public var tileCountY: UInt32 = 1
+    public var maxLightsPerTile: UInt32 = ForwardPlusConfig.maxLightsPerTile
+
+    public var tileSizeX: UInt32 = ForwardPlusConfig.tileSizeX
+    public var tileSizeY: UInt32 = ForwardPlusConfig.tileSizeY
+    public var viewportWidth: UInt32 = 1
+    public var viewportHeight: UInt32 = 1
+
+    public var clusterCountX: UInt32 = 1
+    public var clusterCountY: UInt32 = 1
+    public var clusterCountZ: UInt32 = 1
+    public var maxLightsPerCluster: UInt32 = ForwardPlusConfig.maxLightsPerCluster
+
+    public var nearPlane: Float = 0.1
+    public var farPlane: Float = 1000.0
+    public var logDepthScale: Float = 1.0
+    public var logDepthBias: Float = 1.0
 }
 
 public struct ForwardPlusCullLight: sizeable {
@@ -258,7 +352,7 @@ public struct ForwardPlusCullUniforms: sizeable {
     public var projectionMatrix = matrix_identity_float4x4
     // x = viewportWidth, y = viewportHeight, z = lightCount, w = maxLightsPerCluster
     public var params0 = SIMD4<UInt32>(0, 0, 0, 0)
-    // x = tileCountX, y = tileCountY, z = indexCapacity, w = reserved
+    // x = clusterCountX, y = clusterCountY, z = clusterCountZ, w = indexCapacity
     public var params1 = SIMD4<UInt32>(0, 0, 0, 0)
 }
 

@@ -34,6 +34,8 @@ public final class Renderer: NSObject {
     let shadowRenderer: ShadowRenderer
     private var _lastFrameTimestamp: TimeInterval?
     private var _frameCount: UInt64 = 0
+    private let _maxFramesInFlight = 3
+    private let _inFlightSemaphore = DispatchSemaphore(value: 3)
     private var _totalTime: Float = 0.0
     private var _unscaledTotalTime: Float = 0.0
     private var _timeScale: Float = 1.0
@@ -991,6 +993,13 @@ extension Renderer: MTKViewDelegate {
         guard let drawable = view.currentDrawable,
               view.drawableSize.width > 0,
               view.drawableSize.height > 0 else { return }
+        _inFlightSemaphore.wait()
+        var frameSubmitted = false
+        defer {
+            if !frameSubmitted {
+                _inFlightSemaphore.signal()
+            }
+        }
         let updateStart = CACurrentMediaTime()
         let frameTime = buildFrameTime(timestamp: frameStart)
         let inputState = inputAccumulator?.snapshotAndReset() ?? InputState(
@@ -1015,6 +1024,7 @@ extension Renderer: MTKViewDelegate {
             viewContext: makeRenderViewContext(sceneView: sceneView, view: view)
         )
         _frameContextStorage.setAssetStateRevision(engineContext.assets.cacheRevisionToken())
+        engineContext.forwardPlusCullingDepthSource = ForwardPlusCullingDepthSource.none.rawValue
         frameContext.setRenderResourceRegistry(_renderResources.buildRegistry())
         let activeScene = delegate?.activeScene()
         if let activeScene {
@@ -1044,7 +1054,10 @@ extension Renderer: MTKViewDelegate {
             delegate: delegate,
             sceneSnapshot: frameContext.renderFrameSnapshot(),
             frameContext: frameContext,
-            profiler: profiler
+            profiler: profiler,
+            frameInFlightIndex: frameContext.frameInFlightIndex(),
+            viewSignature: frameContext.viewSignature(),
+            settingsRevision: frameContext.rendererStateRevision()
         )
         let gpuStart = CACurrentMediaTime()
         if !useCounterSampling {
@@ -1073,6 +1086,10 @@ extension Renderer: MTKViewDelegate {
             }
         }
         overlayCommandBuffer.present(drawable)
+        overlayCommandBuffer.addCompletedHandler { [weak self] _ in
+            self?._inFlightSemaphore.signal()
+        }
+        frameSubmitted = true
         overlayCommandBuffer.commit()
         profiler.record(.present, seconds: CACurrentMediaTime() - presentStart)
         profiler.record(.frame, seconds: CACurrentMediaTime() - frameStart)

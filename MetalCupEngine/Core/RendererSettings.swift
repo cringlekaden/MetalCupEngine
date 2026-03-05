@@ -201,9 +201,10 @@ public enum ForwardPlusConfig {
     public static let abiVersion: UInt32 = 1
     public static let tileSizeX: UInt32 = 16
     public static let tileSizeY: UInt32 = 16
-    public static let zSliceCount: UInt32 = 1
+    public static let zSliceCount: UInt32 = 24
+    public static let maxLightsPerTile: UInt32 = 128
     public static let maxLightsPerCluster: UInt32 = 64
-    public static let configVersion: UInt32 = 1
+    public static let configVersion: UInt32 = 2
 }
 
 public extension RendererSettings {

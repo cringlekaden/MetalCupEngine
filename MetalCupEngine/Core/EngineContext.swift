@@ -22,6 +22,8 @@ public final class EngineContext {
     public let pickingSystem: PickingSystem
     public var scriptRuntime: ScriptRuntime
     public var rendererSettings: RendererSettings = RendererSettings()
+    public var forwardPlusStats: ForwardPlusStats = ForwardPlusStats()
+    public var forwardPlusCullingDepthSource: UInt32 = ForwardPlusCullingDepthSource.none.rawValue
     public private(set) var physicsSettingsVersion: UInt64 = 1
     public var physicsSettings: PhysicsSettings = PhysicsSettings() {
         didSet {

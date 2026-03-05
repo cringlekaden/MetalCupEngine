@@ -32,6 +32,10 @@ private func profiler(_ contextPtr: UnsafeRawPointer?) -> RendererProfiler? {
     return resolveEngineContext(contextPtr)?.renderer?.profiler
 }
 
+private func getForwardPlusStats(_ contextPtr: UnsafeRawPointer?) -> ForwardPlusStats {
+    resolveEngineContext(contextPtr)?.forwardPlusStats ?? ForwardPlusStats()
+}
+
 @_cdecl("MCERendererGetBloomEnabled")
 public func MCERendererGetBloomEnabled(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
     getSettings(contextPtr).bloomEnabled
@@ -304,6 +308,46 @@ public func MCERendererSetForwardPlusEnabled(_ contextPtr: UnsafeRawPointer?, _ 
 public func MCERendererGetForwardPlusMaxLightsPerCluster(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
     _ = contextPtr
     return ForwardPlusConfig.maxLightsPerCluster
+}
+
+@_cdecl("MCERendererGetForwardPlusTileOverflowCount")
+public func MCERendererGetForwardPlusTileOverflowCount(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getForwardPlusStats(contextPtr).tileOverflowCount
+}
+
+@_cdecl("MCERendererGetForwardPlusClusterOverflowCount")
+public func MCERendererGetForwardPlusClusterOverflowCount(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getForwardPlusStats(contextPtr).clusterOverflowCount
+}
+
+@_cdecl("MCERendererGetForwardPlusTileIndicesWritten")
+public func MCERendererGetForwardPlusTileIndicesWritten(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getForwardPlusStats(contextPtr).tileIndicesWritten
+}
+
+@_cdecl("MCERendererGetForwardPlusClusterIndicesWritten")
+public func MCERendererGetForwardPlusClusterIndicesWritten(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getForwardPlusStats(contextPtr).clusterIndicesWritten
+}
+
+@_cdecl("MCERendererGetForwardPlusTotalTiles")
+public func MCERendererGetForwardPlusTotalTiles(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getForwardPlusStats(contextPtr).totalTiles
+}
+
+@_cdecl("MCERendererGetForwardPlusTotalClusters")
+public func MCERendererGetForwardPlusTotalClusters(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getForwardPlusStats(contextPtr).totalClusters
+}
+
+@_cdecl("MCERendererGetForwardPlusMissingDepthFrames")
+public func MCERendererGetForwardPlusMissingDepthFrames(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getForwardPlusStats(contextPtr).missingDepthFrames
+}
+
+@_cdecl("MCERendererGetForwardPlusCullingDepthSource")
+public func MCERendererGetForwardPlusCullingDepthSource(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    resolveEngineContext(contextPtr)?.forwardPlusCullingDepthSource ?? ForwardPlusCullingDepthSource.none.rawValue
 }
 
 @_cdecl("MCERendererGetShadingDebugMode")

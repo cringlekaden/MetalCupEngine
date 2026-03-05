@@ -18,6 +18,8 @@ public struct LightingInputs {
     public var lightIndexListBuffer: MTLBuffer?
     public var lightIndexCountBuffer: MTLBuffer?
     public var clusterParamsBuffer: MTLBuffer?
+    public var tileLightGridBuffer: MTLBuffer?
+    public var tileParamsBuffer: MTLBuffer?
 }
 
 public struct RenderViewContext {
@@ -55,6 +57,16 @@ public struct RenderViewContext {
         hasher.combine(showEditorOverlays)
         return UInt64(bitPattern: Int64(hasher.finalize()))
     }
+
+    public var viewSignature: UInt64 {
+        cacheSignature()
+    }
+}
+
+public enum ForwardPlusCullingDepthSource: UInt32 {
+    case none = 0
+    case prepass = 1
+    case fallback = 2
 }
 
 public struct RendererFrameContext {
@@ -65,6 +77,10 @@ public struct RendererFrameContext {
     }
 
     public func currentFrameIndex() -> Int {
+        storage.currentFrameIndex()
+    }
+
+    public func frameInFlightIndex() -> Int {
         storage.currentFrameIndex()
     }
 
@@ -202,6 +218,30 @@ public struct RendererFrameContext {
         storage.viewContextValue()
     }
 
+    public func viewSignature() -> UInt64 {
+        storage.viewContextValue().viewSignature
+    }
+
+    public func setForwardPlusAllowed(_ allowed: Bool) {
+        storage.setForwardPlusAllowed(allowed)
+    }
+
+    public func isForwardPlusAllowed() -> Bool {
+        storage.forwardPlusAllowedValue()
+    }
+
+    public func markForwardPlusCullingDepthProduced(source: ForwardPlusCullingDepthSource) {
+        storage.markForwardPlusCullingDepthProduced(source: source)
+    }
+
+    public func forwardPlusCullingDepthSource() -> ForwardPlusCullingDepthSource {
+        storage.forwardPlusCullingDepthSourceValue()
+    }
+
+    public func forwardPlusCullingDepthProducerCount() -> Int {
+        storage.forwardPlusCullingDepthProducerCountValue()
+    }
+
     public func setViewContext(_ context: RenderViewContext) {
         storage.setViewContext(context)
     }
@@ -244,12 +284,17 @@ public final class RendererFrameContextStorage {
     private let device: MTLDevice
     private var rendererSettings = RendererSettings()
     private var rendererStateRevision: UInt64 = 0
+    private var rendererSettingsSignature: UInt64 = 0
+    private var renderViewSignature: UInt64 = 0
     private var assetStateRevision: UInt64 = 0
     private var renderResourceRegistry: RenderResourceRegistry?
     private var renderFrameSnapshot: RenderFrameSnapshot?
     private var lightingInputs: LightingInputs?
     private var currentRenderPass: RenderPassType = .main
     private var viewContext = RenderViewContext()
+    private var forwardPlusAllowed = true
+    private var forwardPlusCullingDepthSource: ForwardPlusCullingDepthSource = .none
+    private var forwardPlusCullingDepthProducerMask: UInt32 = 0
 
     public struct IBLTextures {
         public let environment: MTLTexture?
@@ -295,6 +340,9 @@ public final class RendererFrameContextStorage {
         renderResourceRegistry = nil
         renderFrameSnapshot = nil
         lightingInputs = nil
+        forwardPlusAllowed = true
+        forwardPlusCullingDepthSource = .none
+        forwardPlusCullingDepthProducerMask = 0
         return RendererFrameContext(storage: self)
     }
 
@@ -449,9 +497,16 @@ public final class RendererFrameContextStorage {
     }
 
     func updateRendererState(settings: RendererSettings, viewContext: RenderViewContext) {
+        let nextSettingsSignature = hashRendererSettings(settings)
+        let nextViewSignature = viewContext.viewSignature
+        let changed = nextSettingsSignature != rendererSettingsSignature || nextViewSignature != renderViewSignature
         rendererSettings = settings
         self.viewContext = viewContext
-        rendererStateRevision &+= 1
+        rendererSettingsSignature = nextSettingsSignature
+        renderViewSignature = nextViewSignature
+        if changed {
+            rendererStateRevision &+= 1
+        }
     }
 
     fileprivate func rendererSettingsValue() -> RendererSettings {
@@ -552,6 +607,34 @@ public final class RendererFrameContextStorage {
         engineContext
     }
 
+    fileprivate func setForwardPlusAllowed(_ allowed: Bool) {
+        forwardPlusAllowed = allowed
+    }
+
+    fileprivate func forwardPlusAllowedValue() -> Bool {
+        forwardPlusAllowed
+    }
+
+    fileprivate func markForwardPlusCullingDepthProduced(source: ForwardPlusCullingDepthSource) {
+        switch source {
+        case .none:
+            return
+        case .prepass:
+            forwardPlusCullingDepthProducerMask |= 1 << 0
+        case .fallback:
+            forwardPlusCullingDepthProducerMask |= 1 << 1
+        }
+        forwardPlusCullingDepthSource = source
+    }
+
+    fileprivate func forwardPlusCullingDepthSourceValue() -> ForwardPlusCullingDepthSource {
+        forwardPlusCullingDepthSource
+    }
+
+    fileprivate func forwardPlusCullingDepthProducerCountValue() -> Int {
+        Int(forwardPlusCullingDepthProducerMask.nonzeroBitCount)
+    }
+
     private func ensureFrameStorage() {
         if instanceBuffers.count < maxFramesInFlight {
             instanceBuffers = Array(repeating: nil, count: maxFramesInFlight)
@@ -615,5 +698,17 @@ public final class RendererFrameContextStorage {
         lightDataBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
         lightDataBuffers[frameIndex]?.label = "LightData.Frame\(frameIndex)"
         lightDataBufferCapacities[frameIndex] = newCapacity
+    }
+
+    private func hashRendererSettings(_ settings: RendererSettings) -> UInt64 {
+        var copy = settings
+        return withUnsafeBytes(of: &copy) { bytes in
+            var hash: UInt64 = 1469598103934665603
+            for byte in bytes {
+                hash ^= UInt64(byte)
+                hash &*= 1099511628211
+            }
+            return hash
+        }
     }
 }

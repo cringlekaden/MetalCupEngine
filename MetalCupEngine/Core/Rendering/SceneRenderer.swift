@@ -533,6 +533,9 @@ public enum SceneRenderer {
             resolvedSettings.iblEnabled = 0
             resolvedSettings.iblIntensity = 0.0
         }
+        if !frameContext.isForwardPlusAllowed() {
+            resolvedSettings.setPerfFlag(.forwardPlusEnabled, enabled: false)
+        }
         let settingsBuffer = frameContext.uploadRendererSettings(resolvedSettings)
 #if DEBUG
         MC_ASSERT(RendererSettings.stride == RendererSettings.expectedMetalStride, "RendererSettings stride mismatch. Keep Swift and Metal layouts in sync.")
@@ -557,13 +560,16 @@ public enum SceneRenderer {
     private static func prepareLightingInputs(snapshot: RenderFrameSnapshot, frameContext: RendererFrameContext) {
         let lightBuffers = frameContext.uploadLightData(snapshot.lightData)
         let registry = frameContext.renderResourceRegistry()
+        let allowForwardPlus = frameContext.isForwardPlusAllowed()
         let inputs = LightingInputs(
             lightCountBuffer: lightBuffers.countBuffer,
             lightDataBuffer: lightBuffers.dataBuffer,
-            lightGridBuffer: registry?.buffer(RenderNamedResourceKey.forwardPlusLightGrid),
-            lightIndexListBuffer: registry?.buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
-            lightIndexCountBuffer: registry?.buffer(RenderNamedResourceKey.forwardPlusLightIndexCount),
-            clusterParamsBuffer: registry?.buffer(RenderNamedResourceKey.forwardPlusClusterParams)
+            lightGridBuffer: allowForwardPlus ? registry?.buffer(RenderNamedResourceKey.forwardPlusLightGrid) : nil,
+            lightIndexListBuffer: allowForwardPlus ? registry?.buffer(RenderNamedResourceKey.forwardPlusLightIndexList) : nil,
+            lightIndexCountBuffer: allowForwardPlus ? registry?.buffer(RenderNamedResourceKey.forwardPlusLightIndexCount) : nil,
+            clusterParamsBuffer: allowForwardPlus ? registry?.buffer(RenderNamedResourceKey.forwardPlusClusterParams) : nil,
+            tileLightGridBuffer: allowForwardPlus ? registry?.buffer(RenderNamedResourceKey.forwardPlusTileLightGrid) : nil,
+            tileParamsBuffer: allowForwardPlus ? registry?.buffer(RenderNamedResourceKey.forwardPlusTileParams) : nil
         )
         frameContext.setLightingInputs(inputs)
     }
@@ -576,6 +582,8 @@ public enum SceneRenderer {
         encoder.setFragmentBuffer(inputs.lightIndexListBuffer, offset: 0, index: FragmentBufferIndex.lightIndexList)
         encoder.setFragmentBuffer(inputs.lightIndexCountBuffer, offset: 0, index: FragmentBufferIndex.lightIndexCount)
         encoder.setFragmentBuffer(inputs.clusterParamsBuffer, offset: 0, index: FragmentBufferIndex.lightClusterParams)
+        encoder.setFragmentBuffer(inputs.tileLightGridBuffer, offset: 0, index: FragmentBufferIndex.tileLightGrid)
+        encoder.setFragmentBuffer(inputs.tileParamsBuffer, offset: 0, index: FragmentBufferIndex.tileParams)
     }
 
     private static func pipelineState(for pass: RenderPassType, key: MaterialPassKey, frameContext: RendererFrameContext) -> MTLRenderPipelineState {

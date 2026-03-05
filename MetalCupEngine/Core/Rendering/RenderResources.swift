@@ -11,6 +11,11 @@ enum RenderResourceLifetime: String {
 
 enum RenderNamedResourceKey {
     static let forwardPlusCullingDepth = "forwardPlus.cullingDepth"
+    static let forwardPlusTileLightGrid = "forwardPlus.tileLightGrid"
+    static let forwardPlusTileLightIndexList = "forwardPlus.tileLightIndexList"
+    static let forwardPlusTileLightIndexCount = "forwardPlus.tileLightIndexCount"
+    static let forwardPlusTileParams = "forwardPlus.tileParams"
+    static let forwardPlusStats = "forwardPlus.stats"
     static let forwardPlusLightGrid = "forwardPlus.lightGrid"
     static let forwardPlusLightIndexList = "forwardPlus.lightIndexList"
     static let forwardPlusLightIndexCount = "forwardPlus.lightIndexCount"
@@ -44,6 +49,14 @@ struct RenderTextureHandle: Hashable {
 
 struct RenderBufferHandle: Hashable {
     let key: String
+}
+
+struct RenderTransientBufferKey: Hashable {
+    let resourceName: String
+    let frameInFlightIndex: Int
+    let viewSignature: UInt64
+    let sizeSignature: UInt64
+    let settingsRevision: UInt64
 }
 
 enum RenderResourceHandle: Hashable {
@@ -251,6 +264,7 @@ final class RenderResources {
     private let settingsUpdater: (RendererSettings) -> Void
     private let assetManager: AssetManager
     private let device: MTLDevice
+    private var transientBuffers: [RenderTransientBufferKey: MTLBuffer] = [:]
 
     init(preferences: Preferences, settingsProvider: @escaping () -> RendererSettings, settingsUpdater: @escaping (RendererSettings) -> Void, assetManager: AssetManager, device: MTLDevice) {
         self.preferences = preferences
@@ -396,6 +410,47 @@ final class RenderResources {
             registry.registerTexture(key, texture: texture, lifetime: .persistent)
         }
         return registry
+    }
+
+    func transientBuffer(resourceName: String,
+                         frameInFlightIndex: Int,
+                         viewSignature: UInt64,
+                         sizeSignature: UInt64,
+                         settingsRevision: UInt64,
+                         minLength: Int,
+                         storageMode: MTLStorageMode,
+                         label: String) -> MTLBuffer? {
+        let key = RenderTransientBufferKey(
+            resourceName: resourceName,
+            frameInFlightIndex: frameInFlightIndex,
+            viewSignature: viewSignature,
+            sizeSignature: sizeSignature,
+            settingsRevision: settingsRevision
+        )
+        if let existing = transientBuffers[key],
+           existing.length >= minLength,
+           existing.storageMode == storageMode {
+            return existing
+        }
+
+        transientBuffers = transientBuffers.filter { entry in
+            let existingKey = entry.key
+            if existingKey.resourceName != resourceName { return true }
+            if existingKey.frameInFlightIndex != frameInFlightIndex { return true }
+            if existingKey.viewSignature != viewSignature { return true }
+            if existingKey.sizeSignature == sizeSignature && existingKey.settingsRevision == settingsRevision {
+                return true
+            }
+            return false
+        }
+
+        let options: MTLResourceOptions = (storageMode == .private) ? [.storageModePrivate] : [.storageModeShared]
+        guard let buffer = device.makeBuffer(length: max(minLength, 1), options: options) else {
+            return nil
+        }
+        buffer.label = label
+        transientBuffers[key] = buffer
+        return buffer
     }
 
     private func registerTexture(descriptor: MTLTextureDescriptor, handle: RenderResourceTexture, label: String) {

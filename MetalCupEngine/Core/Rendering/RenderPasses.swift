@@ -166,6 +166,8 @@ final class DepthPrepassPass: RenderGraphPass {
             texture: depth,
             lifetime: .transientPerFrame
         )
+        frame.frameContext.markForwardPlusCullingDepthProduced(source: .prepass)
+        frame.engineContext.forwardPlusCullingDepthSource = ForwardPlusCullingDepthSource.prepass.rawValue
     }
 }
 
@@ -198,47 +200,50 @@ final class CullingDepthFallbackPass: RenderGraphPass {
             texture: depth,
             lifetime: .transientPerFrame
         )
+        frame.frameContext.markForwardPlusCullingDepthProduced(source: .fallback)
+        frame.engineContext.forwardPlusCullingDepthSource = ForwardPlusCullingDepthSource.fallback.rawValue
     }
 }
 
-final class LightCullingPass: RenderGraphPass {
-    let name = "LightCullingPass"
-    let inputs: [RenderPassResourceUsage] = [
-        .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth, requiredUsage: .shaderRead)
+final class ForwardPlusTileBinPass: RenderGraphPass {
+    let name = "ForwardPlusTileBinPass"
+    let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
+        .buffer(RenderBufferHandle(key: RenderNamedResourceKey.forwardPlusLightGrid)),
+        .buffer(RenderBufferHandle(key: RenderNamedResourceKey.forwardPlusLightIndexList)),
+        .buffer(RenderBufferHandle(key: RenderNamedResourceKey.forwardPlusLightIndexCount))
     ]
+    let inputs: [RenderPassResourceUsage] = []
     let outputs: [RenderPassResourceUsage] = [
+        .buffer(RenderNamedResourceKey.forwardPlusTileLightGrid, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusTileLightIndexList, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusTileLightIndexCount, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusTileParams, requiredUsage: [.computeWrite]),
         .buffer(RenderNamedResourceKey.forwardPlusLightGrid, requiredUsage: [.computeWrite]),
         .buffer(RenderNamedResourceKey.forwardPlusLightIndexList, requiredUsage: [.computeWrite]),
         .buffer(RenderNamedResourceKey.forwardPlusLightIndexCount, requiredUsage: [.computeWrite]),
-        .buffer(RenderNamedResourceKey.forwardPlusClusterParams, requiredUsage: [.computeWrite])
+        .buffer(RenderNamedResourceKey.forwardPlusClusterParams, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusStats, requiredUsage: [.computeWrite])
     ]
     private let tileSize = SIMD2<UInt32>(ForwardPlusConfig.tileSizeX, ForwardPlusConfig.tileSizeY)
+    private let maxLightsPerTile: UInt32 = ForwardPlusConfig.maxLightsPerTile
     private let maxLightsPerCluster: UInt32 = ForwardPlusConfig.maxLightsPerCluster
     private var computePipeline: MTLComputePipelineState?
-#if DEBUG
-    private var wasForwardPlusEnabledLastFrame = false
-#endif
+    private var clearPipeline: MTLComputePipelineState?
 
     func execute(frame: RenderGraphFrame) {
 #if DEBUG
-        MC_ASSERT(ForwardPlusClusterParams.stride == ForwardPlusClusterParams.expectedMetalStride,
-                  "ForwardPlusClusterParams ABI mismatch: expected stride \(ForwardPlusClusterParams.expectedMetalStride), got \(ForwardPlusClusterParams.stride).")
-        MC_ASSERT(MemoryLayout<ForwardPlusClusterParams>.alignment == ForwardPlusClusterParams.expectedMetalAlignment,
-                  "ForwardPlusClusterParams ABI mismatch: expected alignment \(ForwardPlusClusterParams.expectedMetalAlignment), got \(MemoryLayout<ForwardPlusClusterParams>.alignment).")
-        MC_ASSERT(ForwardPlusIndexHeader.stride == ForwardPlusIndexHeader.expectedMetalStride,
-                  "ForwardPlusIndexHeader ABI mismatch: expected stride \(ForwardPlusIndexHeader.expectedMetalStride), got \(ForwardPlusIndexHeader.stride).")
-        MC_ASSERT(MemoryLayout<ForwardPlusIndexHeader>.alignment == ForwardPlusIndexHeader.expectedMetalAlignment,
-                  "ForwardPlusIndexHeader ABI mismatch: expected alignment \(ForwardPlusIndexHeader.expectedMetalAlignment), got \(MemoryLayout<ForwardPlusIndexHeader>.alignment).")
-        MC_ASSERT(ForwardPlusCullLight.stride == ForwardPlusCullLight.expectedMetalStride,
-                  "ForwardPlusCullLight ABI mismatch: expected stride \(ForwardPlusCullLight.expectedMetalStride), got \(ForwardPlusCullLight.stride).")
-        MC_ASSERT(MemoryLayout<ForwardPlusCullLight>.alignment == ForwardPlusCullLight.expectedMetalAlignment,
-                  "ForwardPlusCullLight ABI mismatch: expected alignment \(ForwardPlusCullLight.expectedMetalAlignment), got \(MemoryLayout<ForwardPlusCullLight>.alignment).")
-        MC_ASSERT(ForwardPlusCullUniforms.stride == ForwardPlusCullUniforms.expectedMetalStride,
-                  "ForwardPlusCullUniforms ABI mismatch: expected stride \(ForwardPlusCullUniforms.expectedMetalStride), got \(ForwardPlusCullUniforms.stride).")
+        MC_ASSERT(ForwardPlusTileParams.stride == ForwardPlusTileParams.expectedMetalStride,
+                  "ForwardPlusTileParams ABI mismatch: expected stride \(ForwardPlusTileParams.expectedMetalStride), got \(ForwardPlusTileParams.stride).")
+        MC_ASSERT(MemoryLayout<ForwardPlusTileParams>.alignment == ForwardPlusTileParams.expectedMetalAlignment,
+                  "ForwardPlusTileParams ABI mismatch: expected alignment \(ForwardPlusTileParams.expectedMetalAlignment), got \(MemoryLayout<ForwardPlusTileParams>.alignment).")
+        MC_ASSERT(ForwardPlusTileIndexHeader.stride == ForwardPlusTileIndexHeader.expectedMetalStride,
+                  "ForwardPlusTileIndexHeader ABI mismatch: expected stride \(ForwardPlusTileIndexHeader.expectedMetalStride), got \(ForwardPlusTileIndexHeader.stride).")
+        MC_ASSERT(MemoryLayout<ForwardPlusTileIndexHeader>.alignment == ForwardPlusTileIndexHeader.expectedMetalAlignment,
+                  "ForwardPlusTileIndexHeader ABI mismatch: expected alignment \(ForwardPlusTileIndexHeader.expectedMetalAlignment), got \(MemoryLayout<ForwardPlusTileIndexHeader>.alignment).")
 #endif
-        guard let baseDepth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) else {
+        guard let baseDepth = frame.resourceRegistry.texture(.baseDepth) else {
 #if DEBUG
-            fatalError("LightCullingPass requires \(RenderNamedResourceKey.forwardPlusCullingDepth) to be produced before culling.")
+            fatalError("ForwardPlusTileBinPass requires baseDepth render target.")
 #else
             return
 #endif
@@ -249,82 +254,210 @@ final class LightCullingPass: RenderGraphPass {
             max(1, (viewport.x + tileSize.x - 1) / tileSize.x),
             max(1, (viewport.y + tileSize.y - 1) / tileSize.y)
         )
-        let tileTotalU32 = max(1, tileCount.x * tileCount.y)
-        let tileTotal = Int(tileTotalU32)
-        let gridByteCount = max(tileTotal * MemoryLayout<SIMD2<UInt32>>.stride, MemoryLayout<SIMD2<UInt32>>.stride)
-        let indexCapacity64 = UInt64(tileTotalU32) * UInt64(maxLightsPerCluster)
+        let totalTileCountU32 = max(tileCount.x * tileCount.y, 1)
+        let totalTileCount = Int(totalTileCountU32)
+        let gridByteCount = max(totalTileCount * MemoryLayout<SIMD2<UInt32>>.stride, MemoryLayout<SIMD2<UInt32>>.stride)
+        let indexCapacity64 = UInt64(max(totalTileCount, 1)) * UInt64(maxLightsPerTile)
         let indexCapacity = Int(min(indexCapacity64, UInt64(Int.max / MemoryLayout<UInt32>.stride)))
+        let indexCapacityU32 = UInt32(min(indexCapacity, Int(UInt32.max)))
         let indexListByteCount = max(indexCapacity * MemoryLayout<UInt32>.stride, MemoryLayout<UInt32>.stride)
-        let device = frame.engineContext.device
+        let clusterCount = SIMD3<UInt32>(tileCount.x, tileCount.y, max(1, ForwardPlusConfig.zSliceCount))
+        let totalClusterCountU32 = max(clusterCount.x * clusterCount.y * clusterCount.z, 1)
+        let totalClusterCount = Int(totalClusterCountU32)
+        let clusterGridByteCount = max(totalClusterCount * MemoryLayout<SIMD2<UInt32>>.stride, MemoryLayout<SIMD2<UInt32>>.stride)
+        let clusterIndexCapacity64 = UInt64(max(totalClusterCount, 1)) * UInt64(maxLightsPerCluster)
+        let clusterIndexCapacity = Int(min(clusterIndexCapacity64, UInt64(Int.max / MemoryLayout<UInt32>.stride)))
+        let clusterIndexListByteCount = max(clusterIndexCapacity * MemoryLayout<UInt32>.stride, MemoryLayout<UInt32>.stride)
+        let frameIndex = frame.frameInFlightIndex
+        let viewSignature = frame.viewSignature
+        let settingsRevision = frame.settingsRevision
+        let tileGridSignature = makeSizeSignature(byteCount: gridByteCount, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
+        let tileIndexSignature = makeSizeSignature(byteCount: indexListByteCount, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
+        let clusterGridSignature = makeSizeSignature(byteCount: clusterGridByteCount, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
+        let clusterIndexSignature = makeSizeSignature(byteCount: clusterIndexListByteCount, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
+        let headerSignature = makeSizeSignature(byteCount: ForwardPlusIndexHeader.stride, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
+        let paramsSignature = makeSizeSignature(byteCount: ForwardPlusClusterParams.stride, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
 
-        guard let gridBuffer = device.makeBuffer(length: gridByteCount, options: [.storageModeShared]),
-              let indexListBuffer = device.makeBuffer(length: indexListByteCount, options: [.storageModeShared]),
-              let indexCountBuffer = device.makeBuffer(length: ForwardPlusIndexHeader.stride, options: [.storageModeShared]),
-              let clusterParamsBuffer = device.makeBuffer(length: ForwardPlusClusterParams.stride, options: [.storageModeShared]) else {
+        guard let tileGridBuffer = frame.resources.transientBuffer(
+            resourceName: RenderNamedResourceKey.forwardPlusTileLightGrid,
+            frameInFlightIndex: frameIndex,
+            viewSignature: viewSignature,
+            sizeSignature: tileGridSignature,
+            settingsRevision: settingsRevision,
+            minLength: gridByteCount,
+            storageMode: .private,
+            label: "ForwardPlus.TileLightGrid.F\(frameIndex).V\(viewSignature)"
+        ),
+              let tileIndexListBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusTileLightIndexList,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: tileIndexSignature,
+                settingsRevision: settingsRevision,
+                minLength: indexListByteCount,
+                storageMode: .private,
+                label: "ForwardPlus.TileLightIndexList.F\(frameIndex).V\(viewSignature)"
+              ),
+              let tileIndexHeaderBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusTileLightIndexCount,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: headerSignature ^ 0xA1,
+                settingsRevision: settingsRevision,
+                minLength: ForwardPlusTileIndexHeader.stride,
+                storageMode: .private,
+                label: "ForwardPlus.TileLightIndexHeader.F\(frameIndex).V\(viewSignature)"
+              ),
+              let tileParamsBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusTileParams,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: paramsSignature ^ 0xB2,
+                settingsRevision: settingsRevision,
+                minLength: ForwardPlusTileParams.stride,
+                storageMode: .private,
+                label: "ForwardPlus.TileParams.F\(frameIndex).V\(viewSignature)"
+              ),
+              let clusterGridBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusLightGrid,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: clusterGridSignature,
+                settingsRevision: settingsRevision,
+                minLength: clusterGridByteCount,
+                storageMode: .private,
+                label: "ForwardPlus.LightGrid.F\(frameIndex).V\(viewSignature)"
+              ),
+              let clusterIndexListBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusLightIndexList,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: clusterIndexSignature,
+                settingsRevision: settingsRevision,
+                minLength: clusterIndexListByteCount,
+                storageMode: .private,
+                label: "ForwardPlus.LightIndexList.F\(frameIndex).V\(viewSignature)"
+              ),
+              let clusterIndexHeaderBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusLightIndexCount,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: headerSignature ^ 0xC3,
+                settingsRevision: settingsRevision,
+                minLength: ForwardPlusIndexHeader.stride,
+                storageMode: .private,
+                label: "ForwardPlus.LightIndexHeader.F\(frameIndex).V\(viewSignature)"
+              ),
+              let clusterParamsBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusClusterParams,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: paramsSignature ^ 0xD4,
+                settingsRevision: settingsRevision,
+                minLength: ForwardPlusClusterParams.stride,
+                storageMode: .private,
+                label: "ForwardPlus.ClusterParams.F\(frameIndex).V\(viewSignature)"
+              ),
+              let statsBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusStats,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: makeSizeSignature(byteCount: ForwardPlusStats.stride, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount),
+                settingsRevision: settingsRevision,
+                minLength: ForwardPlusStats.stride,
+                storageMode: .shared,
+                label: "ForwardPlus.Stats.F\(frameIndex).V\(viewSignature)"
+              ) else {
             return
         }
 
-        gridBuffer.label = "ForwardPlus.LightGrid"
-        indexListBuffer.label = "ForwardPlus.LightIndexList"
-        indexCountBuffer.label = "ForwardPlus.LightIndexCount"
-        clusterParamsBuffer.label = "ForwardPlus.ClusterParams"
-        gridBuffer.contents().initializeMemory(as: UInt8.self, repeating: 0, count: gridBuffer.length)
-        indexListBuffer.contents().initializeMemory(as: UInt8.self, repeating: 0, count: indexListBuffer.length)
-        indexCountBuffer.contents().initializeMemory(as: UInt8.self, repeating: 0, count: indexCountBuffer.length)
-
-        var params = ForwardPlusClusterParams()
-        params.header = SIMD4<UInt32>(
-            ForwardPlusConfig.abiVersion,
-            ForwardPlusConfig.zSliceCount,
-            tileCount.x,
-            tileCount.y
-        )
-        params.tileAndViewport = SIMD4<UInt32>(
-            tileSize.x,
-            tileSize.y,
-            viewport.x,
-            viewport.y
-        )
-        withUnsafeBytes(of: &params) { bytes in
-            clusterParamsBuffer.contents().copyMemory(from: bytes.baseAddress!, byteCount: ForwardPlusClusterParams.stride)
-        }
-        var indexHeader = ForwardPlusIndexHeader()
-        indexHeader.abiVersion = ForwardPlusConfig.abiVersion
-        indexHeader.totalIndexCount = 0
-        indexHeader.overflowClusterCount = 0
-        indexHeader.maxIndexCapacity = UInt32(indexCapacity)
-        withUnsafeBytes(of: &indexHeader) { bytes in
-            indexCountBuffer.contents().copyMemory(from: bytes.baseAddress!, byteCount: ForwardPlusIndexHeader.stride)
-        }
-
-        let forwardPlusEnabled = frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled)
-        if forwardPlusEnabled {
-            runComputeCulling(frame: frame,
-                              depthTexture: baseDepth,
-                              tileCount: tileCount,
-                              viewport: viewport,
-                              indexCapacity: UInt32(indexCapacity),
-                              clusterParamsBuffer: clusterParamsBuffer,
-                              indexHeaderBuffer: indexCountBuffer,
-                              gridBuffer: gridBuffer,
-                              indexListBuffer: indexListBuffer)
+        let projectionMatrix = frame.sceneSnapshot?.sceneConstants.projectionMatrix ?? matrix_identity_float4x4
+        let derivedNearFar = deriveNearFarPlanes(from: projectionMatrix)
+        let nearPlane = max(derivedNearFar?.near ?? 0.1, 0.01)
+        let farPlane = max(derivedNearFar?.far ?? 1000.0, nearPlane + 0.01)
+        let depthSpan = max(farPlane - nearPlane, 0.0001)
+        let logDepthPow = exp2(Float(clusterCount.z))
+        let logDepthScale = (logDepthPow - 1.0) / depthSpan
+        let logDepthBias = 1.0 - nearPlane * logDepthScale
+        var clearUniforms = ForwardPlusClearUniforms()
+        clearUniforms.abiVersion = ForwardPlusConfig.abiVersion
+        clearUniforms.tileCountX = tileCount.x
+        clearUniforms.tileCountY = tileCount.y
+        clearUniforms.maxLightsPerTile = maxLightsPerTile
+        clearUniforms.tileSizeX = tileSize.x
+        clearUniforms.tileSizeY = tileSize.y
+        clearUniforms.viewportWidth = viewport.x
+        clearUniforms.viewportHeight = viewport.y
+        clearUniforms.clusterCountX = clusterCount.x
+        clearUniforms.clusterCountY = clusterCount.y
+        clearUniforms.clusterCountZ = clusterCount.z
+        clearUniforms.maxLightsPerCluster = maxLightsPerCluster
+        clearUniforms.nearPlane = nearPlane
+        clearUniforms.farPlane = farPlane
+        clearUniforms.logDepthScale = max(logDepthScale, 1e-6)
+        clearUniforms.logDepthBias = logDepthBias
+        runComputeClear(frame: frame,
+                        totalTileCount: totalTileCountU32,
+                        totalClusterCount: totalClusterCountU32,
+                        clearUniforms: clearUniforms,
+                        tileParamsBuffer: tileParamsBuffer,
+                        tileIndexHeaderBuffer: tileIndexHeaderBuffer,
+                        tileGridBuffer: tileGridBuffer,
+                        clusterParamsBuffer: clusterParamsBuffer,
+                        clusterIndexHeaderBuffer: clusterIndexHeaderBuffer,
+                        clusterGridBuffer: clusterGridBuffer,
+                        statsBuffer: statsBuffer)
+        if frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled) {
+            runComputeTileBinning(frame: frame,
+                                  tileCount: tileCount,
+                                  viewport: viewport,
+                                  indexCapacity: indexCapacityU32,
+                                  tileParamsBuffer: tileParamsBuffer,
+                                  tileGridBuffer: tileGridBuffer,
+                                  tileIndexListBuffer: tileIndexListBuffer,
+                                  tileIndexHeaderBuffer: tileIndexHeaderBuffer,
+                                  statsBuffer: statsBuffer)
         }
 
         frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusTileLightGrid,
+            buffer: tileGridBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusTileLightIndexList,
+            buffer: tileIndexListBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusTileLightIndexCount,
+            buffer: tileIndexHeaderBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusTileParams,
+            buffer: tileParamsBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
             RenderNamedResourceKey.forwardPlusLightGrid,
-            buffer: gridBuffer,
+            buffer: clusterGridBuffer,
             lifetime: .transientPerFrame,
             usage: [.computeWrite]
         )
         frame.resourceRegistry.registerBuffer(
             RenderNamedResourceKey.forwardPlusLightIndexList,
-            buffer: indexListBuffer,
+            buffer: clusterIndexListBuffer,
             lifetime: .transientPerFrame,
             usage: [.computeWrite]
         )
         frame.resourceRegistry.registerBuffer(
             RenderNamedResourceKey.forwardPlusLightIndexCount,
-            buffer: indexCountBuffer,
+            buffer: clusterIndexHeaderBuffer,
             lifetime: .transientPerFrame,
             usage: [.computeWrite]
         )
@@ -334,28 +467,313 @@ final class LightCullingPass: RenderGraphPass {
             lifetime: .transientPerFrame,
             usage: [.computeWrite]
         )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusStats,
+            buffer: statsBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
 #if DEBUG
-        if forwardPlusEnabled && !wasForwardPlusEnabledLastFrame {
-            runForwardPlusEnableSelfCheck(
-                frame: frame,
-                depthTexture: baseDepth,
-                clusterParamsBuffer: clusterParamsBuffer,
-                indexHeaderBuffer: indexCountBuffer
-            )
-        }
-        wasForwardPlusEnabledLastFrame = forwardPlusEnabled
+        MC_ASSERT(tileGridBuffer.storageMode == .private && tileIndexListBuffer.storageMode == .private
+                    && tileIndexHeaderBuffer.storageMode == .private && tileParamsBuffer.storageMode == .private,
+                  "Forward+ tile resources must use private storage.")
+        MC_ASSERT(clusterGridBuffer.storageMode == .private && clusterIndexListBuffer.storageMode == .private
+                    && clusterIndexHeaderBuffer.storageMode == .private && clusterParamsBuffer.storageMode == .private,
+                  "Forward+ cluster resources must use private storage.")
+        MC_ASSERT(statsBuffer.storageMode == .shared, "Forward+ stats buffer must use shared storage.")
 #endif
+        frame.commandBuffer.addCompletedHandler { [weak engineContext = frame.engineContext] _ in
+            guard let engineContext else { return }
+            var stats = statsBuffer.contents().bindMemory(to: ForwardPlusStats.self, capacity: 1).pointee
+            stats.missingDepthFrames = stats.missingDepthFrames &+ engineContext.forwardPlusStats.missingDepthFrames
+            engineContext.forwardPlusStats = stats
+        }
+    }
+
+    private func deriveNearFarPlanes(from projection: matrix_float4x4) -> (near: Float, far: Float)? {
+        let m22 = projection.columns.2.z
+        let m32 = projection.columns.3.z
+        guard m22.isFinite, m32.isFinite else { return nil }
+
+        let isPerspective = abs(projection.columns.2.w + 1.0) < 0.01 && abs(projection.columns.3.w) < 0.01
+        if isPerspective {
+            guard abs(m22) > 1e-6, abs(m22 + 1.0) > 1e-6 else { return nil }
+            var near = m32 / m22
+            var far = m32 / (m22 + 1.0)
+            if near > far { swap(&near, &far) }
+            near = max(0.01, near)
+            far = max(near + 0.01, far)
+            return (near, far)
+        }
+
+        guard abs(m22) > 1e-6 else { return nil }
+        var near = m32 / m22
+        var far = near - 1.0 / m22
+        if near > far { swap(&near, &far) }
+        near = max(0.01, near)
+        far = max(near + 0.01, far)
+        return (near, far)
+    }
+
+    private func runComputeClear(frame: RenderGraphFrame,
+                                 totalTileCount: UInt32,
+                                 totalClusterCount: UInt32,
+                                 clearUniforms: ForwardPlusClearUniforms,
+                                 tileParamsBuffer: MTLBuffer,
+                                 tileIndexHeaderBuffer: MTLBuffer,
+                                 tileGridBuffer: MTLBuffer,
+                                 clusterParamsBuffer: MTLBuffer,
+                                 clusterIndexHeaderBuffer: MTLBuffer,
+                                 clusterGridBuffer: MTLBuffer,
+                                 statsBuffer: MTLBuffer) {
+        guard let pipeline = resolveClearPipeline(frame: frame) else { return }
+        guard let encoder = frame.commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.label = "Forward+ Clear"
+        encoder.pushDebugGroup("Forward+ Clear")
+        encoder.setComputePipelineState(pipeline)
+        var uniforms = clearUniforms
+        encoder.setBytes(&uniforms, length: ForwardPlusClearUniforms.stride, index: ShaderBindings.ComputeBuffer.clearUniforms)
+        encoder.setBuffer(tileParamsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileParams)
+        encoder.setBuffer(tileIndexHeaderBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightIndexCount)
+        encoder.setBuffer(clusterIndexHeaderBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.indexHeader)
+        encoder.setBuffer(clusterParamsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.clusterParams)
+        encoder.setBuffer(tileGridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightGrid)
+        encoder.setBuffer(clusterGridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.lightGrid)
+        encoder.setBuffer(statsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.forwardPlusStats)
+
+        let threadWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
+        let threadsPerThreadgroup = MTLSize(width: max(threadWidth, 1), height: 1, depth: 1)
+        let maxThreads = max(totalTileCount, totalClusterCount)
+        let threadsPerGrid = MTLSize(width: Int(max(maxThreads, 1)), height: 1, depth: 1)
+        encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        encoder.popDebugGroup()
+        encoder.endEncoding()
+    }
+
+    private func runComputeTileBinning(frame: RenderGraphFrame,
+                                       tileCount: SIMD2<UInt32>,
+                                       viewport: SIMD2<UInt32>,
+                                       indexCapacity: UInt32,
+                                       tileParamsBuffer: MTLBuffer,
+                                       tileGridBuffer: MTLBuffer,
+                                       tileIndexListBuffer: MTLBuffer,
+                                       tileIndexHeaderBuffer: MTLBuffer,
+                                       statsBuffer: MTLBuffer) {
+        guard let pipeline = resolvePipeline(frame: frame) else { return }
+        let snapshotLights = frame.sceneSnapshot?.lightData ?? []
+        let cullLights = snapshotLights.map { light in
+            var out = ForwardPlusCullLight()
+            out.positionAndRange = SIMD4<Float>(light.position, max(light.range, 0.0))
+            out.directionAndType = SIMD4<Float>(light.direction, Float(light.type))
+            out.colorAndIntensity = SIMD4<Float>(light.color, max(light.brightness, 0.0))
+            out.spotParams = SIMD4<Float>(light.innerConeCos, light.outerConeCos, 0.0, 0.0)
+            return out
+        }
+        guard !cullLights.isEmpty else { return }
+        let lightBufferLength = max(ForwardPlusCullLight.stride(cullLights.count), ForwardPlusCullLight.stride)
+        guard let lightBuffer = frame.engineContext.device.makeBuffer(length: lightBufferLength, options: [.storageModeShared]),
+              let uniformsBuffer = frame.engineContext.device.makeBuffer(length: ForwardPlusCullUniforms.stride, options: [.storageModeShared]) else {
+            return
+        }
+        lightBuffer.label = "ForwardPlus.TileBinLights"
+        uniformsBuffer.label = "ForwardPlus.TileBinUniforms"
+        cullLights.withUnsafeBytes { bytes in
+            lightBuffer.contents().copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
+        }
+
+        var uniforms = ForwardPlusCullUniforms()
+        if let snapshot = frame.sceneSnapshot {
+            uniforms.viewMatrix = snapshot.sceneConstants.viewMatrix
+            uniforms.projectionMatrix = snapshot.sceneConstants.projectionMatrix
+        }
+        uniforms.params0 = SIMD4<UInt32>(viewport.x, viewport.y, UInt32(cullLights.count), maxLightsPerTile)
+        uniforms.params1 = SIMD4<UInt32>(tileCount.x, tileCount.y, 1, indexCapacity)
+        withUnsafeBytes(of: &uniforms) { bytes in
+            uniformsBuffer.contents().copyMemory(from: bytes.baseAddress!, byteCount: ForwardPlusCullUniforms.stride)
+        }
+
+        guard let encoder = frame.commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.label = "Forward+ Tile Binning"
+        encoder.pushDebugGroup("Forward+ Tile Binning")
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(lightBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.cullLights)
+        encoder.setBuffer(uniformsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.cullUniforms)
+        encoder.setBuffer(tileParamsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileParams)
+        encoder.setBuffer(tileGridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightGrid)
+        encoder.setBuffer(tileIndexListBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightIndexList)
+        encoder.setBuffer(tileIndexHeaderBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightIndexCount)
+        encoder.setBuffer(statsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.forwardPlusStats)
+
+        let threadWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
+        let threadsPerThreadgroup = MTLSize(width: max(threadWidth, 1), height: 1, depth: 1)
+        let threadsPerGrid = MTLSize(width: cullLights.count, height: 1, depth: 1)
+        encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        encoder.popDebugGroup()
+        encoder.endEncoding()
+    }
+
+    private func makeSizeSignature(byteCount: Int,
+                                   viewport: SIMD2<UInt32>,
+                                   tileCount: SIMD2<UInt32>,
+                                   clusterCount: SIMD3<UInt32>) -> UInt64 {
+        var hasher = Hasher()
+        hasher.combine(ForwardPlusConfig.configVersion)
+        hasher.combine(ForwardPlusConfig.abiVersion)
+        hasher.combine(byteCount)
+        hasher.combine(viewport.x)
+        hasher.combine(viewport.y)
+        hasher.combine(tileCount.x)
+        hasher.combine(tileCount.y)
+        hasher.combine(clusterCount.x)
+        hasher.combine(clusterCount.y)
+        hasher.combine(clusterCount.z)
+        return UInt64(bitPattern: Int64(hasher.finalize()))
+    }
+
+    private func resolvePipeline(frame: RenderGraphFrame) -> MTLComputePipelineState? {
+        if let computePipeline { return computePipeline }
+        guard let fn = frame.engineContext.resources.resolveFunction(
+            "kernel_forward_plus_tile_bin",
+            device: frame.engineContext.device,
+            fallbackLibrary: frame.engineContext.defaultLibrary
+        ) else {
+            frame.engineContext.log.logWarning("Forward+ compute function 'kernel_forward_plus_tile_bin' not found; skipping tile binning.", category: .renderer)
+            return nil
+        }
+        do {
+            let pipeline = try frame.engineContext.device.makeComputePipelineState(function: fn)
+            computePipeline = pipeline
+            return pipeline
+        } catch {
+            frame.engineContext.log.logWarning("Failed to create Forward+ tile bin compute pipeline: \(error)", category: .renderer)
+            return nil
+        }
+    }
+
+    private func resolveClearPipeline(frame: RenderGraphFrame) -> MTLComputePipelineState? {
+        if let clearPipeline { return clearPipeline }
+        guard let fn = frame.engineContext.resources.resolveFunction(
+            "kernel_forward_plus_clear",
+            device: frame.engineContext.device,
+            fallbackLibrary: frame.engineContext.defaultLibrary
+        ) else {
+            frame.engineContext.log.logWarning("Forward+ compute function 'kernel_forward_plus_clear' not found; skipping Forward+ clear.", category: .renderer)
+            return nil
+        }
+        do {
+            let pipeline = try frame.engineContext.device.makeComputePipelineState(function: fn)
+            clearPipeline = pipeline
+            return pipeline
+        } catch {
+            frame.engineContext.log.logWarning("Failed to create Forward+ clear compute pipeline: \(error)", category: .renderer)
+            return nil
+        }
+    }
+}
+
+final class LightCullingPass: RenderGraphPass {
+    let name = "LightCullingPass"
+    let inputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth, requiredUsage: .shaderRead),
+        .buffer(RenderNamedResourceKey.forwardPlusTileLightGrid),
+        .buffer(RenderNamedResourceKey.forwardPlusTileLightIndexList),
+        .buffer(RenderNamedResourceKey.forwardPlusTileLightIndexCount),
+        .buffer(RenderNamedResourceKey.forwardPlusTileParams),
+        .buffer(RenderNamedResourceKey.forwardPlusLightGrid),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexCount),
+        .buffer(RenderNamedResourceKey.forwardPlusClusterParams),
+        .buffer(RenderNamedResourceKey.forwardPlusStats)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .buffer(RenderNamedResourceKey.forwardPlusLightGrid, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexList, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexCount, requiredUsage: [.computeWrite])
+    ]
+    private let maxLightsPerCluster: UInt32 = ForwardPlusConfig.maxLightsPerCluster
+    private var computePipeline: MTLComputePipelineState?
+
+    func execute(frame: RenderGraphFrame) {
+        let forwardPlusEnabled = frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled) && frame.frameContext.isForwardPlusAllowed()
+        if forwardPlusEnabled && frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) == nil {
+#if DEBUG
+            fatalError("LightCullingPass requires \(RenderNamedResourceKey.forwardPlusCullingDepth) when Forward+ is enabled.")
+#else
+            frame.frameContext.setForwardPlusAllowed(false)
+            frame.engineContext.forwardPlusStats.missingDepthFrames &+= 1
+            return
+#endif
+        }
+        guard let tileParamsBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileParams),
+              let tileGridBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileLightGrid),
+              let tileIndexListBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileLightIndexList),
+              let tileIndexHeaderBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileLightIndexCount),
+              let clusterGridBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusLightGrid),
+              let clusterIndexListBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
+              let clusterIndexHeaderBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusLightIndexCount),
+              let clusterParamsBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusClusterParams),
+              let statsBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusStats) else {
+#if DEBUG
+            fatalError("LightCullingPass requires Forward+ tile bin resources before clustered culling.")
+#else
+            return
+#endif
+        }
+#if DEBUG
+        MC_ASSERT(tileParamsBuffer.storageMode == .private
+                    && tileGridBuffer.storageMode == .private
+                    && tileIndexListBuffer.storageMode == .private
+                    && tileIndexHeaderBuffer.storageMode == .private
+                    && clusterGridBuffer.storageMode == .private
+                    && clusterIndexListBuffer.storageMode == .private
+                    && clusterIndexHeaderBuffer.storageMode == .private
+                    && clusterParamsBuffer.storageMode == .private,
+                  "Forward+ culling buffers must be private.")
+        MC_ASSERT(statsBuffer.storageMode == .shared, "Forward+ stats buffer must be shared.")
+#endif
+
+        let drawableWidth = UInt32(max(Int(frame.view.drawableSize.width), 1))
+        let drawableHeight = UInt32(max(Int(frame.view.drawableSize.height), 1))
+        let viewport = SIMD2<UInt32>(drawableWidth, drawableHeight)
+        let clusterCount = SIMD3<UInt32>(
+            max((viewport.x + ForwardPlusConfig.tileSizeX - 1) / ForwardPlusConfig.tileSizeX, 1),
+            max((viewport.y + ForwardPlusConfig.tileSizeY - 1) / ForwardPlusConfig.tileSizeY, 1),
+            max(1, ForwardPlusConfig.zSliceCount)
+        )
+        let totalClusterCount = max(clusterCount.x * clusterCount.y * clusterCount.z, 1)
+        let indexCapacity = max(totalClusterCount * maxLightsPerCluster, 1)
+        if forwardPlusEnabled {
+            runComputeCulling(frame: frame,
+                              clusterCount: clusterCount,
+                              totalClusterCount: totalClusterCount,
+                              viewport: viewport,
+                              indexCapacity: indexCapacity,
+                              clusterParamsBuffer: clusterParamsBuffer,
+                              indexHeaderBuffer: clusterIndexHeaderBuffer,
+                              gridBuffer: clusterGridBuffer,
+                              indexListBuffer: clusterIndexListBuffer,
+                              tileParamsBuffer: tileParamsBuffer,
+                              tileGridBuffer: tileGridBuffer,
+                              tileIndexListBuffer: tileIndexListBuffer,
+                              tileIndexHeaderBuffer: tileIndexHeaderBuffer,
+                              statsBuffer: statsBuffer)
+        }
     }
 
     private func runComputeCulling(frame: RenderGraphFrame,
-                                   depthTexture: MTLTexture,
-                                   tileCount: SIMD2<UInt32>,
+                                   clusterCount: SIMD3<UInt32>,
+                                   totalClusterCount: UInt32,
                                    viewport: SIMD2<UInt32>,
                                    indexCapacity: UInt32,
                                    clusterParamsBuffer: MTLBuffer,
                                    indexHeaderBuffer: MTLBuffer,
                                    gridBuffer: MTLBuffer,
-                                   indexListBuffer: MTLBuffer) {
+                                   indexListBuffer: MTLBuffer,
+                                   tileParamsBuffer: MTLBuffer,
+                                   tileGridBuffer: MTLBuffer,
+                                   tileIndexListBuffer: MTLBuffer,
+                                   tileIndexHeaderBuffer: MTLBuffer,
+                                   statsBuffer: MTLBuffer) {
         guard let pipeline = resolvePipeline(frame: frame) else { return }
         let snapshotLights = frame.sceneSnapshot?.lightData ?? []
         let cullLights = snapshotLights.map { light in
@@ -373,9 +791,7 @@ final class LightCullingPass: RenderGraphPass {
         }
         lightBuffer.label = "ForwardPlus.CullLights"
         uniformsBuffer.label = "ForwardPlus.CullUniforms"
-        if cullLights.isEmpty {
-            lightBuffer.contents().initializeMemory(as: UInt8.self, repeating: 0, count: lightBufferLength)
-        } else {
+        if !cullLights.isEmpty {
             cullLights.withUnsafeBytes { bytes in
                 lightBuffer.contents().copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
             }
@@ -387,7 +803,7 @@ final class LightCullingPass: RenderGraphPass {
             uniforms.projectionMatrix = snapshot.sceneConstants.projectionMatrix
         }
         uniforms.params0 = SIMD4<UInt32>(viewport.x, viewport.y, UInt32(cullLights.count), maxLightsPerCluster)
-        uniforms.params1 = SIMD4<UInt32>(tileCount.x, tileCount.y, indexCapacity, 0)
+        uniforms.params1 = SIMD4<UInt32>(clusterCount.x, clusterCount.y, clusterCount.z, indexCapacity)
 #if DEBUG
         MC_ASSERT(uniforms.viewMatrix.columns.0.x.isFinite &&
                   uniforms.projectionMatrix.columns.0.x.isFinite,
@@ -401,130 +817,26 @@ final class LightCullingPass: RenderGraphPass {
         encoder.label = "Forward+ Light Culling"
         encoder.pushDebugGroup("Forward+ Light Culling")
         encoder.setComputePipelineState(pipeline)
-        encoder.setTexture(depthTexture, index: ShaderBindings.ComputeTexture.depth)
         encoder.setBuffer(lightBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.cullLights)
         encoder.setBuffer(clusterParamsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.clusterParams)
         encoder.setBuffer(indexHeaderBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.indexHeader)
         encoder.setBuffer(uniformsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.cullUniforms)
         encoder.setBuffer(gridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.lightGrid)
         encoder.setBuffer(indexListBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.lightIndexList)
+        encoder.setBuffer(tileParamsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileParams)
+        encoder.setBuffer(tileGridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightGrid)
+        encoder.setBuffer(tileIndexListBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightIndexList)
+        encoder.setBuffer(tileIndexHeaderBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightIndexCount)
+        encoder.setBuffer(statsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.forwardPlusStats)
 
-        let w = min(pipeline.threadExecutionWidth, Int(tileSize.x))
-        let maxThreads = max(pipeline.maxTotalThreadsPerThreadgroup / max(w, 1), 1)
-        let h = min(maxThreads, Int(tileSize.y))
-        let threadsPerThreadgroup = MTLSize(width: max(w, 1), height: max(h, 1), depth: 1)
-        let threadgroups = MTLSize(
-            width: (Int(tileCount.x) + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-            height: (Int(tileCount.y) + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
-            depth: 1
-        )
-        encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+        let threadWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
+        let threadsPerThreadgroup = MTLSize(width: max(threadWidth, 1), height: 1, depth: 1)
+        let threadsPerGrid = MTLSize(width: Int(max(totalClusterCount, 1)), height: 1, depth: 1)
+        encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         encoder.popDebugGroup()
         encoder.endEncoding()
 
-#if DEBUG
-        scheduleForwardPlusDebugValidation(
-            commandBuffer: frame.commandBuffer,
-            gridBuffer: gridBuffer,
-            indexListBuffer: indexListBuffer,
-            indexHeaderBuffer: indexHeaderBuffer,
-            tileCount: Int(tileCount.x * tileCount.y),
-            lightCount: cullLights.count,
-            maxLightsPerCluster: Int(maxLightsPerCluster)
-        )
-#endif
     }
-
-#if DEBUG
-    private func scheduleForwardPlusDebugValidation(commandBuffer: MTLCommandBuffer,
-                                                    gridBuffer: MTLBuffer,
-                                                    indexListBuffer: MTLBuffer,
-                                                    indexHeaderBuffer: MTLBuffer,
-                                                    tileCount: Int,
-                                                    lightCount: Int,
-                                                    maxLightsPerCluster: Int) {
-        commandBuffer.addCompletedHandler { _ in
-            let header = indexHeaderBuffer.contents().bindMemory(to: ForwardPlusIndexHeader.self, capacity: 1).pointee
-            let maxCapacity = Int(header.maxIndexCapacity)
-            let totalIndexCount = Int(header.totalIndexCount)
-            MC_ASSERT(totalIndexCount <= maxCapacity,
-                      "Forward+ validation failed: totalIndexCount \(totalIndexCount) exceeds maxIndexCapacity \(maxCapacity).")
-
-            let entryCount = max(tileCount, 1)
-            let gridEntries = gridBuffer.contents().bindMemory(to: SIMD2<UInt32>.self, capacity: entryCount)
-            let indices = indexListBuffer.contents().bindMemory(to: UInt32.self, capacity: max(maxCapacity, 1))
-
-            for i in 0..<entryCount {
-                let entry = gridEntries[i]
-                let offset = Int(entry.x)
-                let count = Int(entry.y)
-                MC_ASSERT(count <= maxLightsPerCluster,
-                          "Forward+ validation failed: cluster \(i) count \(count) exceeds maxLightsPerCluster \(maxLightsPerCluster).")
-                if count == 0 {
-                    continue
-                }
-                MC_ASSERT(offset < totalIndexCount,
-                          "Forward+ validation failed: cluster \(i) offset \(offset) is out of bounds (totalIndexCount \(totalIndexCount)).")
-                MC_ASSERT(offset + count <= totalIndexCount,
-                          "Forward+ validation failed: cluster \(i) range [\(offset), \(offset + count)) exceeds totalIndexCount \(totalIndexCount).")
-                MC_ASSERT(offset + count <= maxCapacity,
-                          "Forward+ validation failed: cluster \(i) range [\(offset), \(offset + count)) exceeds maxIndexCapacity \(maxCapacity).")
-                if lightCount <= 0 {
-                    MC_ASSERT(count == 0, "Forward+ validation failed: cluster \(i) has lights while snapshot lightCount is zero.")
-                    continue
-                }
-                for j in 0..<count {
-                    let lightIndex = Int(indices[offset + j])
-                    MC_ASSERT(lightIndex < lightCount,
-                              "Forward+ validation failed: cluster \(i) contains lightIndex \(lightIndex) >= lightCount \(lightCount).")
-                }
-            }
-        }
-    }
-
-    private func runForwardPlusEnableSelfCheck(frame: RenderGraphFrame,
-                                               depthTexture: MTLTexture,
-                                               clusterParamsBuffer: MTLBuffer,
-                                               indexHeaderBuffer: MTLBuffer) {
-        MC_ASSERT(depthTexture.usage.contains(.shaderRead),
-                  "Forward+ self-check failed: culling depth texture must be shader-readable.")
-        MC_ASSERT(frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) != nil,
-                  "Forward+ self-check failed: missing culling depth texture contract resource.")
-
-        let requiredBuffers = [
-            RenderNamedResourceKey.forwardPlusLightGrid,
-            RenderNamedResourceKey.forwardPlusLightIndexList,
-            RenderNamedResourceKey.forwardPlusLightIndexCount,
-            RenderNamedResourceKey.forwardPlusClusterParams
-        ]
-        for key in requiredBuffers {
-            let metadata = frame.resourceRegistry.bufferMetadata(key)
-            MC_ASSERT(metadata != nil, "Forward+ self-check failed: missing required buffer '\(key)'.")
-            MC_ASSERT(metadata?.usage.contains(.computeWrite) == true,
-                      "Forward+ self-check failed: buffer '\(key)' must declare computeWrite usage.")
-            MC_ASSERT(metadata?.storageMode == .shared || metadata?.storageMode == .private,
-                      "Forward+ self-check failed: buffer '\(key)' has unsupported storage mode.")
-        }
-
-        MC_ASSERT(ForwardPlusConfig.abiVersion == ForwardPlusClusterParams.abiVersion,
-                  "Forward+ self-check failed: ABI mismatch between config and cluster params.")
-        MC_ASSERT(ForwardPlusConfig.abiVersion == ForwardPlusIndexHeader.abiVersion,
-                  "Forward+ self-check failed: ABI mismatch between config and index header.")
-        MC_ASSERT(ForwardPlusConfig.zSliceCount > 0, "Forward+ self-check failed: zSliceCount must be > 0.")
-
-        let clusterParams = clusterParamsBuffer.contents().bindMemory(to: ForwardPlusClusterParams.self, capacity: 1).pointee
-        MC_ASSERT(clusterParams.header.x == ForwardPlusConfig.abiVersion,
-                  "Forward+ self-check failed: cluster params ABI version mismatch.")
-        MC_ASSERT(clusterParams.header.y == ForwardPlusConfig.zSliceCount,
-                  "Forward+ self-check failed: cluster params z-slice count mismatch.")
-
-        let indexHeader = indexHeaderBuffer.contents().bindMemory(to: ForwardPlusIndexHeader.self, capacity: 1).pointee
-        MC_ASSERT(indexHeader.abiVersion == ForwardPlusConfig.abiVersion,
-                  "Forward+ self-check failed: index header ABI version mismatch.")
-        MC_ASSERT(indexHeader.maxIndexCapacity > 0,
-                  "Forward+ self-check failed: index list capacity must be > 0.")
-    }
-#endif
 
     private func resolvePipeline(frame: RenderGraphFrame) -> MTLComputePipelineState? {
         if let computePipeline { return computePipeline }
@@ -555,7 +867,9 @@ final class ScenePass: RenderGraphPass {
         .buffer(RenderNamedResourceKey.forwardPlusLightGrid),
         .buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
         .buffer(RenderNamedResourceKey.forwardPlusLightIndexCount),
-        .buffer(RenderNamedResourceKey.forwardPlusClusterParams)
+        .buffer(RenderNamedResourceKey.forwardPlusClusterParams),
+        .buffer(RenderNamedResourceKey.forwardPlusTileLightGrid),
+        .buffer(RenderNamedResourceKey.forwardPlusTileParams)
     ]
     let outputs: [RenderPassResourceUsage] = [
         .texture(.baseColor)
@@ -567,6 +881,12 @@ final class ScenePass: RenderGraphPass {
             let baseColor = frame.resourceRegistry.texture(.baseColor),
             let baseDepth = frame.resourceRegistry.texture(.baseDepth)
         else { return }
+
+        let forwardPlusEnabled = frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled) && frame.frameContext.isForwardPlusAllowed()
+        if forwardPlusEnabled && frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) == nil {
+            frame.frameContext.setForwardPlusAllowed(false)
+            frame.engineContext.forwardPlusStats.missingDepthFrames &+= 1
+        }
 
         let depthLoad: MTLLoadAction = frame.frameContext.useDepthPrepass() ? .load : .clear
         let frameIndex = frame.frameContext.currentFrameIndex()

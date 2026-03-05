@@ -16,6 +16,9 @@ struct RenderGraphFrame {
     let sceneSnapshot: RenderFrameSnapshot?
     let frameContext: RendererFrameContext
     let profiler: RendererProfiler
+    let frameInFlightIndex: Int
+    let viewSignature: UInt64
+    let settingsRevision: UInt64
 }
 
 protocol RenderGraphPass {
@@ -42,6 +45,7 @@ final class RenderGraph {
             ShadowPass(),
             DepthPrepassPass(),
             CullingDepthFallbackPass(),
+            ForwardPlusTileBinPass(),
             LightCullingPass(),
             ScenePass(),
             GridOverlayPass(),
@@ -60,12 +64,17 @@ final class RenderGraph {
         passCommitted: ((RenderGraphPass, MTLCommandBuffer) -> Void)? = nil
     ) {
         var outputWriters: [RenderResourceHandle: (name: String, allowsSubsequentWrites: Bool)] = [:]
+        var cullingDepthProducers: [String] = []
         var bloomStart: CFTimeInterval?
         for pass in passes {
             validateContracts(pass: pass, frame: frame, outputWriters: &outputWriters)
+            if pass is LightCullingPass {
+                enforceForwardPlusDepthContract(frame: frame, pass: pass, cullingDepthProducers: cullingDepthProducers)
+            }
             if pass is BloomExtractPass {
                 bloomStart = CACurrentMediaTime()
             }
+            let producerCountBefore = frame.frameContext.forwardPlusCullingDepthProducerCount()
             if let commandBufferProvider {
                 guard let commandBuffer = commandBufferProvider(pass) else { continue }
                 let passFrame = RenderGraphFrame(
@@ -79,7 +88,10 @@ final class RenderGraph {
                     delegate: frame.delegate,
                     sceneSnapshot: frame.sceneSnapshot,
                     frameContext: frame.frameContext,
-                    profiler: frame.profiler
+                    profiler: frame.profiler,
+                    frameInFlightIndex: frame.frameInFlightIndex,
+                    viewSignature: frame.viewSignature,
+                    settingsRevision: frame.settingsRevision
                 )
                 pass.execute(frame: passFrame)
                 passCommitted?(pass, commandBuffer)
@@ -87,10 +99,41 @@ final class RenderGraph {
             } else {
                 pass.execute(frame: frame)
             }
+            let producerCountAfter = frame.frameContext.forwardPlusCullingDepthProducerCount()
+            if producerCountAfter > producerCountBefore {
+                cullingDepthProducers.append(pass.name)
+            }
             if pass is BloomBlurPass, let start = bloomStart {
                 frame.profiler.record(.bloom, seconds: CACurrentMediaTime() - start)
             }
         }
+    }
+
+    private func enforceForwardPlusDepthContract(frame: RenderGraphFrame,
+                                                 pass: RenderGraphPass,
+                                                 cullingDepthProducers: [String]) {
+        let forwardPlusEnabled = frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled)
+            && frame.frameContext.isForwardPlusAllowed()
+        guard forwardPlusEnabled else { return }
+
+        let expectedHandle = RenderResourceHandle.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth)
+        let hasDeclaredInput = pass.inputs.contains { $0.handle == expectedHandle }
+        let producerCount = frame.frameContext.forwardPlusCullingDepthProducerCount()
+        let hasDepthTexture = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) != nil
+        let valid = hasDeclaredInput && producerCount == 1 && hasDepthTexture
+        guard !valid else { return }
+
+        let producersText = cullingDepthProducers.isEmpty ? "none" : cullingDepthProducers.joined(separator: ", ")
+        let message = "Forward+ cullingDepth contract invalid for view \(frame.viewSignature): declaredInput=\(hasDeclaredInput) producerCount=\(producerCount) producedBy=[\(producersText)] hasTexture=\(hasDepthTexture)."
+#if DEBUG
+        assertionFailure(message)
+        fatalError(message)
+#else
+        frame.engineContext.log.logWarning(message, category: .renderer)
+        frame.frameContext.setForwardPlusAllowed(false)
+        frame.engineContext.forwardPlusCullingDepthSource = ForwardPlusCullingDepthSource.none.rawValue
+        frame.engineContext.forwardPlusStats.missingDepthFrames &+= 1
+#endif
     }
 
     private func validateContracts(pass: RenderGraphPass,
