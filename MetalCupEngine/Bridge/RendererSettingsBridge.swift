@@ -340,6 +340,11 @@ public func MCERendererGetForwardPlusTotalClusters(_ contextPtr: UnsafeRawPointe
     getForwardPlusStats(contextPtr).totalClusters
 }
 
+@_cdecl("MCERendererGetForwardPlusActiveTilesCount")
+public func MCERendererGetForwardPlusActiveTilesCount(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    getForwardPlusStats(contextPtr).activeTilesCount
+}
+
 @_cdecl("MCERendererGetForwardPlusMissingDepthFrames")
 public func MCERendererGetForwardPlusMissingDepthFrames(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
     getForwardPlusStats(contextPtr).missingDepthFrames

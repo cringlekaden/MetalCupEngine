@@ -57,6 +57,8 @@ public enum FragmentBufferIndex {
     public static let lightClusterParams = ShaderBindings.FragmentBuffer.lightClusterParams
     public static let tileLightGrid = ShaderBindings.FragmentBuffer.tileLightGrid
     public static let tileParams = ShaderBindings.FragmentBuffer.tileParams
+    public static let directionalLightCount = ShaderBindings.FragmentBuffer.directionalLightCount
+    public static let directionalLightData = ShaderBindings.FragmentBuffer.directionalLightData
 }
 
 public enum FragmentTextureIndex {
@@ -299,7 +301,7 @@ public struct ForwardPlusStats: sizeable {
     public var clusterCountZ: UInt32 = 0
     public var totalClusters: UInt32 = 0
 
-    public var reserved0: UInt32 = 0
+    public var activeTilesCount: UInt32 = 0
     public var reserved1: UInt32 = 0
     public var reserved2: UInt32 = 0
     public var reserved3: UInt32 = 0

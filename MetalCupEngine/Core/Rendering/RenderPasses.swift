@@ -71,6 +71,14 @@ struct RenderPassHelpers {
     }
 }
 
+#if DEBUG
+@inline(__always)
+private func assertForwardPlusLightsAreLocalOnly(_ lights: [LightData], context: StaticString) {
+    MC_ASSERT(lights.allSatisfy { $0.type != 2 },
+              "Forward+ \(context) received directional lights. Directionals must be evaluated outside Forward+.")
+}
+#endif
+
 struct FullscreenPass {
     var pipeline: RenderPipelineStateType
     var label: String
@@ -217,6 +225,9 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
         .buffer(RenderNamedResourceKey.forwardPlusTileLightGrid, requiredUsage: [.computeWrite]),
         .buffer(RenderNamedResourceKey.forwardPlusTileLightIndexList, requiredUsage: [.computeWrite]),
         .buffer(RenderNamedResourceKey.forwardPlusTileLightIndexCount, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusActiveTileList, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusActiveTileCount, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusActiveDispatchArgs, requiredUsage: [.computeWrite]),
         .buffer(RenderNamedResourceKey.forwardPlusTileParams, requiredUsage: [.computeWrite]),
         .buffer(RenderNamedResourceKey.forwardPlusLightGrid, requiredUsage: [.computeWrite]),
         .buffer(RenderNamedResourceKey.forwardPlusLightIndexList, requiredUsage: [.computeWrite]),
@@ -229,6 +240,8 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
     private let maxLightsPerCluster: UInt32 = ForwardPlusConfig.maxLightsPerCluster
     private var computePipeline: MTLComputePipelineState?
     private var clearPipeline: MTLComputePipelineState?
+    private var activeTileBuildPipeline: MTLComputePipelineState?
+    private var sparseDispatchPrepPipeline: MTLComputePipelineState?
 
     func execute(frame: RenderGraphFrame) {
 #if DEBUG
@@ -275,6 +288,11 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
         let tileIndexSignature = makeSizeSignature(byteCount: indexListByteCount, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
         let clusterGridSignature = makeSizeSignature(byteCount: clusterGridByteCount, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
         let clusterIndexSignature = makeSizeSignature(byteCount: clusterIndexListByteCount, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
+        let activeTileListByteCount = max(totalTileCount * MemoryLayout<UInt32>.stride, MemoryLayout<UInt32>.stride)
+        let activeTileListSignature = makeSizeSignature(byteCount: activeTileListByteCount, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
+        let activeTileCountSignature = makeSizeSignature(byteCount: MemoryLayout<UInt32>.stride, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount) ^ 0xE5
+        let activeDispatchArgsByteCount = max(MemoryLayout<SIMD3<UInt32>>.stride, MemoryLayout<UInt32>.stride)
+        let activeDispatchArgsSignature = makeSizeSignature(byteCount: activeDispatchArgsByteCount, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount) ^ 0xF6
         let headerSignature = makeSizeSignature(byteCount: ForwardPlusIndexHeader.stride, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
         let paramsSignature = makeSizeSignature(byteCount: ForwardPlusClusterParams.stride, viewport: viewport, tileCount: tileCount, clusterCount: clusterCount)
 
@@ -307,6 +325,36 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
                 minLength: ForwardPlusTileIndexHeader.stride,
                 storageMode: .private,
                 label: "ForwardPlus.TileLightIndexHeader.F\(frameIndex).V\(viewSignature)"
+              ),
+              let activeTileListBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusActiveTileList,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: activeTileListSignature,
+                settingsRevision: settingsRevision,
+                minLength: activeTileListByteCount,
+                storageMode: .private,
+                label: "ForwardPlus.ActiveTileList.F\(frameIndex).V\(viewSignature)"
+              ),
+              let activeTileCountBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusActiveTileCount,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: activeTileCountSignature,
+                settingsRevision: settingsRevision,
+                minLength: MemoryLayout<UInt32>.stride,
+                storageMode: .private,
+                label: "ForwardPlus.ActiveTileCount.F\(frameIndex).V\(viewSignature)"
+              ),
+              let activeDispatchArgsBuffer = frame.resources.transientBuffer(
+                resourceName: RenderNamedResourceKey.forwardPlusActiveDispatchArgs,
+                frameInFlightIndex: frameIndex,
+                viewSignature: viewSignature,
+                sizeSignature: activeDispatchArgsSignature,
+                settingsRevision: settingsRevision,
+                minLength: activeDispatchArgsByteCount,
+                storageMode: .private,
+                label: "ForwardPlus.ActiveDispatchArgs.F\(frameIndex).V\(viewSignature)"
               ),
               let tileParamsBuffer = frame.resources.transientBuffer(
                 resourceName: RenderNamedResourceKey.forwardPlusTileParams,
@@ -403,9 +451,11 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
                         tileParamsBuffer: tileParamsBuffer,
                         tileIndexHeaderBuffer: tileIndexHeaderBuffer,
                         tileGridBuffer: tileGridBuffer,
+                        activeTileCountBuffer: activeTileCountBuffer,
                         clusterParamsBuffer: clusterParamsBuffer,
                         clusterIndexHeaderBuffer: clusterIndexHeaderBuffer,
                         clusterGridBuffer: clusterGridBuffer,
+                        sparseDispatchBuffer: activeDispatchArgsBuffer,
                         statsBuffer: statsBuffer)
         if frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled) {
             runComputeTileBinning(frame: frame,
@@ -417,6 +467,15 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
                                   tileIndexListBuffer: tileIndexListBuffer,
                                   tileIndexHeaderBuffer: tileIndexHeaderBuffer,
                                   statsBuffer: statsBuffer)
+            runComputeBuildActiveTiles(frame: frame,
+                                       tileCount: tileCount,
+                                       tileParamsBuffer: tileParamsBuffer,
+                                       tileGridBuffer: tileGridBuffer,
+                                       activeTileListBuffer: activeTileListBuffer,
+                                       activeTileCountBuffer: activeTileCountBuffer,
+                                       clusterParamsBuffer: clusterParamsBuffer,
+                                       sparseDispatchBuffer: activeDispatchArgsBuffer,
+                                       statsBuffer: statsBuffer)
         }
 
         frame.resourceRegistry.registerBuffer(
@@ -434,6 +493,24 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
         frame.resourceRegistry.registerBuffer(
             RenderNamedResourceKey.forwardPlusTileLightIndexCount,
             buffer: tileIndexHeaderBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusActiveTileList,
+            buffer: activeTileListBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusActiveTileCount,
+            buffer: activeTileCountBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusActiveDispatchArgs,
+            buffer: activeDispatchArgsBuffer,
             lifetime: .transientPerFrame,
             usage: [.computeWrite]
         )
@@ -475,7 +552,11 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
         )
 #if DEBUG
         MC_ASSERT(tileGridBuffer.storageMode == .private && tileIndexListBuffer.storageMode == .private
-                    && tileIndexHeaderBuffer.storageMode == .private && tileParamsBuffer.storageMode == .private,
+                    && tileIndexHeaderBuffer.storageMode == .private
+                    && activeTileListBuffer.storageMode == .private
+                    && activeTileCountBuffer.storageMode == .private
+                    && activeDispatchArgsBuffer.storageMode == .private
+                    && tileParamsBuffer.storageMode == .private,
                   "Forward+ tile resources must use private storage.")
         MC_ASSERT(clusterGridBuffer.storageMode == .private && clusterIndexListBuffer.storageMode == .private
                     && clusterIndexHeaderBuffer.storageMode == .private && clusterParamsBuffer.storageMode == .private,
@@ -522,9 +603,11 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
                                  tileParamsBuffer: MTLBuffer,
                                  tileIndexHeaderBuffer: MTLBuffer,
                                  tileGridBuffer: MTLBuffer,
+                                 activeTileCountBuffer: MTLBuffer,
                                  clusterParamsBuffer: MTLBuffer,
                                  clusterIndexHeaderBuffer: MTLBuffer,
                                  clusterGridBuffer: MTLBuffer,
+                                 sparseDispatchBuffer: MTLBuffer,
                                  statsBuffer: MTLBuffer) {
         guard let pipeline = resolveClearPipeline(frame: frame) else { return }
         guard let encoder = frame.commandBuffer.makeComputeCommandEncoder() else { return }
@@ -539,6 +622,8 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
         encoder.setBuffer(clusterParamsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.clusterParams)
         encoder.setBuffer(tileGridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightGrid)
         encoder.setBuffer(clusterGridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.lightGrid)
+        encoder.setBuffer(activeTileCountBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.activeTileCount)
+        encoder.setBuffer(sparseDispatchBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.dispatchThreadgroups)
         encoder.setBuffer(statsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.forwardPlusStats)
 
         let threadWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
@@ -560,7 +645,10 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
                                        tileIndexHeaderBuffer: MTLBuffer,
                                        statsBuffer: MTLBuffer) {
         guard let pipeline = resolvePipeline(frame: frame) else { return }
-        let snapshotLights = frame.sceneSnapshot?.lightData ?? []
+        let snapshotLights = frame.sceneSnapshot?.localLights ?? []
+#if DEBUG
+        assertForwardPlusLightsAreLocalOnly(snapshotLights, context: "tile binning")
+#endif
         let cullLights = snapshotLights.map { light in
             var out = ForwardPlusCullLight()
             out.positionAndRange = SIMD4<Float>(light.position, max(light.range, 0.0))
@@ -610,6 +698,51 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
         encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         encoder.popDebugGroup()
         encoder.endEncoding()
+    }
+
+    private func runComputeBuildActiveTiles(frame: RenderGraphFrame,
+                                            tileCount: SIMD2<UInt32>,
+                                            tileParamsBuffer: MTLBuffer,
+                                            tileGridBuffer: MTLBuffer,
+                                            activeTileListBuffer: MTLBuffer,
+                                            activeTileCountBuffer: MTLBuffer,
+                                            clusterParamsBuffer: MTLBuffer,
+                                            sparseDispatchBuffer: MTLBuffer,
+                                            statsBuffer: MTLBuffer) {
+        guard let buildPipeline = resolveActiveTileBuildPipeline(frame: frame),
+              let preparePipeline = resolveSparseDispatchPrepPipeline(frame: frame) else { return }
+
+        let totalTileCount = max(tileCount.x * tileCount.y, 1)
+        if let encoder = frame.commandBuffer.makeComputeCommandEncoder() {
+            encoder.label = "Forward+ Build Active Tiles"
+            encoder.pushDebugGroup("Forward+ Build Active Tiles")
+            encoder.setComputePipelineState(buildPipeline)
+            encoder.setBuffer(tileParamsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileParams)
+            encoder.setBuffer(tileGridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightGrid)
+            encoder.setBuffer(activeTileListBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.activeTileList)
+            encoder.setBuffer(activeTileCountBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.activeTileCount)
+
+            let threadWidth = min(64, buildPipeline.maxTotalThreadsPerThreadgroup)
+            let threadsPerThreadgroup = MTLSize(width: max(threadWidth, 1), height: 1, depth: 1)
+            let threadsPerGrid = MTLSize(width: Int(totalTileCount), height: 1, depth: 1)
+            encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+            encoder.popDebugGroup()
+            encoder.endEncoding()
+        }
+
+        if let encoder = frame.commandBuffer.makeComputeCommandEncoder() {
+            encoder.label = "Forward+ Prepare Sparse Dispatch"
+            encoder.pushDebugGroup("Forward+ Prepare Sparse Dispatch")
+            encoder.setComputePipelineState(preparePipeline)
+            encoder.setBuffer(clusterParamsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.clusterParams)
+            encoder.setBuffer(activeTileCountBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.activeTileCount)
+            encoder.setBuffer(sparseDispatchBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.dispatchThreadgroups)
+            encoder.setBuffer(statsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.forwardPlusStats)
+            encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+            encoder.popDebugGroup()
+            encoder.endEncoding()
+        }
     }
 
     private func makeSizeSignature(byteCount: Int,
@@ -669,6 +802,46 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
             return nil
         }
     }
+
+    private func resolveActiveTileBuildPipeline(frame: RenderGraphFrame) -> MTLComputePipelineState? {
+        if let activeTileBuildPipeline { return activeTileBuildPipeline }
+        guard let fn = frame.engineContext.resources.resolveFunction(
+            "kernel_forward_plus_build_active_tiles",
+            device: frame.engineContext.device,
+            fallbackLibrary: frame.engineContext.defaultLibrary
+        ) else {
+            frame.engineContext.log.logWarning("Forward+ compute function 'kernel_forward_plus_build_active_tiles' not found; sparse dispatch disabled.", category: .renderer)
+            return nil
+        }
+        do {
+            let pipeline = try frame.engineContext.device.makeComputePipelineState(function: fn)
+            activeTileBuildPipeline = pipeline
+            return pipeline
+        } catch {
+            frame.engineContext.log.logWarning("Failed to create Forward+ active tile build pipeline: \(error)", category: .renderer)
+            return nil
+        }
+    }
+
+    private func resolveSparseDispatchPrepPipeline(frame: RenderGraphFrame) -> MTLComputePipelineState? {
+        if let sparseDispatchPrepPipeline { return sparseDispatchPrepPipeline }
+        guard let fn = frame.engineContext.resources.resolveFunction(
+            "kernel_forward_plus_prepare_sparse_dispatch",
+            device: frame.engineContext.device,
+            fallbackLibrary: frame.engineContext.defaultLibrary
+        ) else {
+            frame.engineContext.log.logWarning("Forward+ compute function 'kernel_forward_plus_prepare_sparse_dispatch' not found; sparse dispatch disabled.", category: .renderer)
+            return nil
+        }
+        do {
+            let pipeline = try frame.engineContext.device.makeComputePipelineState(function: fn)
+            sparseDispatchPrepPipeline = pipeline
+            return pipeline
+        } catch {
+            frame.engineContext.log.logWarning("Failed to create Forward+ sparse dispatch prep pipeline: \(error)", category: .renderer)
+            return nil
+        }
+    }
 }
 
 final class LightCullingPass: RenderGraphPass {
@@ -678,6 +851,9 @@ final class LightCullingPass: RenderGraphPass {
         .buffer(RenderNamedResourceKey.forwardPlusTileLightGrid),
         .buffer(RenderNamedResourceKey.forwardPlusTileLightIndexList),
         .buffer(RenderNamedResourceKey.forwardPlusTileLightIndexCount),
+        .buffer(RenderNamedResourceKey.forwardPlusActiveTileList),
+        .buffer(RenderNamedResourceKey.forwardPlusActiveTileCount),
+        .buffer(RenderNamedResourceKey.forwardPlusActiveDispatchArgs),
         .buffer(RenderNamedResourceKey.forwardPlusTileParams),
         .buffer(RenderNamedResourceKey.forwardPlusLightGrid),
         .buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
@@ -708,6 +884,9 @@ final class LightCullingPass: RenderGraphPass {
               let tileGridBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileLightGrid),
               let tileIndexListBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileLightIndexList),
               let tileIndexHeaderBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileLightIndexCount),
+              let activeTileListBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusActiveTileList),
+              let activeTileCountBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusActiveTileCount),
+              let activeDispatchArgsBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusActiveDispatchArgs),
               let clusterGridBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusLightGrid),
               let clusterIndexListBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
               let clusterIndexHeaderBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusLightIndexCount),
@@ -724,6 +903,9 @@ final class LightCullingPass: RenderGraphPass {
                     && tileGridBuffer.storageMode == .private
                     && tileIndexListBuffer.storageMode == .private
                     && tileIndexHeaderBuffer.storageMode == .private
+                    && activeTileListBuffer.storageMode == .private
+                    && activeTileCountBuffer.storageMode == .private
+                    && activeDispatchArgsBuffer.storageMode == .private
                     && clusterGridBuffer.storageMode == .private
                     && clusterIndexListBuffer.storageMode == .private
                     && clusterIndexHeaderBuffer.storageMode == .private
@@ -745,7 +927,6 @@ final class LightCullingPass: RenderGraphPass {
         if forwardPlusEnabled {
             runComputeCulling(frame: frame,
                               clusterCount: clusterCount,
-                              totalClusterCount: totalClusterCount,
                               viewport: viewport,
                               indexCapacity: indexCapacity,
                               clusterParamsBuffer: clusterParamsBuffer,
@@ -756,13 +937,15 @@ final class LightCullingPass: RenderGraphPass {
                               tileGridBuffer: tileGridBuffer,
                               tileIndexListBuffer: tileIndexListBuffer,
                               tileIndexHeaderBuffer: tileIndexHeaderBuffer,
+                              activeTileListBuffer: activeTileListBuffer,
+                              activeTileCountBuffer: activeTileCountBuffer,
+                              activeDispatchArgsBuffer: activeDispatchArgsBuffer,
                               statsBuffer: statsBuffer)
         }
     }
 
     private func runComputeCulling(frame: RenderGraphFrame,
                                    clusterCount: SIMD3<UInt32>,
-                                   totalClusterCount: UInt32,
                                    viewport: SIMD2<UInt32>,
                                    indexCapacity: UInt32,
                                    clusterParamsBuffer: MTLBuffer,
@@ -773,9 +956,15 @@ final class LightCullingPass: RenderGraphPass {
                                    tileGridBuffer: MTLBuffer,
                                    tileIndexListBuffer: MTLBuffer,
                                    tileIndexHeaderBuffer: MTLBuffer,
+                                   activeTileListBuffer: MTLBuffer,
+                                   activeTileCountBuffer: MTLBuffer,
+                                   activeDispatchArgsBuffer: MTLBuffer,
                                    statsBuffer: MTLBuffer) {
         guard let pipeline = resolvePipeline(frame: frame) else { return }
-        let snapshotLights = frame.sceneSnapshot?.lightData ?? []
+        let snapshotLights = frame.sceneSnapshot?.localLights ?? []
+#if DEBUG
+        assertForwardPlusLightsAreLocalOnly(snapshotLights, context: "cluster culling")
+#endif
         let cullLights = snapshotLights.map { light in
             var out = ForwardPlusCullLight()
             out.positionAndRange = SIMD4<Float>(light.position, max(light.range, 0.0))
@@ -827,12 +1016,18 @@ final class LightCullingPass: RenderGraphPass {
         encoder.setBuffer(tileGridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightGrid)
         encoder.setBuffer(tileIndexListBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightIndexList)
         encoder.setBuffer(tileIndexHeaderBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.tileLightIndexCount)
+        encoder.setBuffer(activeTileListBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.activeTileList)
+        encoder.setBuffer(activeTileCountBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.activeTileCount)
         encoder.setBuffer(statsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.forwardPlusStats)
 
-        let threadWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
-        let threadsPerThreadgroup = MTLSize(width: max(threadWidth, 1), height: 1, depth: 1)
-        let threadsPerGrid = MTLSize(width: Int(max(totalClusterCount, 1)), height: 1, depth: 1)
-        encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+        let threadsPerThreadgroup = MTLSize(width: 64, height: 1, depth: 1)
+#if DEBUG
+        MC_ASSERT(pipeline.maxTotalThreadsPerThreadgroup >= 64,
+                  "Forward+ cull pipeline must support 64 threads per threadgroup.")
+#endif
+        encoder.dispatchThreadgroups(indirectBuffer: activeDispatchArgsBuffer,
+                                     indirectBufferOffset: 0,
+                                     threadsPerThreadgroup: threadsPerThreadgroup)
         encoder.popDebugGroup()
         encoder.endEncoding()
 

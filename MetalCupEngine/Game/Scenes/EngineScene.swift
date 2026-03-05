@@ -399,12 +399,15 @@ public class EngineScene {
         }
         let activeSkyLight = ecs.activeSkyLight()?.1
         let lightData = _lightManager.snapshotLightData()
+        let directionalLights = lightData.filter { $0.type == 2 }
+        let localLights = lightData.filter { $0.type != 2 }
         let shadowLightDirection = resolveDirectionalShadowLightDirection(activeSkyLight: activeSkyLight)
         var hasher = Hasher()
         hasher.combine(frameToken)
         hasher.combine(layerFilterMask.rawValue)
         hasher.combine(renderables.count)
-        hasher.combine(lightData.count)
+        hasher.combine(directionalLights.count)
+        hasher.combine(localLights.count)
         hasher.combine(activeSkyLight != nil)
         hasher.combine(_sceneConstants.cameraPositionAndIBL.x.bitPattern)
         hasher.combine(_sceneConstants.cameraPositionAndIBL.y.bitPattern)
@@ -416,7 +419,8 @@ public class EngineScene {
             signature: UInt64(bitPattern: Int64(hasher.finalize())),
             sceneConstants: _sceneConstants,
             activeSkyLight: activeSkyLight,
-            lightData: lightData,
+            directionalLights: directionalLights,
+            localLights: localLights,
             directionalShadowLightDirection: shadowLightDirection,
             renderables: renderables
         )

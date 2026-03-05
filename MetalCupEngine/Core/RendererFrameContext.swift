@@ -12,8 +12,10 @@ public struct RendererBatchStats {
 }
 
 public struct LightingInputs {
-    public var lightCountBuffer: MTLBuffer
-    public var lightDataBuffer: MTLBuffer
+    public var localLightCountBuffer: MTLBuffer
+    public var localLightDataBuffer: MTLBuffer
+    public var directionalLightCountBuffer: MTLBuffer
+    public var directionalLightDataBuffer: MTLBuffer
     public var lightGridBuffer: MTLBuffer?
     public var lightIndexListBuffer: MTLBuffer?
     public var lightIndexCountBuffer: MTLBuffer?
@@ -151,7 +153,15 @@ public struct RendererFrameContext {
     }
 
     public func uploadLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer, dataBuffer: MTLBuffer) {
-        storage.uploadLightData(data)
+        storage.uploadLocalLightData(data)
+    }
+
+    public func uploadLocalLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer, dataBuffer: MTLBuffer) {
+        storage.uploadLocalLightData(data)
+    }
+
+    public func uploadDirectionalLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer, dataBuffer: MTLBuffer) {
+        storage.uploadDirectionalLightData(data)
     }
 
     public func rendererSettings() -> RendererSettings {
@@ -314,9 +324,12 @@ public final class RendererFrameContextStorage {
     private var rendererSettingsBuffers: [MTLBuffer?] = []
     private var rendererSettingsBufferCapacities: [Int] = []
     private var rendererSettingsWriteOffsets: [Int] = []
-    private var lightCountBuffers: [MTLBuffer?] = []
-    private var lightDataBuffers: [MTLBuffer?] = []
-    private var lightDataBufferCapacities: [Int] = []
+    private var localLightCountBuffers: [MTLBuffer?] = []
+    private var localLightDataBuffers: [MTLBuffer?] = []
+    private var localLightDataBufferCapacities: [Int] = []
+    private var directionalLightCountBuffers: [MTLBuffer?] = []
+    private var directionalLightDataBuffers: [MTLBuffer?] = []
+    private var directionalLightDataBufferCapacities: [Int] = []
     private var shadowConstants = ShadowConstants()
     private var shadowConstantsBuffers: [MTLBuffer?] = []
     private var shadowMap: MTLTexture? = nil
@@ -467,21 +480,52 @@ public final class RendererFrameContextStorage {
         return (buffer, writeOffset)
     }
 
-    fileprivate func uploadLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer, dataBuffer: MTLBuffer) {
+    fileprivate func uploadLocalLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer, dataBuffer: MTLBuffer) {
+        uploadLightData(data, stream: .local)
+    }
+
+    fileprivate func uploadDirectionalLightData(_ data: [LightData]) -> (countBuffer: MTLBuffer, dataBuffer: MTLBuffer) {
+        uploadLightData(data, stream: .directional)
+    }
+
+    private enum LightStream {
+        case local
+        case directional
+    }
+
+    private func uploadLightData(_ data: [LightData], stream: LightStream) -> (countBuffer: MTLBuffer, dataBuffer: MTLBuffer) {
         ensureFrameStorage()
         let countBytes = Int32.size
-        if lightCountBuffers[frameIndex] == nil {
-            lightCountBuffers[frameIndex] = device.makeBuffer(length: countBytes, options: [.storageModeShared])
-            lightCountBuffers[frameIndex]?.label = "LightCount.Frame\(frameIndex)"
+        switch stream {
+        case .local:
+            if localLightCountBuffers[frameIndex] == nil {
+                localLightCountBuffers[frameIndex] = device.makeBuffer(length: countBytes, options: [.storageModeShared])
+                localLightCountBuffers[frameIndex]?.label = "LocalLightCount.Frame\(frameIndex)"
+            }
+        case .directional:
+            if directionalLightCountBuffers[frameIndex] == nil {
+                directionalLightCountBuffers[frameIndex] = device.makeBuffer(length: countBytes, options: [.storageModeShared])
+                directionalLightCountBuffers[frameIndex]?.label = "DirectionalLightCount.Frame\(frameIndex)"
+            }
         }
         let requiredDataBytes = max(1, data.count) * LightData.stride
-        ensureLightDataBufferCapacity(requiredDataBytes)
-        guard let countBuffer = lightCountBuffers[frameIndex] else {
+        ensureLightDataBufferCapacity(requiredDataBytes, stream: stream)
+        let countBuffer: MTLBuffer?
+        let dataBuffer: MTLBuffer?
+        switch stream {
+        case .local:
+            countBuffer = localLightCountBuffers[frameIndex]
+            dataBuffer = localLightDataBuffers[frameIndex]
+        case .directional:
+            countBuffer = directionalLightCountBuffers[frameIndex]
+            dataBuffer = directionalLightDataBuffers[frameIndex]
+        }
+        guard let countBuffer else {
             fatalError("LightCount buffer creation failed.")
         }
         var lightCount = Int32(data.count)
         memcpy(countBuffer.contents(), &lightCount, countBytes)
-        guard let dataBuffer = lightDataBuffers[frameIndex] else {
+        guard let dataBuffer else {
             fatalError("LightData buffer creation failed.")
         }
         MC_ASSERT(requiredDataBytes <= dataBuffer.length, "Light data buffer too small for upload.")
@@ -652,12 +696,17 @@ public final class RendererFrameContextStorage {
             rendererSettingsBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
             rendererSettingsWriteOffsets = Array(repeating: 0, count: maxFramesInFlight)
         }
-        if lightCountBuffers.count < maxFramesInFlight {
-            lightCountBuffers = Array(repeating: nil, count: maxFramesInFlight)
+        if localLightCountBuffers.count < maxFramesInFlight {
+            localLightCountBuffers = Array(repeating: nil, count: maxFramesInFlight)
+            directionalLightCountBuffers = Array(repeating: nil, count: maxFramesInFlight)
         }
-        if lightDataBuffers.count < maxFramesInFlight {
-            lightDataBuffers = Array(repeating: nil, count: maxFramesInFlight)
-            lightDataBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
+        if localLightDataBuffers.count < maxFramesInFlight {
+            localLightDataBuffers = Array(repeating: nil, count: maxFramesInFlight)
+            localLightDataBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
+        }
+        if directionalLightDataBuffers.count < maxFramesInFlight {
+            directionalLightDataBuffers = Array(repeating: nil, count: maxFramesInFlight)
+            directionalLightDataBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
         }
         if shadowConstantsBuffers.count < maxFramesInFlight {
             shadowConstantsBuffers = Array(repeating: nil, count: maxFramesInFlight)
@@ -688,16 +737,28 @@ public final class RendererFrameContextStorage {
         return ((size + alignment - 1) / alignment) * alignment
     }
 
-    private func ensureLightDataBufferCapacity(_ requiredBytes: Int) {
+    private func ensureLightDataBufferCapacity(_ requiredBytes: Int, stream: LightStream) {
         ensureFrameStorage()
-        let currentCapacity = lightDataBufferCapacities[frameIndex]
-        if let _ = lightDataBuffers[frameIndex], currentCapacity >= requiredBytes {
-            return
+        switch stream {
+        case .local:
+            let currentCapacity = localLightDataBufferCapacities[frameIndex]
+            if let _ = localLightDataBuffers[frameIndex], currentCapacity >= requiredBytes {
+                return
+            }
+            let newCapacity = max(requiredBytes, max(currentCapacity, 1) * 2)
+            localLightDataBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
+            localLightDataBuffers[frameIndex]?.label = "LocalLightData.Frame\(frameIndex)"
+            localLightDataBufferCapacities[frameIndex] = newCapacity
+        case .directional:
+            let currentCapacity = directionalLightDataBufferCapacities[frameIndex]
+            if let _ = directionalLightDataBuffers[frameIndex], currentCapacity >= requiredBytes {
+                return
+            }
+            let newCapacity = max(requiredBytes, max(currentCapacity, 1) * 2)
+            directionalLightDataBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
+            directionalLightDataBuffers[frameIndex]?.label = "DirectionalLightData.Frame\(frameIndex)"
+            directionalLightDataBufferCapacities[frameIndex] = newCapacity
         }
-        let newCapacity = max(requiredBytes, max(currentCapacity, 1) * 2)
-        lightDataBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
-        lightDataBuffers[frameIndex]?.label = "LightData.Frame\(frameIndex)"
-        lightDataBufferCapacities[frameIndex] = newCapacity
     }
 
     private func hashRendererSettings(_ settings: RendererSettings) -> UInt64 {

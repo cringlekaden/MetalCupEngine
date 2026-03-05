@@ -29,6 +29,8 @@ enum ShaderBindings {
         static let lightClusterParams = 11
         static let tileLightGrid = 12
         static let tileParams = 13
+        static let directionalLightCount = 14
+        static let directionalLightData = 15
     }
 
     enum FragmentTexture {
@@ -84,6 +86,9 @@ enum ShaderBindings {
         static let tileLightIndexCount = 9
         static let forwardPlusStats = 10
         static let clearUniforms = 11
+        static let activeTileList = 12
+        static let activeTileCount = 13
+        static let dispatchThreadgroups = 14
     }
 
     enum ComputeTexture {

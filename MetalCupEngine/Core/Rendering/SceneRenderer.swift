@@ -20,7 +20,8 @@ public struct RenderFrameSnapshot {
     let signature: UInt64
     let sceneConstants: SceneConstants
     let activeSkyLight: SkyLightComponent?
-    let lightData: [LightData]
+    let directionalLights: [LightData]
+    let localLights: [LightData]
     let directionalShadowLightDirection: SIMD3<Float>?
     let renderables: [Renderable]
 }
@@ -558,12 +559,20 @@ public enum SceneRenderer {
     }
 
     private static func prepareLightingInputs(snapshot: RenderFrameSnapshot, frameContext: RendererFrameContext) {
-        let lightBuffers = frameContext.uploadLightData(snapshot.lightData)
+        let localLightBuffers = frameContext.uploadLocalLightData(snapshot.localLights)
+        let directionalLightBuffers = frameContext.uploadDirectionalLightData(snapshot.directionalLights)
+#if DEBUG
+        MC_ASSERT(localLightBuffers.countBuffer !== directionalLightBuffers.countBuffer
+                    && localLightBuffers.dataBuffer !== directionalLightBuffers.dataBuffer,
+                  "Local and directional light streams must not share buffers.")
+#endif
         let registry = frameContext.renderResourceRegistry()
         let allowForwardPlus = frameContext.isForwardPlusAllowed()
         let inputs = LightingInputs(
-            lightCountBuffer: lightBuffers.countBuffer,
-            lightDataBuffer: lightBuffers.dataBuffer,
+            localLightCountBuffer: localLightBuffers.countBuffer,
+            localLightDataBuffer: localLightBuffers.dataBuffer,
+            directionalLightCountBuffer: directionalLightBuffers.countBuffer,
+            directionalLightDataBuffer: directionalLightBuffers.dataBuffer,
             lightGridBuffer: allowForwardPlus ? registry?.buffer(RenderNamedResourceKey.forwardPlusLightGrid) : nil,
             lightIndexListBuffer: allowForwardPlus ? registry?.buffer(RenderNamedResourceKey.forwardPlusLightIndexList) : nil,
             lightIndexCountBuffer: allowForwardPlus ? registry?.buffer(RenderNamedResourceKey.forwardPlusLightIndexCount) : nil,
@@ -576,8 +585,10 @@ public enum SceneRenderer {
 
     private static func bindLightingInputs(_ encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {
         guard let inputs = frameContext.lightingInputs() else { return }
-        encoder.setFragmentBuffer(inputs.lightCountBuffer, offset: 0, index: FragmentBufferIndex.lightCount)
-        encoder.setFragmentBuffer(inputs.lightDataBuffer, offset: 0, index: FragmentBufferIndex.lightData)
+        encoder.setFragmentBuffer(inputs.localLightCountBuffer, offset: 0, index: FragmentBufferIndex.lightCount)
+        encoder.setFragmentBuffer(inputs.localLightDataBuffer, offset: 0, index: FragmentBufferIndex.lightData)
+        encoder.setFragmentBuffer(inputs.directionalLightCountBuffer, offset: 0, index: FragmentBufferIndex.directionalLightCount)
+        encoder.setFragmentBuffer(inputs.directionalLightDataBuffer, offset: 0, index: FragmentBufferIndex.directionalLightData)
         encoder.setFragmentBuffer(inputs.lightGridBuffer, offset: 0, index: FragmentBufferIndex.lightGrid)
         encoder.setFragmentBuffer(inputs.lightIndexListBuffer, offset: 0, index: FragmentBufferIndex.lightIndexList)
         encoder.setFragmentBuffer(inputs.lightIndexCountBuffer, offset: 0, index: FragmentBufferIndex.lightIndexCount)
