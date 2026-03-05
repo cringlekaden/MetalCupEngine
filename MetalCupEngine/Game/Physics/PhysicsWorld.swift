@@ -180,6 +180,9 @@ private func MCECharacter_SetGravity(_ world: UnsafeMutableRawPointer?, _ handle
 @_silgen_name("MCECharacter_SetJumpSpeed")
 private func MCECharacter_SetJumpSpeed(_ world: UnsafeMutableRawPointer?, _ handle: UInt64, _ value: Float)
 
+@_silgen_name("MCECharacter_SetPushStrength")
+private func MCECharacter_SetPushStrength(_ world: UnsafeMutableRawPointer?, _ handle: UInt64, _ value: Float)
+
 @_silgen_name("MCECharacter_SetUpVector")
 private func MCECharacter_SetUpVector(_ world: UnsafeMutableRawPointer?,
                                       _ handle: UInt64,
@@ -214,6 +217,14 @@ private func MCECharacter_GetGroundNormal(_ world: UnsafeMutableRawPointer?,
 private func MCECharacter_GetGroundVelocity(_ world: UnsafeMutableRawPointer?,
                                             _ handle: UInt64,
                                             _ velocityOut: UnsafeMutablePointer<Float>?) -> UInt32
+@_silgen_name("MCECharacter_GetGroundBodyID")
+private func MCECharacter_GetGroundBodyID(_ world: UnsafeMutableRawPointer?, _ handle: UInt64) -> UInt64
+@_silgen_name("MCECharacter_GetContactStats")
+private func MCECharacter_GetContactStats(_ world: UnsafeMutableRawPointer?,
+                                          _ handle: UInt64,
+                                          _ totalContactsOut: UnsafeMutablePointer<UInt32>?,
+                                          _ dynamicContactsOut: UnsafeMutablePointer<UInt32>?,
+                                          _ firstDynamicBodyIdOut: UnsafeMutablePointer<UInt64>?) -> UInt32
 
 public struct PhysicsSettings {
     public static let maxCollisionLayers: Int = 16
@@ -694,6 +705,11 @@ public final class PhysicsWorld {
         MCECharacter_SetJumpSpeed(handle, characterHandle, max(0.0, value))
     }
 
+    func setCharacterPushStrength(handle characterHandle: UInt64, value: Float) {
+        guard let handle, characterHandle != 0 else { return }
+        MCECharacter_SetPushStrength(handle, characterHandle, max(0.0, value))
+    }
+
     func setCharacterUpVector(handle characterHandle: UInt64, up: SIMD3<Float>) {
         guard let handle, characterHandle != 0 else { return }
         let length = simd_length(up)
@@ -762,6 +778,20 @@ public final class PhysicsWorld {
             MCECharacter_GetGroundVelocity(handle, characterHandle, ptr) != 0
         }
         return velocity
+    }
+
+    func characterGroundBodyId(handle characterHandle: UInt64) -> UInt64 {
+        guard let handle, characterHandle != 0 else { return 0 }
+        return MCECharacter_GetGroundBodyID(handle, characterHandle)
+    }
+
+    func characterContactStats(handle characterHandle: UInt64) -> (total: UInt32, dynamic: UInt32, firstDynamicBodyId: UInt64) {
+        guard let handle, characterHandle != 0 else { return (0, 0, 0) }
+        var total: UInt32 = 0
+        var dynamic: UInt32 = 0
+        var firstDynamicBodyId: UInt64 = 0
+        _ = MCECharacter_GetContactStats(handle, characterHandle, &total, &dynamic, &firstDynamicBodyId)
+        return (total, dynamic, firstDynamicBodyId)
     }
 
     func lastContacts() -> [PhysicsContact] {

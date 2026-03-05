@@ -740,19 +740,17 @@ public struct CharacterControllerComponentDTO: Codable {
     public var height: Float
     public var radius: Float
     public var stepOffset: Float
-    public var slopeLimit: Float
     public var moveSpeed: Float
     public var sprintMultiplier: Float
+    public var airControl: Float
     public var jumpSpeed: Float
     public var useGravityOverride: Bool
     public var gravity: Float
-    public var groundProbeDistance: Float
     public var maxSlope: Float
-    public var groundSnapDistance: Float
+    public var pushStrength: Float
     public var lookSensitivity: Float
     public var minPitchDegrees: Float
     public var maxPitchDegrees: Float
-    public var pushStrength: Float
     public var visualEntityId: UUID?
     public var cameraPivotEntityId: UUID?
     public var debugDraw: Bool
@@ -767,6 +765,7 @@ public struct CharacterControllerComponentDTO: Codable {
         case moveSpeed
         case jumpForce
         case sprintMultiplier
+        case airControl
         case jumpSpeed
         case useGravityOverride
         case gravity
@@ -777,6 +776,8 @@ public struct CharacterControllerComponentDTO: Codable {
         case minPitchDegrees
         case maxPitchDegrees
         case pushStrength
+        // Deprecated in runtime since CharacterVirtual ground velocity coupling was removed.
+        case groundVelocityFollowThreshold
         case visualEntityId
         case cameraPivotEntityId
         case debugDraw
@@ -787,19 +788,17 @@ public struct CharacterControllerComponentDTO: Codable {
                 height: Float,
                 radius: Float,
                 stepOffset: Float,
-                slopeLimit: Float,
                 moveSpeed: Float,
                 sprintMultiplier: Float,
+                airControl: Float = 0.35,
                 jumpSpeed: Float,
                 useGravityOverride: Bool,
                 gravity: Float,
-                groundProbeDistance: Float,
                 maxSlope: Float,
-                groundSnapDistance: Float = 0.1,
+                pushStrength: Float = 100.0,
                 lookSensitivity: Float = 0.01,
                 minPitchDegrees: Float = -80.0,
                 maxPitchDegrees: Float = 80.0,
-                pushStrength: Float = 10.0,
                 visualEntityId: UUID? = nil,
                 cameraPivotEntityId: UUID? = nil,
                 debugDraw: Bool = false) {
@@ -808,19 +807,17 @@ public struct CharacterControllerComponentDTO: Codable {
         self.height = height
         self.radius = radius
         self.stepOffset = stepOffset
-        self.slopeLimit = slopeLimit
         self.moveSpeed = moveSpeed
         self.sprintMultiplier = sprintMultiplier
+        self.airControl = airControl
         self.jumpSpeed = jumpSpeed
         self.useGravityOverride = useGravityOverride
         self.gravity = gravity
-        self.groundProbeDistance = groundProbeDistance
         self.maxSlope = maxSlope
-        self.groundSnapDistance = groundSnapDistance
+        self.pushStrength = pushStrength
         self.lookSensitivity = lookSensitivity
         self.minPitchDegrees = minPitchDegrees
         self.maxPitchDegrees = maxPitchDegrees
-        self.pushStrength = pushStrength
         self.visualEntityId = visualEntityId
         self.cameraPivotEntityId = cameraPivotEntityId
         self.debugDraw = debugDraw
@@ -833,9 +830,9 @@ public struct CharacterControllerComponentDTO: Codable {
         self.height = try container.decodeIfPresent(Float.self, forKey: .height) ?? 1.8
         self.radius = try container.decodeIfPresent(Float.self, forKey: .radius) ?? 0.35
         self.stepOffset = try container.decodeIfPresent(Float.self, forKey: .stepOffset) ?? 0.25
-        self.slopeLimit = try container.decodeIfPresent(Float.self, forKey: .slopeLimit) ?? 45.0
         self.moveSpeed = try container.decodeIfPresent(Float.self, forKey: .moveSpeed) ?? 4.0
         self.sprintMultiplier = try container.decodeIfPresent(Float.self, forKey: .sprintMultiplier) ?? 1.5
+        self.airControl = try container.decodeIfPresent(Float.self, forKey: .airControl) ?? 0.35
         if let jumpSpeed = try container.decodeIfPresent(Float.self, forKey: .jumpSpeed) {
             self.jumpSpeed = jumpSpeed
         } else {
@@ -843,13 +840,13 @@ public struct CharacterControllerComponentDTO: Codable {
         }
         self.useGravityOverride = try container.decodeIfPresent(Bool.self, forKey: .useGravityOverride) ?? false
         self.gravity = try container.decodeIfPresent(Float.self, forKey: .gravity) ?? -9.81
-        self.groundProbeDistance = try container.decodeIfPresent(Float.self, forKey: .groundProbeDistance) ?? 0.25
-        self.maxSlope = try container.decodeIfPresent(Float.self, forKey: .maxSlope) ?? self.slopeLimit
-        self.groundSnapDistance = try container.decodeIfPresent(Float.self, forKey: .groundSnapDistance) ?? 0.1
+        let legacySlopeLimit = try container.decodeIfPresent(Float.self, forKey: .slopeLimit) ?? 45.0
+        self.maxSlope = try container.decodeIfPresent(Float.self, forKey: .maxSlope) ?? legacySlopeLimit
         self.lookSensitivity = try container.decodeIfPresent(Float.self, forKey: .lookSensitivity) ?? 0.01
         self.minPitchDegrees = try container.decodeIfPresent(Float.self, forKey: .minPitchDegrees) ?? -80.0
         self.maxPitchDegrees = try container.decodeIfPresent(Float.self, forKey: .maxPitchDegrees) ?? 80.0
-        self.pushStrength = try container.decodeIfPresent(Float.self, forKey: .pushStrength) ?? 10.0
+        self.pushStrength = try container.decodeIfPresent(Float.self, forKey: .pushStrength) ?? 100.0
+        _ = try container.decodeIfPresent(Float.self, forKey: .groundVelocityFollowThreshold)
         self.visualEntityId = try container.decodeIfPresent(UUID.self, forKey: .visualEntityId)
         self.cameraPivotEntityId = try container.decodeIfPresent(UUID.self, forKey: .cameraPivotEntityId)
         self.debugDraw = try container.decodeIfPresent(Bool.self, forKey: .debugDraw) ?? false
@@ -862,13 +859,14 @@ public struct CharacterControllerComponentDTO: Codable {
         try container.encode(height, forKey: .height)
         try container.encode(radius, forKey: .radius)
         try container.encode(stepOffset, forKey: .stepOffset)
-        try container.encode(slopeLimit, forKey: .slopeLimit)
         try container.encode(moveSpeed, forKey: .moveSpeed)
         try container.encode(sprintMultiplier, forKey: .sprintMultiplier)
+        try container.encode(airControl, forKey: .airControl)
         try container.encode(jumpSpeed, forKey: .jumpSpeed)
         try container.encode(useGravityOverride, forKey: .useGravityOverride)
         try container.encode(gravity, forKey: .gravity)
         try container.encode(maxSlope, forKey: .maxSlope)
+        try container.encode(pushStrength, forKey: .pushStrength)
         try container.encode(lookSensitivity, forKey: .lookSensitivity)
         try container.encode(minPitchDegrees, forKey: .minPitchDegrees)
         try container.encode(maxPitchDegrees, forKey: .maxPitchDegrees)
@@ -878,24 +876,22 @@ public struct CharacterControllerComponentDTO: Codable {
     }
 
     public init(component: CharacterControllerComponent) {
-        self.schemaVersion = 2
+        self.schemaVersion = 3
         self.enabled = component.isEnabled
         self.height = component.height
         self.radius = component.radius
         self.stepOffset = component.stepOffset
-        self.slopeLimit = component.slopeLimit
         self.moveSpeed = component.moveSpeed
         self.sprintMultiplier = component.sprintMultiplier
+        self.airControl = component.airControl
         self.jumpSpeed = component.jumpSpeed
         self.useGravityOverride = component.useGravityOverride
         self.gravity = component.gravity
-        self.groundProbeDistance = component.groundProbeDistance
         self.maxSlope = component.maxSlope
-        self.groundSnapDistance = component.groundSnapDistance
+        self.pushStrength = component.pushStrength
         self.lookSensitivity = component.lookSensitivity
         self.minPitchDegrees = component.minPitchDegrees
         self.maxPitchDegrees = component.maxPitchDegrees
-        self.pushStrength = component.pushStrength
         self.visualEntityId = component.visualEntityId
         self.cameraPivotEntityId = component.cameraPivotEntityId
         self.debugDraw = component.debugDraw
@@ -906,19 +902,17 @@ public struct CharacterControllerComponentDTO: Codable {
                                      height: height,
                                      radius: radius,
                                      stepOffset: stepOffset,
-                                     slopeLimit: slopeLimit,
                                      moveSpeed: moveSpeed,
                                      sprintMultiplier: sprintMultiplier,
+                                     airControl: airControl,
                                      jumpSpeed: jumpSpeed,
                                      useGravityOverride: useGravityOverride,
                                      gravity: gravity,
-                                     groundProbeDistance: groundProbeDistance,
                                      maxSlope: maxSlope,
-                                     groundSnapDistance: groundSnapDistance,
+                                     pushStrength: pushStrength,
                                      lookSensitivity: lookSensitivity,
                                      minPitchDegrees: minPitchDegrees,
                                      maxPitchDegrees: maxPitchDegrees,
-                                     pushStrength: pushStrength,
                                      visualEntityId: visualEntityId,
                                      cameraPivotEntityId: cameraPivotEntityId,
                                      debugDraw: debugDraw)

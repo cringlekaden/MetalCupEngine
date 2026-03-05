@@ -50,6 +50,7 @@
 #include <array>
 #include <atomic>
 #include <cfloat>
+#include <cmath>
 #include <cstring>
 #include <sstream>
 #include <mutex>
@@ -293,6 +294,7 @@ namespace {
             float gravity = -9.81f;
             float stepOffset = 0.25f;
             float jumpSpeed = 5.5f;
+            float maxStrength = 100.0f;
             float radius = 0.35f;
             float height = 1.8f;
             CharacterVirtual::ExtendedUpdateSettings updateSettings;
@@ -491,9 +493,12 @@ namespace {
         const float safeHeight = std::max(safeRadius * 2.0f + 0.02f, height);
         const float capsuleHalfHeight = std::max(0.02f, safeHeight * 0.5f - safeRadius);
         RefConst<Shape> capsule = CapsuleShapeSettings(capsuleHalfHeight, safeRadius).Create().Get();
-        if (!capsule) { return nullptr; }
-        const Vec3 offset(0.0f, capsuleHalfHeight + safeRadius, 0.0f);
-        return RotatedTranslatedShapeSettings(offset, Quat::sIdentity(), capsule).Create().Get();
+        // CharacterBaseSettings expects the bottom of the shape at local y = 0.
+        // A capsule shape is centered at origin by default, so translate it up.
+        RotatedTranslatedShapeSettings translated(Vec3(0.0f, capsuleHalfHeight + safeRadius, 0.0f),
+                                                  Quat::sIdentity(),
+                                                  capsule);
+        return translated.Create().Get();
     }
 
 }
@@ -962,10 +967,13 @@ extern "C" uint64_t MCECharacter_Create(void *worldPtr,
     CharacterVirtualSettings settings;
     settings.mShape = BuildCharacterCapsuleShape(record.radius, record.height);
     if (!settings.mShape) { return 0; }
-    settings.mSupportingVolume = Plane(Vec3::sAxisY(), -std::max(record.radius, record.height * 0.5f));
+    settings.mUp = record.up;
+    settings.mSupportingVolume = Plane(record.up, -record.radius);
     settings.mMaxSlopeAngle = DegreesToRadians(50.0f);
     settings.mMass = 70.0f;
-    settings.mMaxStrength = 0.0f;
+    settings.mMaxStrength = record.maxStrength;
+    settings.mPredictiveContactDistance = std::max(0.02f, record.radius * 0.5f);
+    settings.mCollisionTolerance = 1.0e-3f;
     settings.mEnhancedInternalEdgeRemoval = true;
 
     record.character = new CharacterVirtual(&settings,
@@ -1045,7 +1053,9 @@ extern "C" void MCECharacter_SetGravity(void *worldPtr, uint64_t handle, float v
     JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
     auto it = world->characters.find(handle);
     if (it == world->characters.end()) { return; }
-    it->second.gravity = value;
+    // Character gravity is always applied along -up in ExtendedUpdate.
+    // Accept both +/- authored values and normalize to a downward magnitude.
+    it->second.gravity = -std::fabs(value);
 }
 
 extern "C" void MCECharacter_SetJumpSpeed(void *worldPtr, uint64_t handle, float value) {
@@ -1054,6 +1064,16 @@ extern "C" void MCECharacter_SetJumpSpeed(void *worldPtr, uint64_t handle, float
     auto it = world->characters.find(handle);
     if (it == world->characters.end()) { return; }
     it->second.jumpSpeed = std::max(0.0f, value);
+}
+
+extern "C" void MCECharacter_SetPushStrength(void *worldPtr, uint64_t handle, float value) {
+    if (!worldPtr || handle == 0) { return; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return; }
+    JoltWorld::CharacterRecord &record = it->second;
+    record.maxStrength = std::max(0.0f, value);
+    record.character->SetMaxStrength(record.maxStrength);
 }
 
 extern "C" void MCECharacter_SetUpVector(void *worldPtr, uint64_t handle, float x, float y, float z) {
@@ -1086,11 +1106,34 @@ extern "C" uint32_t MCECharacter_Update(void *worldPtr,
     auto it = world->characters.find(handle);
     if (it == world->characters.end()) { return 0; }
     JoltWorld::CharacterRecord &record = it->second;
+    // Keep supporting body velocity current before deriving desired velocity.
+    record.character->UpdateGroundVelocity();
     const auto currentGroundState = record.character->GetGroundState();
-    Vec3 velocity(desiredVelX, desiredVelY, desiredVelZ);
-    if (jumpRequested != 0 && (currentGroundState == CharacterBase::EGroundState::OnGround || currentGroundState == CharacterBase::EGroundState::OnSteepGround)) {
+    const bool onGround = currentGroundState == CharacterBase::EGroundState::OnGround;
+    const Vec3 currentVelocity = record.character->GetLinearVelocity();
+    Vec3 desiredVelocity(desiredVelX, desiredVelY, desiredVelZ);
+    const float desiredVerticalSpeed = desiredVelocity.Dot(record.up);
+    const Vec3 desiredPlanarVelocity = desiredVelocity - record.up * desiredVerticalSpeed;
+
+    // CharacterVirtual docs/sample pattern:
+    // - OnGround and moving towards ground: base from ground velocity (+ optional jump)
+    // - Else: preserve current vertical velocity
+    // - Then add gravity * dt and desired horizontal velocity.
+    const Vec3 currentVerticalVelocity = currentVelocity.Dot(record.up) * record.up;
+    const Vec3 groundVelocity = record.character->GetGroundVelocity();
+    const bool movingTowardsGround =
+        (currentVerticalVelocity - groundVelocity).Dot(record.up) < 0.1f;
+
+    Vec3 velocity = onGround && movingTowardsGround
+        ? groundVelocity
+        : currentVerticalVelocity;
+
+    if (jumpRequested != 0 && onGround && movingTowardsGround) {
         velocity += record.up * record.jumpSpeed;
     }
+
+    velocity += record.up * (record.gravity * dt);
+    velocity += desiredPlanarVelocity;
     record.character->SetLinearVelocity(velocity);
     const auto &broadPhaseLayerFilter = world->physicsSystem.GetDefaultBroadPhaseLayerFilter(record.objectLayer);
     const auto &objectLayerFilter = world->physicsSystem.GetDefaultLayerFilter(record.objectLayer);
@@ -1165,6 +1208,48 @@ extern "C" uint32_t MCECharacter_GetGroundVelocity(void *worldPtr, uint64_t hand
     velocityOut[0] = velocity.GetX();
     velocityOut[1] = velocity.GetY();
     velocityOut[2] = velocity.GetZ();
+    return 1;
+}
+
+extern "C" uint64_t MCECharacter_GetGroundBodyID(void *worldPtr, uint64_t handle) {
+    if (!worldPtr || handle == 0) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return 0; }
+    const BodyID bodyID = it->second.character->GetGroundBodyID();
+    if (bodyID == BodyID()) { return 0; }
+    return static_cast<uint64_t>(bodyID.GetIndexAndSequenceNumber());
+}
+
+extern "C" uint32_t MCECharacter_GetContactStats(void *worldPtr,
+                                                 uint64_t handle,
+                                                 uint32_t *totalContactsOut,
+                                                 uint32_t *dynamicContactsOut,
+                                                 uint64_t *firstDynamicBodyIdOut) {
+    if (!worldPtr || handle == 0 || !totalContactsOut || !dynamicContactsOut || !firstDynamicBodyIdOut) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return 0; }
+
+    const auto &contacts = it->second.character->GetActiveContacts();
+    uint32_t dynamicContacts = 0;
+    uint64_t firstDynamicBodyId = 0;
+    for (const CharacterVirtual::Contact &contact : contacts) {
+        if (contact.mBodyB == BodyID()) { continue; }
+        BodyLockRead lock(world->physicsSystem.GetBodyLockInterface(), contact.mBodyB);
+        if (!lock.Succeeded()) { continue; }
+        const Body &body = lock.GetBody();
+        if (body.GetMotionType() == EMotionType::Dynamic) {
+            dynamicContacts += 1;
+            if (firstDynamicBodyId == 0) {
+                firstDynamicBodyId = static_cast<uint64_t>(contact.mBodyB.GetIndexAndSequenceNumber());
+            }
+        }
+    }
+
+    *totalContactsOut = static_cast<uint32_t>(contacts.size());
+    *dynamicContactsOut = dynamicContacts;
+    *firstDynamicBodyIdOut = firstDynamicBodyId;
     return 1;
 }
 

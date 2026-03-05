@@ -638,7 +638,7 @@ public enum SceneRenderer {
             if !frameContext.layerFilterMask().contains(layerIndex: layer) {
                 continue
             }
-            let transform = scene.ecs.worldTransform(for: entity)
+            let transform = scene.renderWorldTransform(for: entity)
             let bindings = resolveMaterialBindings(scene: scene, entity: entity, meshRenderer: meshRenderer, engineContext: engineContext)
             let worldBounds = worldBounds(for: mesh, transform: transform)
             renderItems.append(RenderItem(

@@ -143,6 +143,11 @@ public final class PhysicsSystem {
         runtimeWorldScaleByEntity.removeAll(keepingCapacity: true)
         ecs.forEachEntity { entity in
             guard ecs.get(TransformComponent.self, for: entity) != nil else { return }
+            if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
+               controller.isEnabled {
+                clearRuntimeBodyBindingIfPresent(entity: entity, ecs: ecs)
+                return
+            }
             guard var rigidbody = ecs.get(RigidbodyComponent.self, for: entity) else {
                 if ecs.has(ColliderComponent.self, entity) {
                     logWarningOnce(entityId: entity.id, message: "Collider present without Rigidbody. Add a Rigidbody to enable physics.")
@@ -220,6 +225,11 @@ public final class PhysicsSystem {
 
     public func rebuildBody(entity: Entity, scene: EngineScene) -> Bool {
         let ecs = scene.ecs
+        if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
+           controller.isEnabled {
+            clearRuntimeBodyBindingIfPresent(entity: entity, ecs: ecs)
+            return false
+        }
         guard var rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
               let collider = ecs.get(ColliderComponent.self, for: entity),
               ecs.get(TransformComponent.self, for: entity) != nil else {
@@ -304,6 +314,7 @@ public final class PhysicsSystem {
 
             if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
                controller.debugDraw {
+                let origin = ecs.worldTransform(for: entity).position
                 let controllerColor = SIMD4<Float>(0.9, 0.95, 0.3, 0.9)
                 let controllerRadius = max(0.02, controller.radius)
                 let controllerHalfHeight = max(0.02, controller.height * 0.5 - controllerRadius)
@@ -311,54 +322,20 @@ public final class PhysicsSystem {
                                             radius: controllerRadius,
                                             halfHeight: controllerHalfHeight,
                                             color: controllerColor)
-                let probeColor = SIMD4<Float>(0.2, 0.9, 1.0, 0.95)
-                debugDraw.submitLine(controller.debugProbeStart, controller.debugProbeEnd, color: probeColor)
-                if controller.debugProbeHadHit {
-                    let hit = controller.debugProbeHitPoint
-                    let size = max(0.02, debugDraw.lineThickness * 2.0)
-                    debugDraw.submitLine(hit + SIMD3<Float>(-size, 0.0, 0.0), hit + SIMD3<Float>(size, 0.0, 0.0), color: probeColor)
-                    debugDraw.submitLine(hit + SIMD3<Float>(0.0, 0.0, -size), hit + SIMD3<Float>(0.0, 0.0, size), color: probeColor)
-                }
-                if controller.debugSweepDidCollide {
-                    let origin = ecs.worldTransform(for: entity).position
-                    let normal = simd_length_squared(controller.debugSweepNormal) > 1.0e-6
-                        ? simd_normalize(controller.debugSweepNormal)
-                        : SIMD3<Float>(0.0, 1.0, 0.0)
-                    debugDraw.submitLine(origin, origin + normal * 0.4, color: SIMD4<Float>(1.0, 0.4, 0.15, 0.95))
-                }
-                let desiredVelocity = controller.debugDesiredVelocity
-                if simd_length_squared(desiredVelocity) > 1.0e-6 {
-                    let origin = ecs.worldTransform(for: entity).position
-                    debugDraw.submitLine(origin,
-                                         origin + desiredVelocity * 0.1,
-                                         color: SIMD4<Float>(0.25, 1.0, 0.45, 0.95))
-                }
-                debugDraw.submitLine(controller.debugSweepStart,
-                                     controller.debugSweepEnd,
-                                     color: SIMD4<Float>(1.0, 0.8, 0.25, 0.95))
-                if controller.debugStepDidApply {
-                    debugDraw.submitLine(controller.debugSweepStart,
-                                         controller.debugStepUpEnd,
-                                         color: SIMD4<Float>(1.0, 0.95, 0.35, 0.95))
-                    debugDraw.submitLine(controller.debugStepUpEnd,
-                                         controller.debugStepForwardEnd,
-                                         color: SIMD4<Float>(1.0, 0.95, 0.35, 0.95))
-                }
-                if controller.debugPenetrationDepth > 0.0001 {
-                    debugDraw.submitLine(controller.debugSweepEnd,
-                                         controller.debugDepenetrationEnd,
-                                         color: SIMD4<Float>(1.0, 0.25, 0.25, 0.95))
-                }
-                if controller.debugSnapDidApply {
-                    debugDraw.submitLine(controller.debugSnapStart,
-                                         controller.debugSnapEnd,
-                                         color: SIMD4<Float>(0.45, 1.0, 0.45, 0.95))
-                }
-                if controller.debugPushDidApply {
-                    debugDraw.submitLine(controller.debugSweepEnd,
-                                         controller.debugPushEnd,
-                                         color: SIMD4<Float>(0.9, 0.35, 1.0, 0.95))
-                }
+                let basisScale: Float = 0.35
+                let forwardBasis = simd_length_squared(controller.debugBasisForward) > 1.0e-6
+                    ? simd_normalize(controller.debugBasisForward)
+                    : SIMD3<Float>(0.0, 0.0, 1.0)
+                let rightBasis = simd_length_squared(controller.debugBasisRight) > 1.0e-6
+                    ? simd_normalize(controller.debugBasisRight)
+                    : SIMD3<Float>(1.0, 0.0, 0.0)
+                let groundNormal = simd_length_squared(controller.lastGroundNormal) > 1.0e-6
+                    ? simd_normalize(controller.lastGroundNormal)
+                    : SIMD3<Float>(0.0, 1.0, 0.0)
+                // Basis debug: right=red, forward=green, ground normal=blue.
+                debugDraw.submitLine(origin, origin + rightBasis * basisScale, color: SIMD4<Float>(1.0, 0.2, 0.2, 0.95))
+                debugDraw.submitLine(origin, origin + forwardBasis * basisScale, color: SIMD4<Float>(0.2, 1.0, 0.2, 0.95))
+                debugDraw.submitLine(origin, origin + groundNormal * basisScale, color: SIMD4<Float>(0.2, 0.4, 1.0, 0.95))
             }
         }
 
@@ -513,6 +490,10 @@ public final class PhysicsSystem {
         return world.getBodyVelocity(bodyId: bodyId)?.linear
     }
 
+    func entityIdForBody(_ bodyId: UInt64) -> UUID? {
+        world.entityIdForBody(bodyId)
+    }
+
     func createCharacter(desc: PhysicsCharacterCreation) -> UInt64 {
         world.createCharacter(desc: desc)
     }
@@ -539,6 +520,10 @@ public final class PhysicsSystem {
 
     func setCharacterJumpSpeed(handle: UInt64, value: Float) {
         world.setCharacterJumpSpeed(handle: handle, value: value)
+    }
+
+    func setCharacterPushStrength(handle: UInt64, value: Float) {
+        world.setCharacterPushStrength(handle: handle, value: value)
     }
 
     func setCharacterUpVector(handle: UInt64, up: SIMD3<Float>) {
@@ -571,6 +556,14 @@ public final class PhysicsSystem {
 
     func characterGroundVelocity(handle: UInt64) -> SIMD3<Float> {
         world.characterGroundVelocity(handle: handle)
+    }
+
+    func characterGroundBodyId(handle: UInt64) -> UInt64 {
+        world.characterGroundBodyId(handle: handle)
+    }
+
+    func characterContactStats(handle: UInt64) -> (total: UInt32, dynamic: UInt32, firstDynamicBodyId: UInt64) {
+        world.characterContactStats(handle: handle)
     }
 
     @discardableResult
@@ -1156,6 +1149,13 @@ public final class PhysicsSystem {
         liveEntities.reserveCapacity(runtimeSignatureByEntity.count + 16)
         ecs.forEachEntity { entity in
             liveEntities.insert(entity.id)
+            if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
+               controller.isEnabled {
+                clearRuntimeBodyBindingIfPresent(entity: entity, ecs: ecs)
+                runtimeSignatureByEntity.removeValue(forKey: entity.id)
+                runtimeWorldScaleByEntity.removeValue(forKey: entity.id)
+                return
+            }
             guard var rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
                   let collider = ecs.get(ColliderComponent.self, for: entity),
                   ecs.get(TransformComponent.self, for: entity) != nil else {
@@ -1184,6 +1184,23 @@ public final class PhysicsSystem {
             sensorBodyIdsByEntity.removeValue(forKey: entityId)
             runtimeWorldScaleByEntity.removeValue(forKey: entityId)
         }
+    }
+
+    private func clearRuntimeBodyBindingIfPresent(entity: Entity, ecs: SceneECS) {
+        if var rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
+           let bodyId = rigidbody.bodyId {
+            world.destroyBody(bodyId: bodyId)
+            rigidbody.bodyId = nil
+            ecs.add(rigidbody, to: entity)
+        }
+        if let sensorBodies = sensorBodyIdsByEntity[entity.id] {
+            for sensorBody in sensorBodies {
+                world.destroyBody(bodyId: sensorBody)
+            }
+            sensorBodyIdsByEntity.removeValue(forKey: entity.id)
+        }
+        runtimeSignatureByEntity.removeValue(forKey: entity.id)
+        runtimeWorldScaleByEntity.removeValue(forKey: entity.id)
     }
 
     private func syncSensorBodiesToParents(ecs: SceneECS) {

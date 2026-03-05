@@ -6,10 +6,18 @@ import MetalKit
 import simd
 import Foundation
 
-public enum TransformMutationSource {
+public enum TransformMutationSource: CustomStringConvertible {
     case script
     case editor
     case physics
+
+    public var description: String {
+        switch self {
+        case .script: return "script"
+        case .editor: return "editor"
+        case .physics: return "physics"
+        }
+    }
 }
 
 public struct FixedStepMode: OptionSet {
@@ -26,6 +34,32 @@ public struct FixedStepMode: OptionSet {
 }
 
 public class EngineScene {
+    public struct FixedStepDiagnostics {
+        public var renderDeltaTime: Float
+        public var fixedDeltaTime: Float
+        public var fixedStepsThisFrame: Int
+        public var fixedStepsLastSecond: Int
+        public var accumulatorBefore: Float
+        public var accumulatorAfter: Float
+        public var interpolationAlpha: Float
+
+        public init(renderDeltaTime: Float = 0.0,
+                    fixedDeltaTime: Float = 1.0 / 60.0,
+                    fixedStepsThisFrame: Int = 0,
+                    fixedStepsLastSecond: Int = 0,
+                    accumulatorBefore: Float = 0.0,
+                    accumulatorAfter: Float = 0.0,
+                    interpolationAlpha: Float = 0.0) {
+            self.renderDeltaTime = renderDeltaTime
+            self.fixedDeltaTime = fixedDeltaTime
+            self.fixedStepsThisFrame = fixedStepsThisFrame
+            self.fixedStepsLastSecond = fixedStepsLastSecond
+            self.accumulatorBefore = accumulatorBefore
+            self.accumulatorAfter = accumulatorAfter
+            self.interpolationAlpha = interpolationAlpha
+        }
+    }
+
     public let ecs: SceneECS
     public let runtime = SceneRuntime()
     public var prefabSystem: PrefabSystem?
@@ -48,8 +82,21 @@ public class EngineScene {
     private var characterSprintRequests: [UUID: Bool] = [:]
     private var characterJumpRequests: Set<UUID> = []
     private var characterHandlesByEntity: [UUID: UInt64] = [:]
-    private var characterDebugLogAccumulated: [UUID: Float] = [:]
-    private var characterAuthorityWarningEmitted: Set<UUID> = []
+    private struct CharacterInterpolationState {
+        var prevPosition: SIMD3<Float>
+        var currPosition: SIMD3<Float>
+        var prevRotation: SIMD4<Float>
+        var currRotation: SIMD4<Float>
+        var initialized: Bool
+    }
+    private var characterInterpolationStates: [UUID: CharacterInterpolationState] = [:]
+    private var renderInterpolationAlpha: Float = 0.0
+    // Render-only world transform cache. Physics and gameplay always use ECS fixed transforms.
+    private var renderWorldTransformCache: [UUID: TransformComponent] = [:]
+    private var fixedStepDiagnostics = FixedStepDiagnostics()
+    private var fixedTickCounter: UInt64 = 0
+    private var isExecutingFixedStep: Bool = false
+    private var controllerTransformWriterByEntity: [UUID: TransformMutationSource] = [:]
     private let characterControllerDebugEnabled: Bool = ProcessInfo.processInfo.environment["MCE_CHARACTER_CONTROLLER_DEBUG"] == "1"
     private var currentInputKeys: [Bool] = []
     private var previousInputKeys: [Bool] = []
@@ -237,6 +284,22 @@ public class EngineScene {
                                   for entity: Entity,
                                   source: TransformMutationSource) -> Bool {
         guard var localTransform = ecs.get(TransformComponent.self, for: entity) else { return false }
+        if isExecutingFixedStep,
+           let controller = ecs.get(CharacterControllerComponent.self, for: entity),
+           controller.isEnabled {
+            if characterControllerDebugEnabled,
+               let previousSource = controllerTransformWriterByEntity[entity.id],
+               previousSource != source {
+                EngineLoggerContext.log("CharacterController transform authority conflict entity=\(entity.id.uuidString) fixedTick=\(fixedTickCounter) previous=\(previousSource) current=\(source)",
+                                        level: .warning,
+                                        category: .scene)
+            } else if characterControllerDebugEnabled {
+                EngineLoggerContext.log("CharacterController transform write entity=\(entity.id.uuidString) fixedTick=\(fixedTickCounter) source=\(source)",
+                                        level: .debug,
+                                        category: .scene)
+            }
+            controllerTransformWriterByEntity[entity.id] = source
+        }
         let rigidbody = ecs.get(RigidbodyComponent.self, for: entity)
 
         if let rigidbody, rigidbody.isEnabled {
@@ -328,6 +391,89 @@ public class EngineScene {
         return controller.velocity
     }
 
+    public func setFixedStepDiagnostics(_ diagnostics: FixedStepDiagnostics) {
+        fixedStepDiagnostics = diagnostics
+        renderInterpolationAlpha = simd_clamp(diagnostics.interpolationAlpha, 0.0, 1.0)
+        rebuildRenderWorldTransformCache()
+    }
+
+    public func latestFixedStepDiagnostics() -> FixedStepDiagnostics {
+        fixedStepDiagnostics
+    }
+
+    public func renderWorldTransform(for entity: Entity) -> TransformComponent {
+        if let cached = renderWorldTransformCache[entity.id] {
+            return cached
+        }
+        return ecs.worldTransform(for: entity)
+    }
+
+    private func rebuildRenderWorldTransformCache() {
+        renderWorldTransformCache.removeAll(keepingCapacity: true)
+        guard !characterInterpolationStates.isEmpty else { return }
+
+        let alpha = simd_clamp(renderInterpolationAlpha, 0.0, 1.0)
+        for (entityId, interpolation) in characterInterpolationStates {
+            guard interpolation.initialized,
+                  let entity = ecs.entity(with: entityId),
+                  let controller = ecs.get(CharacterControllerComponent.self, for: entity),
+                  controller.isEnabled,
+                  controller.interpolateSubtree,
+                  ecs.get(TransformComponent.self, for: entity) != nil else {
+                continue
+            }
+
+            let prevQuat = simd_quatf(vector: interpolation.prevRotation)
+            let currQuat = simd_quatf(vector: interpolation.currRotation)
+            let interpolatedQuat = simd_slerp(prevQuat, currQuat, alpha)
+            let interpolatedPos = simd_mix(interpolation.prevPosition, interpolation.currPosition, SIMD3<Float>(repeating: alpha))
+            let rootScale = ecs.worldTransform(for: entity).scale
+            let rootRender = TransformComponent(position: interpolatedPos,
+                                                rotation: TransformMath.normalizedQuaternion(interpolatedQuat.vector),
+                                                scale: rootScale)
+            renderWorldTransformCache[entity.id] = rootRender
+            buildRenderWorldTransformCacheSubtree(root: entity, rootRenderTransform: rootRender)
+        }
+    }
+
+    private func buildRenderWorldTransformCacheSubtree(root: Entity, rootRenderTransform: TransformComponent) {
+        var visited: Set<UUID> = [root.id]
+        var queue: [(entity: Entity, world: TransformComponent)] = [(root, rootRenderTransform)]
+        var queueIndex = 0
+        var logCycleWarning = characterControllerDebugEnabled
+
+        while queueIndex < queue.count {
+            let current = queue[queueIndex]
+            queueIndex += 1
+            let parentMatrix = TransformMath.makeMatrix(position: current.world.position,
+                                                        rotation: current.world.rotation,
+                                                        scale: current.world.scale)
+            for child in ecs.getChildren(current.entity) {
+                if visited.contains(child.id) {
+                    if logCycleWarning {
+                        EngineLoggerContext.log("Render transform cache skipped cyclic child relationship near entity=\(child.id.uuidString)",
+                                                level: .warning,
+                                                category: .scene)
+                        logCycleWarning = false
+                    }
+                    continue
+                }
+                guard let childLocal = ecs.get(TransformComponent.self, for: child) else { continue }
+                let localMatrix = TransformMath.makeMatrix(position: childLocal.position,
+                                                           rotation: childLocal.rotation,
+                                                           scale: childLocal.scale)
+                let childWorldMatrix = parentMatrix * localMatrix
+                let decomposed = TransformMath.decomposeMatrix(childWorldMatrix)
+                let childRender = TransformComponent(position: decomposed.position,
+                                                     rotation: decomposed.rotation,
+                                                     scale: decomposed.scale)
+                renderWorldTransformCache[child.id] = childRender
+                visited.insert(child.id)
+                queue.append((child, childRender))
+            }
+        }
+    }
+
     private func applyCharacterControllers(fixedDelta: Float) {
         guard let physicsSystem else {
             ecs.viewDeterministic(CharacterControllerComponent.self) { entity, _ in
@@ -336,9 +482,13 @@ public class EngineScene {
                 controller.isGrounded = false
                 controller.velocity = .zero
                 controller.lookInput = .zero
+                controller.jumpBufferTimer = 0.0
+                controller.jumpConsumedOnGroundContact = false
                 ecs.add(controller, to: entity)
             }
             characterHandlesByEntity.removeAll(keepingCapacity: true)
+            characterInterpolationStates.removeAll(keepingCapacity: true)
+            renderWorldTransformCache.removeAll(keepingCapacity: true)
             characterJumpRequests.removeAll(keepingCapacity: true)
             characterLookRequests.removeAll(keepingCapacity: true)
             return
@@ -356,22 +506,17 @@ public class EngineScene {
                     physicsSystem.destroyCharacter(handle: controller.characterHandle)
                 }
                 controller.characterHandle = 0
+                controller.runtimeConfigApplied = false
                 controller.isGrounded = false
                 controller.velocity = .zero
                 controller.lookInput = .zero
+                controller.jumpBufferTimer = 0.0
+                controller.jumpConsumedOnGroundContact = false
+                characterInterpolationStates.removeValue(forKey: entity.id)
                 ecs.add(controller, to: entity)
                 characterHandlesByEntity.removeValue(forKey: entity.id)
                 return
             }
-            if let rigidbody,
-               rigidbody.isEnabled,
-               (rigidbody.motionType == .kinematic || rigidbody.motionType == .dynamic),
-               characterAuthorityWarningEmitted.insert(entity.id).inserted {
-                EngineLoggerContext.log("CharacterController \(entity.id.uuidString) has an enabled Rigidbody. CharacterVirtual is transform-authoritative; rigidbody transform writeback is ignored for this entity.",
-                                        level: .warning,
-                                        category: .scene)
-            }
-
             let moveInput = characterMoveRequests[entity.id] ?? controller.moveInput
             let lookInput = characterLookRequests[entity.id] ?? controller.lookInput
             let sprinting = characterSprintRequests[entity.id] ?? controller.wantsSprint
@@ -413,8 +558,21 @@ public class EngineScene {
                 return moveInput / min(1.0, len)
             }()
 
-            let forward = simd_normalize(yawQuat.act(characterForwardAxis))
-            let right = simd_normalize(yawQuat.act(SIMD3<Float>(1.0, 0.0, 0.0)))
+            var forward = yawQuat.act(characterForwardAxis)
+            // Movement basis must be independent of camera pitch:
+            // flatten forward on the XZ plane, then derive right from world up x forward.
+            forward.y = 0.0
+            if simd_length_squared(forward) > 1.0e-6 {
+                forward = simd_normalize(forward)
+            } else {
+                forward = characterForwardAxis
+            }
+            var right = simd_cross(upAxis, forward)
+            if simd_length_squared(right) > 1.0e-6 {
+                right = simd_normalize(right)
+            } else {
+                right = SIMD3<Float>(1.0, 0.0, 0.0)
+            }
             // Movement convention:
             // - moveInput.y: W/S axis where W = +1, S = -1
             // - moveInput.x: A/D axis where A = -1, D = +1
@@ -428,6 +586,7 @@ public class EngineScene {
             let horizontalVelocity = desiredHorizontal * max(0.0, controller.moveSpeed) * speedMultiplier
 
             let worldTransform = ecs.worldTransform(for: entity)
+            let createdCharacterThisTick: Bool
             if controller.characterHandle == 0 {
                 let desc = PhysicsCharacterCreation(radius: controller.radius,
                                                     height: controller.height,
@@ -440,34 +599,72 @@ public class EngineScene {
                     ecs.add(controller, to: entity)
                     return
                 }
+                createdCharacterThisTick = true
+            } else {
+                createdCharacterThisTick = false
             }
             characterHandlesByEntity[entity.id] = controller.characterHandle
 
             let gravityY = controller.useGravityOverride ? controller.gravity : (engineContext?.physicsSettings.gravity.y ?? -9.81)
             let worldUpAxis = SIMD3<Float>(0.0, 1.0, 0.0)
-            physicsSystem.setCharacterUpVector(handle: controller.characterHandle, up: worldUpAxis)
-            physicsSystem.setCharacterShapeCapsule(handle: controller.characterHandle, radius: controller.radius, height: controller.height)
-            physicsSystem.setCharacterMaxSlope(handle: controller.characterHandle, radians: controller.maxSlope * (.pi / 180.0))
-            physicsSystem.setCharacterStepOffset(handle: controller.characterHandle, meters: max(0.0, controller.stepOffset))
-            physicsSystem.setCharacterGravity(handle: controller.characterHandle, value: gravityY)
-            physicsSystem.setCharacterJumpSpeed(handle: controller.characterHandle, value: max(0.0, controller.jumpSpeed))
+            let slopeRadians = controller.maxSlope * (.pi / 180.0)
+            let shouldApplyConfig = createdCharacterThisTick || !controller.runtimeConfigApplied
+            if shouldApplyConfig || abs(controller.runtimeAppliedRadius - controller.radius) > 1.0e-4 || abs(controller.runtimeAppliedHeight - controller.height) > 1.0e-4 {
+                physicsSystem.setCharacterShapeCapsule(handle: controller.characterHandle, radius: controller.radius, height: controller.height)
+                controller.runtimeAppliedRadius = controller.radius
+                controller.runtimeAppliedHeight = controller.height
+            }
+            if shouldApplyConfig || abs(controller.runtimeAppliedMaxSlope - slopeRadians) > 1.0e-4 {
+                physicsSystem.setCharacterMaxSlope(handle: controller.characterHandle, radians: slopeRadians)
+                controller.runtimeAppliedMaxSlope = slopeRadians
+            }
+            if shouldApplyConfig || abs(controller.runtimeAppliedStepOffset - controller.stepOffset) > 1.0e-4 {
+                physicsSystem.setCharacterStepOffset(handle: controller.characterHandle, meters: max(0.0, controller.stepOffset))
+                controller.runtimeAppliedStepOffset = controller.stepOffset
+            }
+            if shouldApplyConfig || abs(controller.runtimeAppliedGravity - gravityY) > 1.0e-4 {
+                physicsSystem.setCharacterGravity(handle: controller.characterHandle, value: gravityY)
+                controller.runtimeAppliedGravity = gravityY
+            }
+            if shouldApplyConfig || abs(controller.runtimeAppliedJumpSpeed - controller.jumpSpeed) > 1.0e-4 {
+                physicsSystem.setCharacterJumpSpeed(handle: controller.characterHandle, value: max(0.0, controller.jumpSpeed))
+                controller.runtimeAppliedJumpSpeed = controller.jumpSpeed
+            }
+            if shouldApplyConfig || abs(controller.runtimeAppliedPushStrength - controller.pushStrength) > 1.0e-4 {
+                physicsSystem.setCharacterPushStrength(handle: controller.characterHandle, value: max(0.0, controller.pushStrength))
+                controller.runtimeAppliedPushStrength = controller.pushStrength
+            }
+            if shouldApplyConfig {
+                physicsSystem.setCharacterUpVector(handle: controller.characterHandle, up: worldUpAxis)
+                controller.runtimeConfigApplied = true
+            }
 
             let wasGrounded = physicsSystem.characterIsGrounded(handle: controller.characterHandle)
-            let groundVelocity = wasGrounded ? physicsSystem.characterGroundVelocity(handle: controller.characterHandle) : .zero
-            let jumpRequested = characterJumpRequests.contains(entity.id)
-            if jumpRequested && wasGrounded {
-                controller.verticalVelocity = max(0.0, controller.jumpSpeed)
-            } else if wasGrounded && controller.verticalVelocity < 0.0 {
-                controller.verticalVelocity = 0.0
-            } else if !wasGrounded {
-                controller.verticalVelocity += gravityY * fixedDelta
+            if !wasGrounded {
+                controller.jumpConsumedOnGroundContact = false
             }
-
-            var desiredVelocity = SIMD3<Float>(horizontalVelocity.x, controller.verticalVelocity, horizontalVelocity.z)
-            if wasGrounded {
-                desiredVelocity += groundVelocity
+            controller.jumpBufferTimer = max(0.0, controller.jumpBufferTimer - fixedDelta)
+            if characterJumpRequests.contains(entity.id) {
+                controller.jumpBufferTimer = 0.12
             }
-            controller.debugDesiredVelocity = desiredVelocity
+            let jumpRequested = wasGrounded
+                && !controller.jumpConsumedOnGroundContact
+                && controller.jumpBufferTimer > 0.0
+            if jumpRequested {
+                controller.jumpConsumedOnGroundContact = true
+                controller.jumpBufferTimer = 0.0
+            }
+            // CharacterVirtual receives gravity in ExtendedUpdate; do not integrate gravity again in Swift.
+            var desiredVelocity = SIMD3<Float>(horizontalVelocity.x, 0.0, horizontalVelocity.z)
+            if !wasGrounded {
+                let airControl = simd_clamp(controller.airControl, 0.0, 1.0)
+                if airControl < 0.999 {
+                    let currentHorizontal = SIMD3<Float>(controller.velocity.x, 0.0, controller.velocity.z)
+                    desiredVelocity = simd_mix(currentHorizontal, desiredVelocity, SIMD3<Float>(repeating: airControl))
+                }
+            }
+            // Isolation mode: do not add ground velocity into desired movement until fixed-step and interpolation
+            // paths are fully validated end-to-end.
             let startPosition = worldTransform.position
             var updated = physicsSystem.updateCharacter(handle: controller.characterHandle,
                                                         dt: fixedDelta,
@@ -484,10 +681,7 @@ public class EngineScene {
                 controller.characterHandle = physicsSystem.createCharacter(desc: desc)
                 characterHandlesByEntity[entity.id] = controller.characterHandle
                 if controller.characterHandle != 0 {
-                    physicsSystem.setCharacterMaxSlope(handle: controller.characterHandle, radians: controller.maxSlope * (.pi / 180.0))
-                    physicsSystem.setCharacterStepOffset(handle: controller.characterHandle, meters: max(0.0, controller.stepOffset))
-                    physicsSystem.setCharacterGravity(handle: controller.characterHandle, value: gravityY)
-                    physicsSystem.setCharacterJumpSpeed(handle: controller.characterHandle, value: max(0.0, controller.jumpSpeed))
+                    controller.runtimeConfigApplied = false
                     updated = physicsSystem.updateCharacter(handle: controller.characterHandle,
                                                             dt: fixedDelta,
                                                             desiredVelocity: desiredVelocity,
@@ -506,34 +700,35 @@ public class EngineScene {
             _ = setWorldTransform(resolvedTransform, for: entity, source: .physics)
 
             let groundedNow = physicsSystem.characterIsGrounded(handle: controller.characterHandle)
+            let groundBodyNow = groundedNow ? physicsSystem.characterGroundBodyId(handle: controller.characterHandle) : 0
             controller.isGrounded = groundedNow
             controller.lastGroundNormal = physicsSystem.characterGroundNormal(handle: controller.characterHandle)
-            if groundedNow && controller.verticalVelocity < 0.0 {
-                controller.verticalVelocity = 0.0
-            }
+            controller.lastGroundBodyId = groundBodyNow
             controller.velocity = fixedDelta > 1.0e-6
                 ? (finalPosition - startPosition) / fixedDelta
                 : .zero
             controller.lookInput = .zero
-
-            controller.debugProbeStart = finalPosition
-            controller.debugProbeEnd = finalPosition + controller.lastGroundNormal * 0.35
-            controller.debugProbeHadHit = groundedNow
-            controller.debugProbeHitPoint = finalPosition
-            controller.debugSweepStart = startPosition
-            controller.debugSweepEnd = finalPosition
-            controller.debugStepUpEnd = finalPosition
-            controller.debugStepForwardEnd = finalPosition
-            controller.debugStepDidApply = false
-            controller.debugDepenetrationEnd = finalPosition
-            controller.debugPenetrationDepth = 0.0
-            controller.debugSnapStart = finalPosition
-            controller.debugSnapEnd = finalPosition
-            controller.debugSnapDidApply = false
-            controller.debugPushEnd = finalPosition
-            controller.debugPushDidApply = false
-            controller.debugSweepNormal = controller.lastGroundNormal
-            controller.debugSweepDidCollide = simd_length_squared(controller.velocity - desiredVelocity) > 0.25
+            controller.debugBasisForward = forward
+            controller.debugBasisRight = right
+            let updatedRotation = TransformMath.normalizedQuaternion(yawRotation)
+            var interpolation = characterInterpolationStates[entity.id] ?? CharacterInterpolationState(prevPosition: finalPosition,
+                                                                                                      currPosition: finalPosition,
+                                                                                                      prevRotation: updatedRotation,
+                                                                                                      currRotation: updatedRotation,
+                                                                                                      initialized: false)
+            if !interpolation.initialized {
+                interpolation.prevPosition = startPosition
+                interpolation.currPosition = finalPosition
+                interpolation.prevRotation = updatedRotation
+                interpolation.currRotation = updatedRotation
+                interpolation.initialized = true
+            } else {
+                interpolation.prevPosition = interpolation.currPosition
+                interpolation.prevRotation = interpolation.currRotation
+                interpolation.currPosition = finalPosition
+                interpolation.currRotation = updatedRotation
+            }
+            characterInterpolationStates[entity.id] = interpolation
 
             // Intentionally do not write `visualEntityId` transforms here.
             // Artist/model local rotation fixups (for example +90deg X) must remain untouched at runtime.
@@ -545,41 +740,19 @@ public class EngineScene {
                 _ = setLocalTransform(pivotTransform, for: pivotEntity, source: .physics)
             }
 
-            if characterControllerDebugEnabled {
-                let previousTime = characterDebugLogAccumulated[entity.id] ?? 0.0
-                let accumulated = previousTime + fixedDelta
-                if accumulated >= 1.0 {
-                    EngineLoggerContext.log(
-                        String(
-                            format: "CharacterController Debug id=%@ pos=(%.3f,%.3f,%.3f) grounded=%@ groundNormal=(%.3f,%.3f,%.3f) desired=(%.3f,%.3f,%.3f) velocity=(%.3f,%.3f,%.3f)",
-                            entity.id.uuidString,
-                            finalPosition.x, finalPosition.y, finalPosition.z,
-                            controller.isGrounded ? "true" : "false",
-                            controller.lastGroundNormal.x, controller.lastGroundNormal.y, controller.lastGroundNormal.z,
-                            desiredVelocity.x, desiredVelocity.y, desiredVelocity.z,
-                            controller.velocity.x, controller.velocity.y, controller.velocity.z
-                        ),
-                        level: .debug,
-                        category: .scene
-                    )
-                    EngineLoggerContext.log(
-                        String(
-                            format: "CharacterController InputBasis id=%@ move=(%.3f,%.3f) desiredHorizontal=(%.3f,%.3f,%.3f) yawDelta=%.5f yaw=%.5f forward=(%.3f,%.3f,%.3f) right=(%.3f,%.3f,%.3f)",
-                            entity.id.uuidString,
-                            moveInput.x, moveInput.y,
-                            desiredHorizontal.x, desiredHorizontal.y, desiredHorizontal.z,
-                            yawDelta,
-                            controller.yawRadians,
-                            forward.x, forward.y, forward.z,
-                            right.x, right.y, right.z
-                        ),
-                        level: .debug,
-                        category: .scene
-                    )
-                    characterDebugLogAccumulated[entity.id] = accumulated - 1.0
-                } else {
-                    characterDebugLogAccumulated[entity.id] = accumulated
-                }
+            if characterControllerDebugEnabled && controller.debugDraw {
+                EngineLoggerContext.log(
+                    String(
+                        format: "CharacterController Debug id=%@ pos=(%.3f,%.3f,%.3f) grounded=%@ groundBody=%llu velocity=(%.3f,%.3f,%.3f)",
+                        entity.id.uuidString,
+                        finalPosition.x, finalPosition.y, finalPosition.z,
+                        groundedNow ? "true" : "false",
+                        groundBodyNow,
+                        controller.velocity.x, controller.velocity.y, controller.velocity.z
+                    ),
+                    level: .debug,
+                    category: .scene
+                )
             }
             ecs.add(controller, to: entity)
         }
@@ -589,8 +762,8 @@ public class EngineScene {
                 physicsSystem.destroyCharacter(handle: handle)
             }
             characterHandlesByEntity.removeValue(forKey: entityId)
-            characterDebugLogAccumulated.removeValue(forKey: entityId)
-            characterAuthorityWarningEmitted.remove(entityId)
+            characterInterpolationStates.removeValue(forKey: entityId)
+            renderWorldTransformCache.removeValue(forKey: entityId)
         }
         characterJumpRequests.removeAll(keepingCapacity: true)
         characterLookRequests.removeAll(keepingCapacity: true)
@@ -598,6 +771,10 @@ public class EngineScene {
 
     func updateCameras() {
         updateCamera(isPlaying: false, frame: currentFrameForUpdates())
+    }
+
+    public func refreshRuntimeCamera(frame: FrameContext) {
+        updateCamera(isPlaying: true, frame: frame)
     }
 
     public func updateAspectRatio() {
@@ -620,6 +797,10 @@ public class EngineScene {
             ?? engineContext?.physicsSettings.fixedDeltaTime
             ?? lastFrameContext?.time.fixedDeltaTime
             ?? defaultDelta
+        fixedTickCounter &+= 1
+        controllerTransformWriterByEntity.removeAll(keepingCapacity: true)
+        isExecutingFixedStep = true
+        defer { isExecutingFixedStep = false }
         dispatchScriptChanges()
         if mode.contains(.executeScripts) {
             engineContext?.scriptRuntime.onFixedUpdate(dt: fixedDelta)
@@ -646,6 +827,9 @@ public class EngineScene {
             case .entityCreated:
                 runtime.onEntityCreated(entityId: change.entityId)
             case .entityDestroyed:
+                characterHandlesByEntity.removeValue(forKey: change.entityId)
+                characterInterpolationStates.removeValue(forKey: change.entityId)
+                renderWorldTransformCache.removeValue(forKey: change.entityId)
                 runtime.onEntityDestroyed(entityId: change.entityId)
             case .componentAdded:
                 if let type = change.componentType {
@@ -682,10 +866,12 @@ public class EngineScene {
         ecs.viewDeterministic(CharacterControllerComponent.self) { entity, _ in
             guard var controller = ecs.get(CharacterControllerComponent.self, for: entity) else { return }
             controller.characterHandle = 0
+            controller.runtimeConfigApplied = false
             ecs.add(controller, to: entity)
         }
         characterHandlesByEntity.removeAll(keepingCapacity: true)
-        characterAuthorityWarningEmitted.removeAll(keepingCapacity: true)
+        characterInterpolationStates.removeAll(keepingCapacity: true)
+        renderWorldTransformCache.removeAll(keepingCapacity: true)
         guard let system = PhysicsSystem(settings: settings) else { return }
         system.buildBodies(scene: self)
         physicsSystem = system
@@ -699,7 +885,8 @@ public class EngineScene {
             system.destroyCharacter(handle: handle)
         }
         characterHandlesByEntity.removeAll(keepingCapacity: true)
-        characterAuthorityWarningEmitted.removeAll(keepingCapacity: true)
+        characterInterpolationStates.removeAll(keepingCapacity: true)
+        renderWorldTransformCache.removeAll(keepingCapacity: true)
         system.destroyBodies(scene: self)
         physicsSystem = nil
     }
@@ -994,6 +1181,13 @@ public class EngineScene {
     }
 
     public func apply(document: SceneDocument) {
+        characterHandlesByEntity.removeAll(keepingCapacity: true)
+        characterInterpolationStates.removeAll(keepingCapacity: true)
+        renderWorldTransformCache.removeAll(keepingCapacity: true)
+        characterJumpRequests.removeAll(keepingCapacity: true)
+        characterLookRequests.removeAll(keepingCapacity: true)
+        characterSprintRequests.removeAll(keepingCapacity: true)
+        characterMoveRequests.removeAll(keepingCapacity: true)
         ecs.clear()
         name = document.name
         let physicsDefaults = engineContext?.physicsSettings ?? PhysicsSettings()
@@ -1418,7 +1612,7 @@ public class EngineScene {
             _editorCameraController.update(transform: &active.transform, frame: frame)
             ecs.add(active.transform, to: active.entity)
         }
-        let worldTransform = ecs.worldTransform(for: active.entity)
+        let worldTransform = renderWorldTransform(for: active.entity)
         let viewportSize = frame.input.viewportSize
         let aspectRatio: Float = {
             let width = max(1.0, viewportSize.x)
