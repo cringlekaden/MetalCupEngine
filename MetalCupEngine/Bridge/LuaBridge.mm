@@ -1,5 +1,6 @@
-// LuaBridge.mm
-// Lua scripting bridge for MetalCupEngine.
+/// LuaBridge.mm
+/// Lua scripting bridge for MetalCupEngine.
+/// Created by Kaden Cringle.
 
 #import <Foundation/Foundation.h>
 

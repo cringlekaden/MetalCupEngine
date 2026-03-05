@@ -753,7 +753,6 @@ public struct CharacterControllerComponentDTO: Codable {
     public var maxPitchDegrees: Float
     public var visualEntityId: UUID?
     public var cameraPivotEntityId: UUID?
-    public var debugDraw: Bool
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -800,8 +799,7 @@ public struct CharacterControllerComponentDTO: Codable {
                 minPitchDegrees: Float = -80.0,
                 maxPitchDegrees: Float = 80.0,
                 visualEntityId: UUID? = nil,
-                cameraPivotEntityId: UUID? = nil,
-                debugDraw: Bool = false) {
+                cameraPivotEntityId: UUID? = nil) {
         self.schemaVersion = schemaVersion
         self.enabled = enabled
         self.height = height
@@ -820,7 +818,6 @@ public struct CharacterControllerComponentDTO: Codable {
         self.maxPitchDegrees = maxPitchDegrees
         self.visualEntityId = visualEntityId
         self.cameraPivotEntityId = cameraPivotEntityId
-        self.debugDraw = debugDraw
     }
 
     public init(from decoder: Decoder) throws {
@@ -849,7 +846,7 @@ public struct CharacterControllerComponentDTO: Codable {
         _ = try container.decodeIfPresent(Float.self, forKey: .groundVelocityFollowThreshold)
         self.visualEntityId = try container.decodeIfPresent(UUID.self, forKey: .visualEntityId)
         self.cameraPivotEntityId = try container.decodeIfPresent(UUID.self, forKey: .cameraPivotEntityId)
-        self.debugDraw = try container.decodeIfPresent(Bool.self, forKey: .debugDraw) ?? false
+        _ = try container.decodeIfPresent(Bool.self, forKey: .debugDraw)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -872,7 +869,6 @@ public struct CharacterControllerComponentDTO: Codable {
         try container.encode(maxPitchDegrees, forKey: .maxPitchDegrees)
         try container.encodeIfPresent(visualEntityId, forKey: .visualEntityId)
         try container.encodeIfPresent(cameraPivotEntityId, forKey: .cameraPivotEntityId)
-        try container.encode(debugDraw, forKey: .debugDraw)
     }
 
     public init(component: CharacterControllerComponent) {
@@ -894,7 +890,6 @@ public struct CharacterControllerComponentDTO: Codable {
         self.maxPitchDegrees = component.maxPitchDegrees
         self.visualEntityId = component.visualEntityId
         self.cameraPivotEntityId = component.cameraPivotEntityId
-        self.debugDraw = component.debugDraw
     }
 
     public func toComponent() -> CharacterControllerComponent {
@@ -914,8 +909,7 @@ public struct CharacterControllerComponentDTO: Codable {
                                      minPitchDegrees: minPitchDegrees,
                                      maxPitchDegrees: maxPitchDegrees,
                                      visualEntityId: visualEntityId,
-                                     cameraPivotEntityId: cameraPivotEntityId,
-                                     debugDraw: debugDraw)
+                                     cameraPivotEntityId: cameraPivotEntityId)
     }
 }
 

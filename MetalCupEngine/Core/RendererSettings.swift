@@ -287,7 +287,6 @@ public final class RendererProfiler {
     private var gpuCounterSupportReason: String = ""
     private var gpuCounterSetName: String = ""
     private var gpuCounterSamplingPointName: String = ""
-    private var gpuCounterLoggedDiagnostics: Bool = false
 
     public init(sampleCount: Int = 120) {
         for scope in Scope.allCases {
@@ -388,7 +387,6 @@ public final class RendererProfiler {
         gpuCounterEndMask = Array(repeating: 0, count: inFlightFrames)
         gpuCounterFrameIds = Array(repeating: 0, count: inFlightFrames)
         gpuCounterLock.unlock()
-        logGpuCounterDiagnosticsIfNeeded()
         return true
     }
 
@@ -569,24 +567,4 @@ public final class RendererProfiler {
         gpuCounterLock.unlock()
     }
 
-    private func logGpuCounterDiagnosticsIfNeeded() {
-        #if DEBUG
-        gpuCounterLock.lock()
-        if gpuCounterLoggedDiagnostics {
-            gpuCounterLock.unlock()
-            return
-        }
-        gpuCounterLoggedDiagnostics = true
-        let supported = gpuCounterSupported
-        let reason = gpuCounterSupportReason
-        let counterSet = gpuCounterSetName
-        let samplingPoint = gpuCounterSamplingPointName
-        gpuCounterLock.unlock()
-        if supported {
-            print("GPU pass timings: supported (\(counterSet), \(samplingPoint)).")
-        } else {
-            print("GPU pass timings: unsupported (\(reason)).")
-        }
-        #endif
-    }
 }

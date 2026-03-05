@@ -1,6 +1,6 @@
 /// ShadowRenderer.swift
 /// Renders cascaded directional shadow maps.
-/// Created by Codex.
+/// Created by Kaden Cringle.
 
 import MetalKit
 import simd

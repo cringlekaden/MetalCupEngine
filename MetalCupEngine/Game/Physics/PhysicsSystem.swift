@@ -1,12 +1,46 @@
 /// PhysicsSystem.swift
 /// Defines PhysicsSystem to sync ECS with Jolt.
-/// Created by Codex.
-/// Euler rotation order is XYZ (rotate X, then Y, then Z) across the engine.
+/// Euler rotation order is XYZ (rotate X, then Y, then Z) across the engine. 
+/// Created by Kaden Cringle.
 
 import Foundation
 import simd
 
 public final class PhysicsSystem {
+    public struct ScriptEventQueueTelemetry {
+        public var droppedCollisionEvents: Int
+        public var droppedTriggerEvents: Int
+        public var droppedStayEvents: Int
+        public var totalDroppedCollisionEvents: Int
+        public var totalDroppedTriggerEvents: Int
+        public var totalDroppedStayEvents: Int
+
+        public init(droppedCollisionEvents: Int = 0,
+                    droppedTriggerEvents: Int = 0,
+                    droppedStayEvents: Int = 0,
+                    totalDroppedCollisionEvents: Int = 0,
+                    totalDroppedTriggerEvents: Int = 0,
+                    totalDroppedStayEvents: Int = 0) {
+            self.droppedCollisionEvents = droppedCollisionEvents
+            self.droppedTriggerEvents = droppedTriggerEvents
+            self.droppedStayEvents = droppedStayEvents
+            self.totalDroppedCollisionEvents = totalDroppedCollisionEvents
+            self.totalDroppedTriggerEvents = totalDroppedTriggerEvents
+            self.totalDroppedStayEvents = totalDroppedStayEvents
+        }
+    }
+
+    public struct ScriptEventQueueLimits {
+        public var maxTriggerEventsPerFrame: Int
+        public var maxCollisionEventsPerFrame: Int
+
+        public init(maxTriggerEventsPerFrame: Int = 2048,
+                    maxCollisionEventsPerFrame: Int = 2048) {
+            self.maxTriggerEventsPerFrame = max(1, maxTriggerEventsPerFrame)
+            self.maxCollisionEventsPerFrame = max(1, maxCollisionEventsPerFrame)
+        }
+    }
+
     public struct CharacterGroundProbe {
         public var isGrounded: Bool
         public var hitPosition: SIMD3<Float>
@@ -62,17 +96,16 @@ public final class PhysicsSystem {
     private var collisionEvents: [PhysicsCollisionEvent] = []
     private var activeCollisionPairs: Set<OverlapKey> = []
     private var scriptEvents: [PhysicsScriptEvent] = []
+    private var scriptEventQueueLimits = ScriptEventQueueLimits()
+    private var scriptEventQueueTelemetry = ScriptEventQueueTelemetry()
+    private var lastScriptEventOverflowLogTime: TimeInterval = 0.0
+    private let scriptEventOverflowLogInterval: TimeInterval = 1.0
     private var sensorBodyIdsByEntity: [UUID: [UInt64]] = [:]
     private var runtimeSignatureByEntity: [UUID: Int] = [:]
     private var runtimeWorldScaleByEntity: [UUID: SIMD3<Float>] = [:]
     private var pendingKinematicTargets: [UInt64: KinematicTarget] = [:]
 #if DEBUG
     private var warnedScaleEntities: Set<UUID> = []
-    private var hasSteppedOnce: Bool = false
-    private var debugLoggedPostStep: Bool = false
-    private var debugEntityId: UUID?
-#else
-    private var hasSteppedOnce: Bool = false
 #endif
 
     public init?(settings: PhysicsSettings) {
@@ -201,26 +234,7 @@ public final class PhysicsSystem {
         pushKinematicTransforms(ecs: ecs, fixedDeltaTime: fixedDeltaTime)
         world.step(dt: fixedDeltaTime)
         updateOverlapEvents()
-#if DEBUG
-        if let debugEntityId, !debugLoggedPostStep, let entity = ecs.entity(with: debugEntityId),
-           let rigidbody = ecs.get(RigidbodyComponent.self, for: entity),
-           let bodyId = rigidbody.bodyId,
-           let transform = ecs.get(TransformComponent.self, for: entity),
-           let fetched = world.getBodyTransform(bodyId: bodyId) {
-            let ecsRotation = transform.rotation
-            let posDelta = simd_length(fetched.position - transform.position)
-            let angDelta = PhysicsSystem.angularDeltaDegrees(ecsRotation, fetched.rotation)
-            EngineLoggerContext.log(
-                String(format: "Physics Debug Body '%@': post-step delta pos=%.6f, ang=%.4f°",
-                       entity.id.uuidString, posDelta, angDelta),
-                level: .debug,
-                category: .scene
-            )
-            debugLoggedPostStep = true
-        }
-#endif
         pullSimulatedTransforms(ecs: ecs)
-        hasSteppedOnce = true
     }
 
     public func rebuildBody(entity: Entity, scene: EngineScene) -> Bool {
@@ -312,8 +326,9 @@ public final class PhysicsSystem {
                 debugDraw.submitLine(origin, origin + zAxis, color: SIMD4<Float>(0.2, 0.4, 1.0, 1.0))
             }
 
-            if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
-               controller.debugDraw {
+            if let controller = ecs.get(CharacterControllerComponent.self, for: entity) {
+                let debugState = scene.characterDebugVisualization(entityId: entity.id)
+                guard debugState.enabled else { return }
                 let origin = ecs.worldTransform(for: entity).position
                 let controllerColor = SIMD4<Float>(0.9, 0.95, 0.3, 0.9)
                 let controllerRadius = max(0.02, controller.radius)
@@ -323,14 +338,14 @@ public final class PhysicsSystem {
                                             halfHeight: controllerHalfHeight,
                                             color: controllerColor)
                 let basisScale: Float = 0.35
-                let forwardBasis = simd_length_squared(controller.debugBasisForward) > 1.0e-6
-                    ? simd_normalize(controller.debugBasisForward)
+                let forwardBasis = simd_length_squared(debugState.basisForward) > 1.0e-6
+                    ? simd_normalize(debugState.basisForward)
                     : SIMD3<Float>(0.0, 0.0, 1.0)
-                let rightBasis = simd_length_squared(controller.debugBasisRight) > 1.0e-6
-                    ? simd_normalize(controller.debugBasisRight)
+                let rightBasis = simd_length_squared(debugState.basisRight) > 1.0e-6
+                    ? simd_normalize(debugState.basisRight)
                     : SIMD3<Float>(1.0, 0.0, 0.0)
-                let groundNormal = simd_length_squared(controller.lastGroundNormal) > 1.0e-6
-                    ? simd_normalize(controller.lastGroundNormal)
+                let groundNormal = simd_length_squared(debugState.groundNormal) > 1.0e-6
+                    ? simd_normalize(debugState.groundNormal)
                     : SIMD3<Float>(0.0, 1.0, 0.0)
                 // Basis debug: right=red, forward=green, ground normal=blue.
                 debugDraw.submitLine(origin, origin + rightBasis * basisScale, color: SIMD4<Float>(1.0, 0.2, 0.2, 0.95))
@@ -424,6 +439,19 @@ public final class PhysicsSystem {
         collisionEvents
     }
 
+    public func scriptEventQueueStats() -> ScriptEventQueueTelemetry {
+        scriptEventQueueTelemetry
+    }
+
+    public func scriptEventQueueConfig() -> ScriptEventQueueLimits {
+        scriptEventQueueLimits
+    }
+
+    public func setScriptEventQueueLimits(_ limits: ScriptEventQueueLimits) {
+        scriptEventQueueLimits = ScriptEventQueueLimits(maxTriggerEventsPerFrame: limits.maxTriggerEventsPerFrame,
+                                                        maxCollisionEventsPerFrame: limits.maxCollisionEventsPerFrame)
+    }
+
     public func drainEvents() -> [PhysicsScriptEvent] {
         guard !scriptEvents.isEmpty else { return [] }
         let drained = scriptEvents
@@ -488,6 +516,10 @@ public final class PhysicsSystem {
         guard let rigidbody = scene.ecs.get(RigidbodyComponent.self, for: entity),
               let bodyId = rigidbody.bodyId else { return nil }
         return world.getBodyVelocity(bodyId: bodyId)?.linear
+    }
+
+    public func bodyVelocity(bodyId: UInt64) -> SIMD3<Float>? {
+        world.getBodyVelocity(bodyId: bodyId)?.linear
     }
 
     func entityIdForBody(_ bodyId: UInt64) -> UUID? {
@@ -601,7 +633,7 @@ public final class PhysicsSystem {
                                offset: SIMD3<Float>,
                                rotationOffset _: SIMD4<Float>,
                                maxSlideIterations: Int = 2,
-                               layerMask: LayerMask = .all) -> CharacterSweepResult {
+                               layerMask: LayerMask? = nil) -> CharacterSweepResult {
         guard scene.ecs.get(TransformComponent.self, for: entity) != nil else {
             return CharacterSweepResult(finalPosition: startPosition, didCollide: false)
         }
@@ -609,6 +641,7 @@ public final class PhysicsSystem {
         let safeHalfHeight = max(0.02, halfHeight)
         let capsuleRotation = TransformMath.identityQuaternion
         let worldOffset = offset
+        let effectiveLayerMask = layerMask ?? defaultCharacterQueryMask(entity: entity, scene: scene)
 
         let requestedDistance = simd_length(desiredDelta)
         if requestedDistance <= 1.0e-6 {
@@ -637,7 +670,7 @@ public final class PhysicsSystem {
                                                 radius: safeRadius,
                                                 maxDistance: segmentLength + skinWidth,
                                                 ignoreEntityId: entity.id,
-                                                layerMask: layerMask,
+                                                layerMask: effectiveLayerMask,
                                                 includeTriggers: false) else {
                 resolvedDelta += remainingDelta
                 break
@@ -701,6 +734,7 @@ public final class PhysicsSystem {
             SIMD3<Float>(0.0, 0.0, 1.0),
             SIMD3<Float>(0.0, 0.0, -1.0)
         ]
+        let effectiveLayerMask = defaultCharacterQueryMask(entity: entity, scene: scene)
 
         for _ in 0..<max(1, maxIterations) {
             var correction = SIMD3<Float>.zero
@@ -713,7 +747,7 @@ public final class PhysicsSystem {
                                                     radius: radius,
                                                     maxDistance: safeSkin + 0.03,
                                                     ignoreEntityId: entity.id,
-                                                    layerMask: .all,
+                                                    layerMask: effectiveLayerMask,
                                                     includeTriggers: false) else {
                     continue
                 }
@@ -765,6 +799,7 @@ public final class PhysicsSystem {
         let skinWidth = max(0.002, castRadius * 0.05)
         let origin = capsule.center + SIMD3<Float>(0.0, skinWidth, 0.0)
         let castDistance = probe + skinWidth + 0.02
+        let effectiveLayerMask = defaultCharacterQueryMask(entity: entity, scene: scene)
         let hit = filteredCapsuleCast(origin: origin,
                                       rotation: capsule.rotation,
                                       direction: SIMD3<Float>(0.0, -1.0, 0.0),
@@ -772,7 +807,7 @@ public final class PhysicsSystem {
                                       radius: castRadius,
                                       maxDistance: castDistance,
                                       ignoreEntityId: entity.id,
-                                      layerMask: .all,
+                                      layerMask: effectiveLayerMask,
                                       includeTriggers: false)
         guard let hit else { return CharacterGroundProbe() }
         let slopeCos = cos(max(0.0, min(maxSlopeDegrees, 89.0)) * (Float.pi / 180.0))
@@ -797,23 +832,37 @@ public final class PhysicsSystem {
                       includeTriggers: includeTriggers)
     }
 
-    public func raycastClosest(origin: SIMD3<Float>, direction: SIMD3<Float>, maxDistance: Float) -> PhysicsRaycastHit? {
-        raycast(origin: origin,
-                direction: direction,
-                maxDistance: maxDistance,
-                layerMask: .all,
-                includeTriggers: true)
+    public func raycastClosest(origin: SIMD3<Float>,
+                               direction: SIMD3<Float>,
+                               maxDistance: Float,
+                               layerMask: LayerMask? = nil,
+                               includeTriggers: Bool = false) -> PhysicsRaycastHit? {
+        let effectiveLayerMask = layerMask ?? defaultGameplayQueryMask()
+        return raycast(origin: origin,
+                       direction: direction,
+                       maxDistance: maxDistance,
+                       layerMask: effectiveLayerMask,
+                       includeTriggers: includeTriggers)
     }
 
     public func raycastForEditorPicking(origin: SIMD3<Float>,
                                         direction: SIMD3<Float>,
                                         maxDistance: Float,
-                                        layerMask: LayerMask = .all) -> PhysicsRaycastHit? {
-        raycast(origin: origin,
-                direction: direction,
-                maxDistance: maxDistance,
-                layerMask: layerMask,
-                includeTriggers: false)
+                                        layerMask: LayerMask? = nil) -> PhysicsRaycastHit? {
+        let effectiveLayerMask = layerMask ?? defaultEditorPickingMask()
+        return raycast(origin: origin,
+                       direction: direction,
+                       maxDistance: maxDistance,
+                       layerMask: effectiveLayerMask,
+                       includeTriggers: false)
+    }
+
+    public func defaultGameplayLayerMask() -> LayerMask {
+        defaultGameplayQueryMask()
+    }
+
+    public func defaultEditorPickingLayerMask() -> LayerMask {
+        defaultEditorPickingMask()
     }
 
     public func sphereCastClosest(origin: SIMD3<Float>, direction: SIMD3<Float>, radius: Float, maxDistance: Float) -> PhysicsRaycastHit? {
@@ -909,6 +958,25 @@ public final class PhysicsSystem {
             currentOrigin = origin + normalizedDirection * traveledDistance
         }
         return nil
+    }
+
+    private func defaultGameplayQueryMask() -> LayerMask {
+        layerMaskForCollisionLayer(LayerCatalog.defaultLayerIndex)
+    }
+
+    private func defaultEditorPickingMask() -> LayerMask {
+        layerMaskForCollisionLayer(LayerCatalog.defaultLayerIndex)
+    }
+
+    private func defaultCharacterQueryMask(entity: Entity, scene: EngineScene) -> LayerMask {
+        let collisionLayer = scene.ecs.get(RigidbodyComponent.self, for: entity)?.collisionLayer ?? LayerCatalog.defaultLayerIndex
+        return layerMaskForCollisionLayer(collisionLayer)
+    }
+
+    private func layerMaskForCollisionLayer(_ layer: Int32) -> LayerMask {
+        guard !settings.collisionMatrix.isEmpty else { return .all }
+        let clampedLayer = max(0, min(Int(layer), settings.collisionMatrix.count - 1))
+        return LayerMask(rawValue: settings.collisionMatrix[clampedLayer])
     }
 
     private func characterCapsuleState(entity: Entity,
@@ -1286,15 +1354,6 @@ public final class PhysicsSystem {
     }
 #endif
 
-#if DEBUG
-    private static func angularDeltaDegrees(_ a: SIMD4<Float>, _ b: SIMD4<Float>) -> Float {
-        let dot = abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w)
-        let clamped = min(1.0, max(-1.0, Double(dot)))
-        let angle = 2.0 * acos(clamped)
-        return Float(angle * 180.0 / Double.pi)
-    }
-#endif
-
     private static func quaternionAngleDelta(_ a: SIMD4<Float>, _ b: SIMD4<Float>) -> Float {
         let dot = abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w)
         let clamped = min(1.0, max(-1.0, dot))
@@ -1311,6 +1370,9 @@ public final class PhysicsSystem {
 
         collisionEvents.removeAll(keepingCapacity: true)
         scriptEvents.removeAll(keepingCapacity: true)
+        scriptEventQueueTelemetry.droppedCollisionEvents = 0
+        scriptEventQueueTelemetry.droppedTriggerEvents = 0
+        scriptEventQueueTelemetry.droppedStayEvents = 0
         if overlapEvents.isEmpty {
             activeOverlaps.removeAll(keepingCapacity: true)
             activeCollisionPairs.removeAll(keepingCapacity: true)
@@ -1346,18 +1408,27 @@ public final class PhysicsSystem {
         let collisionStay = currentCollisionPairs.intersection(previousCollisionPairs).sorted(by: OverlapKey.lessThan)
         let collisionExit = previousCollisionPairs.subtracting(currentCollisionPairs).sorted(by: OverlapKey.lessThan)
 
-        scriptEvents.reserveCapacity(triggerEnter.count +
-                                     triggerStay.count +
-                                     triggerExit.count +
-                                     collisionEnter.count +
-                                     collisionStay.count +
-                                     collisionExit.count)
-        appendScriptEvents(keys: triggerEnter, type: .triggerEnter)
-        appendScriptEvents(keys: triggerStay, type: .triggerStay)
-        appendScriptEvents(keys: triggerExit, type: .triggerExit)
-        appendScriptEvents(keys: collisionEnter, type: .collisionEnter)
-        appendScriptEvents(keys: collisionStay, type: .collisionStay)
-        appendScriptEvents(keys: collisionExit, type: .collisionExit)
+        let maxTriggerEvents = max(1, scriptEventQueueLimits.maxTriggerEventsPerFrame)
+        let maxCollisionEvents = max(1, scriptEventQueueLimits.maxCollisionEventsPerFrame)
+        scriptEvents.reserveCapacity(min(triggerEnter.count + triggerStay.count + triggerExit.count, maxTriggerEvents) +
+                                     min(collisionEnter.count + collisionStay.count + collisionExit.count, maxCollisionEvents))
+        var deliveredTriggerEvents = 0
+        var deliveredCollisionEvents = 0
+
+        // Deterministic policy:
+        // 1) preserve enter/exit before stay
+        // 2) once cap is reached, deterministically drop remaining newest events in this ordered pass
+        appendScriptEvents(keys: triggerEnter, type: .triggerEnter, maxEvents: maxTriggerEvents, deliveredEvents: &deliveredTriggerEvents)
+        appendScriptEvents(keys: triggerExit, type: .triggerExit, maxEvents: maxTriggerEvents, deliveredEvents: &deliveredTriggerEvents)
+        appendScriptEvents(keys: triggerStay, type: .triggerStay, maxEvents: maxTriggerEvents, deliveredEvents: &deliveredTriggerEvents)
+        appendScriptEvents(keys: collisionEnter, type: .collisionEnter, maxEvents: maxCollisionEvents, deliveredEvents: &deliveredCollisionEvents)
+        appendScriptEvents(keys: collisionExit, type: .collisionExit, maxEvents: maxCollisionEvents, deliveredEvents: &deliveredCollisionEvents)
+        appendScriptEvents(keys: collisionStay, type: .collisionStay, maxEvents: maxCollisionEvents, deliveredEvents: &deliveredCollisionEvents)
+
+        scriptEventQueueTelemetry.totalDroppedCollisionEvents += scriptEventQueueTelemetry.droppedCollisionEvents
+        scriptEventQueueTelemetry.totalDroppedTriggerEvents += scriptEventQueueTelemetry.droppedTriggerEvents
+        scriptEventQueueTelemetry.totalDroppedStayEvents += scriptEventQueueTelemetry.droppedStayEvents
+        logScriptEventOverflowIfNeeded()
 
         collisionEvents.reserveCapacity(collisionEnter.count + collisionExit.count)
         for key in collisionEnter {
@@ -1380,8 +1451,22 @@ public final class PhysicsSystem {
         }
     }
 
-    private func appendScriptEvents(keys: [OverlapKey], type: PhysicsScriptEventType) {
+    private func appendScriptEvents(keys: [OverlapKey],
+                                    type: PhysicsScriptEventType,
+                                    maxEvents: Int,
+                                    deliveredEvents: inout Int) {
         for key in keys {
+            guard deliveredEvents < maxEvents else {
+                if type.isCollision {
+                    scriptEventQueueTelemetry.droppedCollisionEvents += 1
+                } else {
+                    scriptEventQueueTelemetry.droppedTriggerEvents += 1
+                }
+                if type.isStay {
+                    scriptEventQueueTelemetry.droppedStayEvents += 1
+                }
+                continue
+            }
             scriptEvents.append(
                 PhysicsScriptEvent(type: type,
                                    entityA: key.a,
@@ -1389,7 +1474,21 @@ public final class PhysicsSystem {
                                    shapeA: nil,
                                    shapeB: nil)
             )
+            deliveredEvents += 1
         }
+    }
+
+    private func logScriptEventOverflowIfNeeded() {
+        let droppedTotal = scriptEventQueueTelemetry.droppedCollisionEvents + scriptEventQueueTelemetry.droppedTriggerEvents
+        guard droppedTotal > 0 else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastScriptEventOverflowLogTime >= scriptEventOverflowLogInterval else { return }
+        lastScriptEventOverflowLogTime = now
+        EngineLoggerContext.log(
+            "Physics script event queue overflow: droppedCollisionEvents=\(scriptEventQueueTelemetry.droppedCollisionEvents), droppedTriggerEvents=\(scriptEventQueueTelemetry.droppedTriggerEvents), droppedStayEvents=\(scriptEventQueueTelemetry.droppedStayEvents), caps(trigger=\(scriptEventQueueLimits.maxTriggerEventsPerFrame), collision=\(scriptEventQueueLimits.maxCollisionEventsPerFrame))",
+            level: .warning,
+            category: .scene
+        )
     }
 
     private func rebuildWorldAndBodies(scene: EngineScene) {
@@ -1428,7 +1527,6 @@ public final class PhysicsSystem {
             restoreMotionStateIfPossible(preserved, to: bodyId)
         }
         pullSimulatedTransforms(ecs: ecs)
-        hasSteppedOnce = true
     }
 
     private func preserveMotionStateIfPossible(rigidbody: RigidbodyComponent) -> BodyMotionState? {
@@ -1484,6 +1582,24 @@ public enum PhysicsScriptEventType: Int32 {
     case triggerEnter = 3
     case triggerStay = 4
     case triggerExit = 5
+
+    var isCollision: Bool {
+        switch self {
+        case .collisionEnter, .collisionStay, .collisionExit:
+            return true
+        case .triggerEnter, .triggerStay, .triggerExit:
+            return false
+        }
+    }
+
+    var isStay: Bool {
+        switch self {
+        case .collisionStay, .triggerStay:
+            return true
+        case .collisionEnter, .collisionExit, .triggerEnter, .triggerExit:
+            return false
+        }
+    }
 }
 
 public struct PhysicsScriptEvent {

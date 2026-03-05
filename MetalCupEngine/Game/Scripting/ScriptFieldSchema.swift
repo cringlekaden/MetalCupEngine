@@ -1,3 +1,7 @@
+/// ScriptFieldSchema.swift
+/// Defines scripting field schema and helpers for extraction, read, write, merge.
+/// Created by Kaden Cringle.
+
 import Foundation
 import simd
 

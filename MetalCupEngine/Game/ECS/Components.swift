@@ -446,7 +446,6 @@ public struct CharacterControllerComponent {
     public var visualEntityId: UUID?
     public var cameraPivotEntityId: UUID?
     public var interpolateSubtree: Bool
-    public var debugDraw: Bool
 
     // Runtime state
     public var moveInput: SIMD2<Float>
@@ -457,7 +456,6 @@ public struct CharacterControllerComponent {
     public var characterHandle: UInt64
     public var velocity: SIMD3<Float>
     public var isGrounded: Bool
-    public var lastGroundNormal: SIMD3<Float>
     public var lastGroundBodyId: UInt64
     public var yawRadians: Float
     public var pitchRadians: Float
@@ -470,8 +468,6 @@ public struct CharacterControllerComponent {
     public var runtimeAppliedGravity: Float
     public var runtimeAppliedJumpSpeed: Float
     public var runtimeAppliedPushStrength: Float
-    public var debugBasisForward: SIMD3<Float>
-    public var debugBasisRight: SIMD3<Float>
 
     public init(isEnabled: Bool = true,
                 height: Float = 1.8,
@@ -491,7 +487,6 @@ public struct CharacterControllerComponent {
                 visualEntityId: UUID? = nil,
                 cameraPivotEntityId: UUID? = nil,
                 interpolateSubtree: Bool = true,
-                debugDraw: Bool = false,
                 moveInput: SIMD2<Float> = .zero,
                 lookInput: SIMD2<Float> = .zero,
                 wantsSprint: Bool = false,
@@ -500,7 +495,6 @@ public struct CharacterControllerComponent {
                 characterHandle: UInt64 = 0,
                 velocity: SIMD3<Float> = .zero,
                 isGrounded: Bool = false,
-                lastGroundNormal: SIMD3<Float> = SIMD3<Float>(0.0, 1.0, 0.0),
                 lastGroundBodyId: UInt64 = 0,
                 yawRadians: Float = 0.0,
                 pitchRadians: Float = 0.0,
@@ -512,9 +506,7 @@ public struct CharacterControllerComponent {
                 runtimeAppliedStepOffset: Float = 0.0,
                 runtimeAppliedGravity: Float = 0.0,
                 runtimeAppliedJumpSpeed: Float = 0.0,
-                runtimeAppliedPushStrength: Float = 0.0,
-                debugBasisForward: SIMD3<Float> = SIMD3<Float>(0.0, 0.0, 1.0),
-                debugBasisRight: SIMD3<Float> = SIMD3<Float>(1.0, 0.0, 0.0)) {
+                runtimeAppliedPushStrength: Float = 0.0) {
         self.isEnabled = isEnabled
         self.height = height
         self.radius = radius
@@ -533,7 +525,6 @@ public struct CharacterControllerComponent {
         self.visualEntityId = visualEntityId
         self.cameraPivotEntityId = cameraPivotEntityId
         self.interpolateSubtree = interpolateSubtree
-        self.debugDraw = debugDraw
         self.moveInput = moveInput
         self.lookInput = lookInput
         self.wantsSprint = wantsSprint
@@ -542,7 +533,6 @@ public struct CharacterControllerComponent {
         self.characterHandle = characterHandle
         self.velocity = velocity
         self.isGrounded = isGrounded
-        self.lastGroundNormal = lastGroundNormal
         self.lastGroundBodyId = lastGroundBodyId
         self.yawRadians = yawRadians
         self.pitchRadians = pitchRadians
@@ -555,8 +545,6 @@ public struct CharacterControllerComponent {
         self.runtimeAppliedGravity = runtimeAppliedGravity
         self.runtimeAppliedJumpSpeed = runtimeAppliedJumpSpeed
         self.runtimeAppliedPushStrength = runtimeAppliedPushStrength
-        self.debugBasisForward = debugBasisForward
-        self.debugBasisRight = debugBasisRight
     }
 }
 

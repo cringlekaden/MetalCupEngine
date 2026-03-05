@@ -1,5 +1,6 @@
-///// InputAccumulator.swift
-///// Collects per-frame input from platform events without global state.
+/// InputAccumulator.swift
+/// Collects per-frame input from platform events without global state.
+/// Created by Kaden Cringle.
 
 import simd
 

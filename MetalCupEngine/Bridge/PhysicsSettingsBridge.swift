@@ -1,6 +1,6 @@
 /// PhysicsSettingsBridge.swift
 /// Defines the physics settings bridge for editor UI access.
-/// Created by Codex.
+/// Created by Kaden Cringle.
 
 import Foundation
 import simd

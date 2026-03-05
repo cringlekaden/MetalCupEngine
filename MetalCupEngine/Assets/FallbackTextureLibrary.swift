@@ -1,6 +1,6 @@
 /// FallbackTextureLibrary.swift
 /// Centralized fallback textures for deterministic resource binding.
-/// Created by Codex.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

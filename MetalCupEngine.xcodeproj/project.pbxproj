@@ -50,6 +50,9 @@
 		37FA55B82F4DE8CA004B7969 /* lto-test.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "lto-test.xcodeproj"; sourceTree = "<group>"; };
 		37FA55F12F4DE8CA004B7969 /* CompilerIdCXX.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = CompilerIdCXX.xcodeproj; sourceTree = "<group>"; };
 		37FA56F62F4DE8CA004B7969 /* JoltPhysics.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = JoltPhysics.xcodeproj; sourceTree = "<group>"; };
+		37FB4E732F58912F00EB737F /* lto-test.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "lto-test.xcodeproj"; sourceTree = "<group>"; };
+		37FB4EAC2F58912F00EB737F /* CompilerIdCXX.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = CompilerIdCXX.xcodeproj; sourceTree = "<group>"; };
+		37FB4FB12F58912F00EB737F /* JoltPhysics.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = JoltPhysics.xcodeproj; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -3643,6 +3646,27 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		37FB55722F58912F00EB737F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		37FB55742F58912F00EB737F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		37FB55762F58912F00EB737F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
@@ -3751,6 +3775,10 @@
 					ProjectRef = 37EA048A2F53CF9600D9C1A3 /* CompilerIdCXX.xcodeproj */;
 				},
 				{
+					ProductGroup = 37FB55722F58912F00EB737F /* Products */;
+					ProjectRef = 37FB4EAC2F58912F00EB737F /* CompilerIdCXX.xcodeproj */;
+				},
+				{
 					ProductGroup = 37B5B6732F54FCCF00393061 /* Products */;
 					ProjectRef = 37B5AFA92F54FCCF00393061 /* CompilerIdCXX.xcodeproj */;
 				},
@@ -3771,6 +3799,10 @@
 					ProjectRef = 37F4B4E42F4CD8AA00F6401D /* JoltPhysics.xcodeproj */;
 				},
 				{
+					ProductGroup = 37FB55762F58912F00EB737F /* Products */;
+					ProjectRef = 37FB4FB12F58912F00EB737F /* JoltPhysics.xcodeproj */;
+				},
+				{
 					ProductGroup = 37FA5BC92F4DE8CA004B7969 /* Products */;
 					ProjectRef = 37FA56F62F4DE8CA004B7969 /* JoltPhysics.xcodeproj */;
 				},
@@ -3781,6 +3813,10 @@
 				{
 					ProductGroup = 37B5B66F2F54FCCF00393061 /* Products */;
 					ProjectRef = 37B5B0AE2F54FCCF00393061 /* JoltPhysics.xcodeproj */;
+				},
+				{
+					ProductGroup = 37FB55742F58912F00EB737F /* Products */;
+					ProjectRef = 37FB4E732F58912F00EB737F /* lto-test.xcodeproj */;
 				},
 				{
 					ProductGroup = 37EA0A642F53CF9600D9C1A3 /* Products */;

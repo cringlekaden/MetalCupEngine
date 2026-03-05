@@ -1,4 +1,4 @@
-/// Mouse.swift
+/// MouseCodes.swift
 /// Defines the Mouse types and helpers for the engine.
 /// Created by Kaden Cringle.
 

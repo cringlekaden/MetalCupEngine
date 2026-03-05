@@ -1,6 +1,6 @@
 /// PhysicsWorld.swift
 /// Defines the PhysicsWorld wrapper around Jolt.
-/// Created by Codex.
+/// Created by Kaden Cringle.
 
 import Foundation
 import simd

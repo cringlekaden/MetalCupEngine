@@ -1,6 +1,6 @@
 /// ScriptRuntime.swift
 /// Defines scripting lifecycle contracts and the Lua runtime host.
-/// Created by Codex.
+/// Created by Kaden Cringle.
 
 import Foundation
 import simd
@@ -207,7 +207,6 @@ public protocol ScriptRuntime: AnyObject {
     func onComponentRemoved(entityId: UUID, type: SceneECSComponentType)
     func onUpdate(dt: Float)
     func onFixedUpdate(dt: Float)
-    func onLateUpdate(dt: Float)
     func onPhysicsEvents(events: [PhysicsScriptEvent])
 }
 
@@ -222,7 +221,6 @@ public final class NullScriptRuntime: ScriptRuntime {
     public func onComponentRemoved(entityId: UUID, type: SceneECSComponentType) {}
     public func onUpdate(dt: Float) {}
     public func onFixedUpdate(dt: Float) {}
-    public func onLateUpdate(dt: Float) {}
     public func onPhysicsEvents(events: [PhysicsScriptEvent]) {}
 }
 
@@ -316,8 +314,6 @@ public final class LuaScriptRuntime: ScriptRuntime {
         syncBindings(scene: scene)
         runScripts(scene: scene, dt: dt, phase: .fixedUpdate)
     }
-
-    public func onLateUpdate(dt: Float) {}
 
     public func onPhysicsEvents(events: [PhysicsScriptEvent]) {
         guard let runtimeHandle, !events.isEmpty else { return }

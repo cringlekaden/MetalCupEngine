@@ -1,6 +1,6 @@
 /// ShadowResources.swift
 /// Allocates and manages shadow map textures for the renderer.
-/// Created by Codex.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

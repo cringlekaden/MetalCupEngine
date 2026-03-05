@@ -1,6 +1,6 @@
 /// EngineContext.swift
 /// Defines the EngineContext that owns engine-wide services.
-/// Created by refactor.
+/// Created by Kaden Cringle.
 
 import MetalKit
 

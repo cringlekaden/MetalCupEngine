@@ -1,6 +1,6 @@
-// JoltBridge.mm
-// Minimal Jolt physics bridge for MetalCupEngine.
-// Created by Codex.
+/// JoltBridge.mm
+/// Minimal Jolt physics bridge for MetalCupEngine.
+/// Created by Kaden Cringle.
 
 #import <Foundation/Foundation.h>
 

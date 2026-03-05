@@ -1,6 +1,6 @@
 /// FrameContext.swift
 /// Defines per-frame time and input snapshots.
-/// Created by refactor.
+/// Created by Kaden Cringle.
 
 import simd
 
