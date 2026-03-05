@@ -4,6 +4,34 @@
 
 import MetalKit
 
+struct RenderPlan {
+    let viewSignature: UInt64
+    let enabledPassNames: Set<String>
+    let forwardPlusEnabled: Bool
+    let cullingDepthSource: ForwardPlusCullingDepthSource
+    let cullingDepthBinding: RenderResourceHandle?
+    let sceneDepthLoadAction: MTLLoadAction
+    let bloomEnabled: Bool
+    let pickingEnabled: Bool
+
+    static func unplanned(viewSignature: UInt64) -> RenderPlan {
+        RenderPlan(
+            viewSignature: viewSignature,
+            enabledPassNames: [],
+            forwardPlusEnabled: false,
+            cullingDepthSource: .none,
+            cullingDepthBinding: nil,
+            sceneDepthLoadAction: .clear,
+            bloomEnabled: false,
+            pickingEnabled: false
+        )
+    }
+
+    func runs(_ pass: RenderGraphPass) -> Bool {
+        enabledPassNames.contains(pass.name)
+    }
+}
+
 struct RenderGraphFrame {
     let renderer: Renderer
     let engineContext: EngineContext
@@ -19,6 +47,28 @@ struct RenderGraphFrame {
     let frameInFlightIndex: Int
     let viewSignature: UInt64
     let settingsRevision: UInt64
+    let renderPlan: RenderPlan
+
+    func with(commandBuffer: MTLCommandBuffer? = nil,
+              renderPlan: RenderPlan? = nil) -> RenderGraphFrame {
+        RenderGraphFrame(
+            renderer: renderer,
+            engineContext: engineContext,
+            view: view,
+            sceneView: sceneView,
+            commandBuffer: commandBuffer ?? self.commandBuffer,
+            resources: resources,
+            resourceRegistry: resourceRegistry,
+            delegate: delegate,
+            sceneSnapshot: sceneSnapshot,
+            frameContext: frameContext,
+            profiler: profiler,
+            frameInFlightIndex: frameInFlightIndex,
+            viewSignature: viewSignature,
+            settingsRevision: settingsRevision,
+            renderPlan: renderPlan ?? self.renderPlan
+        )
+    }
 }
 
 protocol RenderGraphPass {
@@ -39,6 +89,16 @@ extension RenderGraphPass {
 
 final class RenderGraph {
     private let passes: [RenderGraphPass]
+    private enum PassName {
+        static let depthPrepass = "DepthPrepassPass"
+        static let cullingDepthFallback = "CullingDepthFallbackPass"
+        static let forwardPlusTileBin = "ForwardPlusTileBinPass"
+        static let lightCulling = "LightCullingPass"
+        static let scene = "ScenePass"
+        static let picking = "PickingPass"
+        static let bloomExtract = "BloomExtractPass"
+        static let bloomBlur = "BloomBlurPass"
+    }
 
     init() {
         passes = [
@@ -63,76 +123,142 @@ final class RenderGraph {
         commandBufferProvider: ((RenderGraphPass) -> MTLCommandBuffer?)? = nil,
         passCommitted: ((RenderGraphPass, MTLCommandBuffer) -> Void)? = nil
     ) {
+        let plan = buildRenderPlan(frame: frame)
+        let plannedFrame = frame.with(renderPlan: plan)
         var outputWriters: [RenderResourceHandle: (name: String, allowsSubsequentWrites: Bool)] = [:]
-        var cullingDepthProducers: [String] = []
         var bloomStart: CFTimeInterval?
         for pass in passes {
-            validateContracts(pass: pass, frame: frame, outputWriters: &outputWriters)
-            if pass is LightCullingPass {
-                enforceForwardPlusDepthContract(frame: frame, pass: pass, cullingDepthProducers: cullingDepthProducers)
+            guard plan.runs(pass) else { continue }
+            validateContracts(pass: pass, frame: plannedFrame, outputWriters: &outputWriters)
+            if pass.name == PassName.lightCulling {
+                enforceForwardPlusDepthContract(frame: plannedFrame, pass: pass)
             }
-            if pass is BloomExtractPass {
+            if pass.name == PassName.bloomExtract {
                 bloomStart = CACurrentMediaTime()
             }
-            let producerCountBefore = frame.frameContext.forwardPlusCullingDepthProducerCount()
             if let commandBufferProvider {
                 guard let commandBuffer = commandBufferProvider(pass) else { continue }
-                let passFrame = RenderGraphFrame(
-                    renderer: frame.renderer,
-                    engineContext: frame.engineContext,
-                    view: frame.view,
-                    sceneView: frame.sceneView,
-                    commandBuffer: commandBuffer,
-                    resources: frame.resources,
-                    resourceRegistry: frame.resourceRegistry,
-                    delegate: frame.delegate,
-                    sceneSnapshot: frame.sceneSnapshot,
-                    frameContext: frame.frameContext,
-                    profiler: frame.profiler,
-                    frameInFlightIndex: frame.frameInFlightIndex,
-                    viewSignature: frame.viewSignature,
-                    settingsRevision: frame.settingsRevision
-                )
+                let passFrame = plannedFrame.with(commandBuffer: commandBuffer)
                 pass.execute(frame: passFrame)
+                applyPostPassSideEffects(pass: pass, frame: passFrame, plan: plan)
                 passCommitted?(pass, commandBuffer)
                 commandBuffer.commit()
             } else {
-                pass.execute(frame: frame)
+                pass.execute(frame: plannedFrame)
+                applyPostPassSideEffects(pass: pass, frame: plannedFrame, plan: plan)
             }
-            let producerCountAfter = frame.frameContext.forwardPlusCullingDepthProducerCount()
-            if producerCountAfter > producerCountBefore {
-                cullingDepthProducers.append(pass.name)
-            }
-            if pass is BloomBlurPass, let start = bloomStart {
-                frame.profiler.record(.bloom, seconds: CACurrentMediaTime() - start)
+            if pass.name == PassName.bloomBlur, let start = bloomStart {
+                plannedFrame.profiler.record(.bloom, seconds: CACurrentMediaTime() - start)
             }
         }
     }
 
+    private func buildRenderPlan(frame: RenderGraphFrame) -> RenderPlan {
+        let settings = frame.frameContext.rendererSettings()
+        var enabledPassNames = Set(passes.map(\.name))
+        let depthPrepassEnabled = frame.frameContext.useDepthPrepass()
+        if depthPrepassEnabled {
+            enabledPassNames.remove(PassName.cullingDepthFallback)
+        } else {
+            enabledPassNames.remove(PassName.depthPrepass)
+        }
+
+        let hasSelection = settings.outlineEnabled != 0
+            && RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView)
+            && !frame.sceneView.selectedEntityIds.isEmpty
+        let pickingEnabled = frame.engineContext.pickingSystem.hasPendingRequest() || hasSelection
+        if !pickingEnabled {
+            enabledPassNames.remove(PassName.picking)
+        }
+
+        let bloomEnabled = settings.bloomEnabled != 0
+        if !bloomEnabled {
+            enabledPassNames.remove(PassName.bloomExtract)
+            enabledPassNames.remove(PassName.bloomBlur)
+        }
+
+        var forwardPlusEnabled = settings.hasPerfFlag(.forwardPlusEnabled) && frame.frameContext.isForwardPlusAllowed()
+        var cullingDepthSource: ForwardPlusCullingDepthSource = .none
+        var cullingDepthBinding: RenderResourceHandle?
+        if forwardPlusEnabled {
+            if frame.resourceRegistry.texture(.baseDepth) == nil {
+#if DEBUG
+                let message = "Forward+ planning requires baseDepth for view \(frame.viewSignature)."
+                assertionFailure(message)
+                fatalError(message)
+#else
+                forwardPlusEnabled = false
+                frame.frameContext.setForwardPlusAllowed(false)
+                frame.frameContext.diagnostics.incrementForwardPlusMissingDepthFrames()
+#endif
+            } else {
+                cullingDepthSource = depthPrepassEnabled ? .prepass : .fallback
+                cullingDepthBinding = .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth)
+            }
+        }
+
+        if !forwardPlusEnabled {
+            enabledPassNames.remove(PassName.forwardPlusTileBin)
+            enabledPassNames.remove(PassName.lightCulling)
+            enabledPassNames.remove(PassName.cullingDepthFallback)
+        }
+
+        return RenderPlan(
+            viewSignature: frame.viewSignature,
+            enabledPassNames: enabledPassNames,
+            forwardPlusEnabled: forwardPlusEnabled,
+            cullingDepthSource: cullingDepthSource,
+            cullingDepthBinding: cullingDepthBinding,
+            sceneDepthLoadAction: depthPrepassEnabled ? .load : .clear,
+            bloomEnabled: bloomEnabled,
+            pickingEnabled: pickingEnabled
+        )
+    }
+
+    private func applyPostPassSideEffects(pass: RenderGraphPass, frame: RenderGraphFrame, plan: RenderPlan) {
+        let shouldPublishDepthSource: Bool = {
+            switch plan.cullingDepthSource {
+            case .prepass:
+                return pass.name == PassName.depthPrepass
+            case .fallback:
+                return pass.name == PassName.cullingDepthFallback
+            case .none:
+                return false
+            }
+        }()
+        guard shouldPublishDepthSource,
+              let depth = frame.resourceRegistry.texture(.baseDepth) else { return }
+        frame.resourceRegistry.registerNamedTexture(
+            RenderNamedResourceKey.forwardPlusCullingDepth,
+            texture: depth,
+            lifetime: .transientPerFrame
+        )
+        frame.frameContext.markForwardPlusCullingDepthProduced(source: plan.cullingDepthSource)
+    }
+
     private func enforceForwardPlusDepthContract(frame: RenderGraphFrame,
-                                                 pass: RenderGraphPass,
-                                                 cullingDepthProducers: [String]) {
-        let forwardPlusEnabled = frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled)
-            && frame.frameContext.isForwardPlusAllowed()
+                                                 pass: RenderGraphPass) {
+        let forwardPlusEnabled = frame.renderPlan.forwardPlusEnabled
         guard forwardPlusEnabled else { return }
 
-        let expectedHandle = RenderResourceHandle.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth)
+        let expectedHandle = frame.renderPlan.cullingDepthBinding
+            ?? RenderResourceHandle.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth)
         let hasDeclaredInput = pass.inputs.contains { $0.handle == expectedHandle }
         let producerCount = frame.frameContext.forwardPlusCullingDepthProducerCount()
         let hasDepthTexture = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) != nil
         let valid = hasDeclaredInput && producerCount == 1 && hasDepthTexture
         guard !valid else { return }
 
-        let producersText = cullingDepthProducers.isEmpty ? "none" : cullingDepthProducers.joined(separator: ", ")
-        let message = "Forward+ cullingDepth contract invalid for view \(frame.viewSignature): declaredInput=\(hasDeclaredInput) producerCount=\(producerCount) producedBy=[\(producersText)] hasTexture=\(hasDepthTexture)."
+        let expectedSource = frame.renderPlan.cullingDepthSource
+        let message = "Forward+ cullingDepth contract invalid for view \(frame.viewSignature): declaredInput=\(hasDeclaredInput) producerCount=\(producerCount) plannedSource=\(expectedSource) hasTexture=\(hasDepthTexture)."
 #if DEBUG
         assertionFailure(message)
         fatalError(message)
 #else
         frame.engineContext.log.logWarning(message, category: .renderer)
         frame.frameContext.setForwardPlusAllowed(false)
-        frame.engineContext.forwardPlusCullingDepthSource = ForwardPlusCullingDepthSource.none.rawValue
-        frame.engineContext.forwardPlusStats.missingDepthFrames &+= 1
+        frame.frameContext.diagnostics.forwardPlus.cullingDepthSource = .none
+        frame.frameContext.diagnostics.incrementForwardPlusMissingDepthFrames()
 #endif
     }
 

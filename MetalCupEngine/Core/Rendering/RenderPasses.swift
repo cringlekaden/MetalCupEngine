@@ -154,7 +154,6 @@ final class DepthPrepassPass: RenderGraphPass {
     ]
 
     func execute(frame: RenderGraphFrame) {
-        guard frame.frameContext.useDepthPrepass() else { return }
         guard let depth = frame.resourceRegistry.texture(.baseDepth) else { return }
         let frameIndex = frame.frameContext.currentFrameIndex()
         let pass = RenderPassBuilder.depth(texture: depth)
@@ -169,13 +168,6 @@ final class DepthPrepassPass: RenderGraphPass {
         encoder.popDebugGroup()
         encoder.endEncoding()
         frame.profiler.sampleGpuPassEnd(.depthPrepass, encoder: encoder, frameIndex: frameIndex)
-        frame.resourceRegistry.registerNamedTexture(
-            RenderNamedResourceKey.forwardPlusCullingDepth,
-            texture: depth,
-            lifetime: .transientPerFrame
-        )
-        frame.frameContext.markForwardPlusCullingDepthProduced(source: .prepass)
-        frame.engineContext.forwardPlusCullingDepthSource = ForwardPlusCullingDepthSource.prepass.rawValue
     }
 }
 
@@ -191,7 +183,6 @@ final class CullingDepthFallbackPass: RenderGraphPass {
     ]
 
     func execute(frame: RenderGraphFrame) {
-        guard !frame.frameContext.useDepthPrepass() else { return }
         guard let depth = frame.resourceRegistry.texture(.baseDepth) else { return }
         let pass = RenderPassBuilder.depth(texture: depth)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
@@ -203,13 +194,6 @@ final class CullingDepthFallbackPass: RenderGraphPass {
         }
         encoder.popDebugGroup()
         encoder.endEncoding()
-        frame.resourceRegistry.registerNamedTexture(
-            RenderNamedResourceKey.forwardPlusCullingDepth,
-            texture: depth,
-            lifetime: .transientPerFrame
-        )
-        frame.frameContext.markForwardPlusCullingDepthProduced(source: .fallback)
-        frame.engineContext.forwardPlusCullingDepthSource = ForwardPlusCullingDepthSource.fallback.rawValue
     }
 }
 
@@ -457,26 +441,24 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
                         clusterGridBuffer: clusterGridBuffer,
                         sparseDispatchBuffer: activeDispatchArgsBuffer,
                         statsBuffer: statsBuffer)
-        if frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled) {
-            runComputeTileBinning(frame: frame,
-                                  tileCount: tileCount,
-                                  viewport: viewport,
-                                  indexCapacity: indexCapacityU32,
-                                  tileParamsBuffer: tileParamsBuffer,
-                                  tileGridBuffer: tileGridBuffer,
-                                  tileIndexListBuffer: tileIndexListBuffer,
-                                  tileIndexHeaderBuffer: tileIndexHeaderBuffer,
-                                  statsBuffer: statsBuffer)
-            runComputeBuildActiveTiles(frame: frame,
-                                       tileCount: tileCount,
-                                       tileParamsBuffer: tileParamsBuffer,
-                                       tileGridBuffer: tileGridBuffer,
-                                       activeTileListBuffer: activeTileListBuffer,
-                                       activeTileCountBuffer: activeTileCountBuffer,
-                                       clusterParamsBuffer: clusterParamsBuffer,
-                                       sparseDispatchBuffer: activeDispatchArgsBuffer,
-                                       statsBuffer: statsBuffer)
-        }
+        runComputeTileBinning(frame: frame,
+                              tileCount: tileCount,
+                              viewport: viewport,
+                              indexCapacity: indexCapacityU32,
+                              tileParamsBuffer: tileParamsBuffer,
+                              tileGridBuffer: tileGridBuffer,
+                              tileIndexListBuffer: tileIndexListBuffer,
+                              tileIndexHeaderBuffer: tileIndexHeaderBuffer,
+                              statsBuffer: statsBuffer)
+        runComputeBuildActiveTiles(frame: frame,
+                                   tileCount: tileCount,
+                                   tileParamsBuffer: tileParamsBuffer,
+                                   tileGridBuffer: tileGridBuffer,
+                                   activeTileListBuffer: activeTileListBuffer,
+                                   activeTileCountBuffer: activeTileCountBuffer,
+                                   clusterParamsBuffer: clusterParamsBuffer,
+                                   sparseDispatchBuffer: activeDispatchArgsBuffer,
+                                   statsBuffer: statsBuffer)
 
         frame.resourceRegistry.registerBuffer(
             RenderNamedResourceKey.forwardPlusTileLightGrid,
@@ -563,12 +545,7 @@ final class ForwardPlusTileBinPass: RenderGraphPass {
                   "Forward+ cluster resources must use private storage.")
         MC_ASSERT(statsBuffer.storageMode == .shared, "Forward+ stats buffer must use shared storage.")
 #endif
-        frame.commandBuffer.addCompletedHandler { [weak engineContext = frame.engineContext] _ in
-            guard let engineContext else { return }
-            var stats = statsBuffer.contents().bindMemory(to: ForwardPlusStats.self, capacity: 1).pointee
-            stats.missingDepthFrames = stats.missingDepthFrames &+ engineContext.forwardPlusStats.missingDepthFrames
-            engineContext.forwardPlusStats = stats
-        }
+        frame.frameContext.diagnostics.setForwardPlusStatsReadbackBuffer(statsBuffer)
     }
 
     private func deriveNearFarPlanes(from projection: matrix_float4x4) -> (near: Float, far: Float)? {
@@ -870,16 +847,6 @@ final class LightCullingPass: RenderGraphPass {
     private var computePipeline: MTLComputePipelineState?
 
     func execute(frame: RenderGraphFrame) {
-        let forwardPlusEnabled = frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled) && frame.frameContext.isForwardPlusAllowed()
-        if forwardPlusEnabled && frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) == nil {
-#if DEBUG
-            fatalError("LightCullingPass requires \(RenderNamedResourceKey.forwardPlusCullingDepth) when Forward+ is enabled.")
-#else
-            frame.frameContext.setForwardPlusAllowed(false)
-            frame.engineContext.forwardPlusStats.missingDepthFrames &+= 1
-            return
-#endif
-        }
         guard let tileParamsBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileParams),
               let tileGridBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileLightGrid),
               let tileIndexListBuffer = frame.resourceRegistry.buffer(RenderNamedResourceKey.forwardPlusTileLightIndexList),
@@ -924,24 +891,22 @@ final class LightCullingPass: RenderGraphPass {
         )
         let totalClusterCount = max(clusterCount.x * clusterCount.y * clusterCount.z, 1)
         let indexCapacity = max(totalClusterCount * maxLightsPerCluster, 1)
-        if forwardPlusEnabled {
-            runComputeCulling(frame: frame,
-                              clusterCount: clusterCount,
-                              viewport: viewport,
-                              indexCapacity: indexCapacity,
-                              clusterParamsBuffer: clusterParamsBuffer,
-                              indexHeaderBuffer: clusterIndexHeaderBuffer,
-                              gridBuffer: clusterGridBuffer,
-                              indexListBuffer: clusterIndexListBuffer,
-                              tileParamsBuffer: tileParamsBuffer,
-                              tileGridBuffer: tileGridBuffer,
-                              tileIndexListBuffer: tileIndexListBuffer,
-                              tileIndexHeaderBuffer: tileIndexHeaderBuffer,
-                              activeTileListBuffer: activeTileListBuffer,
-                              activeTileCountBuffer: activeTileCountBuffer,
-                              activeDispatchArgsBuffer: activeDispatchArgsBuffer,
-                              statsBuffer: statsBuffer)
-        }
+        runComputeCulling(frame: frame,
+                          clusterCount: clusterCount,
+                          viewport: viewport,
+                          indexCapacity: indexCapacity,
+                          clusterParamsBuffer: clusterParamsBuffer,
+                          indexHeaderBuffer: clusterIndexHeaderBuffer,
+                          gridBuffer: clusterGridBuffer,
+                          indexListBuffer: clusterIndexListBuffer,
+                          tileParamsBuffer: tileParamsBuffer,
+                          tileGridBuffer: tileGridBuffer,
+                          tileIndexListBuffer: tileIndexListBuffer,
+                          tileIndexHeaderBuffer: tileIndexHeaderBuffer,
+                          activeTileListBuffer: activeTileListBuffer,
+                          activeTileCountBuffer: activeTileCountBuffer,
+                          activeDispatchArgsBuffer: activeDispatchArgsBuffer,
+                          statsBuffer: statsBuffer)
     }
 
     private func runComputeCulling(frame: RenderGraphFrame,
@@ -1076,14 +1041,7 @@ final class ScenePass: RenderGraphPass {
             let baseColor = frame.resourceRegistry.texture(.baseColor),
             let baseDepth = frame.resourceRegistry.texture(.baseDepth)
         else { return }
-
-        let forwardPlusEnabled = frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled) && frame.frameContext.isForwardPlusAllowed()
-        if forwardPlusEnabled && frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) == nil {
-            frame.frameContext.setForwardPlusAllowed(false)
-            frame.engineContext.forwardPlusStats.missingDepthFrames &+= 1
-        }
-
-        let depthLoad: MTLLoadAction = frame.frameContext.useDepthPrepass() ? .load : .clear
+        let depthLoad = frame.renderPlan.sceneDepthLoadAction
         let frameIndex = frame.frameContext.currentFrameIndex()
         let pass = RenderPassBuilder.colorDepth(color: baseColor, depth: baseDepth, depthLoadAction: depthLoad)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
@@ -1111,12 +1069,6 @@ final class PickingPass: RenderGraphPass {
     ]
 
     func execute(frame: RenderGraphFrame) {
-        // Outline relies on the pickId buffer, so keep it current while a selection is active.
-        let hasSelection = frame.frameContext.rendererSettings().outlineEnabled != 0
-            && RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView)
-            && !frame.sceneView.selectedEntityIds.isEmpty
-        let needsPickingPass = frame.engineContext.pickingSystem.hasPendingRequest() || hasSelection
-        guard needsPickingPass else { return }
         guard
             let pickId = frame.resourceRegistry.texture(.pickId),
             let pickDepth = frame.resourceRegistry.texture(.pickDepth)
@@ -1435,14 +1387,6 @@ final class BloomExtractPass: RenderGraphPass {
 
     func execute(frame: RenderGraphFrame) {
         let settings = frame.frameContext.rendererSettings()
-        if settings.bloomEnabled == 0 {
-            if let ping = frame.resourceRegistry.texture(.bloomPing),
-               let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: 0)) {
-                encoder.label = "Bloom Clear"
-                encoder.endEncoding()
-            }
-            return
-        }
         guard
             let sceneTex = frame.resourceRegistry.texture(.baseColor),
             let ping = frame.resourceRegistry.texture(.bloomPing),
@@ -1506,7 +1450,6 @@ final class BloomBlurPass: RenderGraphPass {
 
     func execute(frame: RenderGraphFrame) {
         let settings = frame.frameContext.rendererSettings()
-        if settings.bloomEnabled == 0 { return }
         guard
             let ping = frame.resourceRegistry.texture(.bloomPing),
             let pong = frame.resourceRegistry.texture(.bloomPong),

@@ -1024,14 +1024,16 @@ extension Renderer: MTKViewDelegate {
             viewContext: makeRenderViewContext(sceneView: sceneView, view: view)
         )
         _frameContextStorage.setAssetStateRevision(engineContext.assets.cacheRevisionToken())
-        engineContext.forwardPlusCullingDepthSource = ForwardPlusCullingDepthSource.none.rawValue
         frameContext.setRenderResourceRegistry(_renderResources.buildRegistry())
+        let frameDiagnostics = frameContext.diagnostics
         let activeScene = delegate?.activeScene()
+        let snapshotStart = CACurrentMediaTime()
         if let activeScene {
             SceneRenderer.prepareRenderFrameSnapshot(scene: activeScene, frameContext: frameContext)
         } else {
             frameContext.setRenderFrameSnapshot(nil)
         }
+        profiler.record(.snapshotExtract, seconds: CACurrentMediaTime() - snapshotStart)
         guard let overlayCommandBuffer = engineContext.commandQueue.makeCommandBuffer() else { return }
         overlayCommandBuffer.label = "MetalCup Frame"
         let frameId = frameContext.currentFrameCounter()
@@ -1057,7 +1059,8 @@ extension Renderer: MTKViewDelegate {
             profiler: profiler,
             frameInFlightIndex: frameContext.frameInFlightIndex(),
             viewSignature: frameContext.viewSignature(),
-            settingsRevision: frameContext.rendererStateRevision()
+            settingsRevision: frameContext.rendererStateRevision(),
+            renderPlan: RenderPlan.unplanned(viewSignature: frameContext.viewSignature())
         )
         let gpuStart = CACurrentMediaTime()
         if !useCounterSampling {
@@ -1067,7 +1070,30 @@ extension Renderer: MTKViewDelegate {
                 self?.profiler.record(.gpu, seconds: resolved)
             }
         }
+        let renderGraphEncodeStart = CACurrentMediaTime()
         _renderGraph.execute(frame: graphFrame)
+        profiler.record(.renderGraphEncode, seconds: CACurrentMediaTime() - renderGraphEncodeStart)
+        overlayCommandBuffer.addCompletedHandler { [weak engineContext] _ in
+            guard let engineContext else { return }
+            var forwardPlus = frameDiagnostics.forwardPlus
+            if let statsBuffer = frameDiagnostics.forwardPlusStatsReadbackBufferValue() {
+                let gpuStats = statsBuffer.contents().bindMemory(to: ForwardPlusStats.self, capacity: 1).pointee
+                forwardPlus.stats.tileOverflowCount = gpuStats.tileOverflowCount
+                forwardPlus.stats.clusterOverflowCount = gpuStats.clusterOverflowCount
+                forwardPlus.stats.tileIndicesWritten = gpuStats.tileIndicesWritten
+                forwardPlus.stats.clusterIndicesWritten = gpuStats.clusterIndicesWritten
+                forwardPlus.stats.totalTiles = gpuStats.totalTiles
+                forwardPlus.stats.totalClusters = gpuStats.totalClusters
+                forwardPlus.stats.activeTilesCount = gpuStats.activeTilesCount
+            }
+            frameDiagnostics.forwardPlus = forwardPlus
+            let committed = engineContext.rendererDiagnostics.commit(
+                viewSignature: frameDiagnostics.viewSignature,
+                forwardPlus: forwardPlus
+            )
+            engineContext.forwardPlusStats = committed.stats
+            engineContext.forwardPlusCullingDepthSource = committed.cullingDepthSource.rawValue
+        }
 
         let overlaysStart = CACurrentMediaTime()
         delegate?.renderOverlays(view: view, commandBuffer: overlayCommandBuffer, frameContext: frameContext)

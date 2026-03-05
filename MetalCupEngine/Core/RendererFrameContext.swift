@@ -71,6 +71,49 @@ public enum ForwardPlusCullingDepthSource: UInt32 {
     case fallback = 2
 }
 
+public struct RendererForwardPlusDiagnostics {
+    public var stats: ForwardPlusStats
+    public var cullingDepthSource: ForwardPlusCullingDepthSource
+
+    public init(stats: ForwardPlusStats,
+                cullingDepthSource: ForwardPlusCullingDepthSource) {
+        self.stats = stats
+        self.cullingDepthSource = cullingDepthSource
+    }
+}
+
+public final class RendererFrameDiagnostics {
+    public var viewSignature: UInt64 = 0
+    public var forwardPlus = RendererForwardPlusDiagnostics(
+        stats: ForwardPlusStats(),
+        cullingDepthSource: .none
+    )
+    private var forwardPlusStatsReadbackBuffer: MTLBuffer?
+
+    public init() {}
+
+    fileprivate func reset(viewSignature: UInt64) {
+        self.viewSignature = viewSignature
+        self.forwardPlus = RendererForwardPlusDiagnostics(
+            stats: ForwardPlusStats(),
+            cullingDepthSource: .none
+        )
+        self.forwardPlusStatsReadbackBuffer = nil
+    }
+
+    public func incrementForwardPlusMissingDepthFrames() {
+        forwardPlus.stats.missingDepthFrames &+= 1
+    }
+
+    public func setForwardPlusStatsReadbackBuffer(_ buffer: MTLBuffer?) {
+        forwardPlusStatsReadbackBuffer = buffer
+    }
+
+    public func forwardPlusStatsReadbackBufferValue() -> MTLBuffer? {
+        forwardPlusStatsReadbackBuffer
+    }
+}
+
 public struct RendererFrameContext {
     fileprivate let storage: RendererFrameContextStorage
 
@@ -252,6 +295,10 @@ public struct RendererFrameContext {
         storage.forwardPlusCullingDepthProducerCountValue()
     }
 
+    public var diagnostics: RendererFrameDiagnostics {
+        storage.frameDiagnosticsValue()
+    }
+
     public func setViewContext(_ context: RenderViewContext) {
         storage.setViewContext(context)
     }
@@ -305,6 +352,7 @@ public final class RendererFrameContextStorage {
     private var forwardPlusAllowed = true
     private var forwardPlusCullingDepthSource: ForwardPlusCullingDepthSource = .none
     private var forwardPlusCullingDepthProducerMask: UInt32 = 0
+    private var frameDiagnostics = RendererFrameDiagnostics()
 
     public struct IBLTextures {
         public let environment: MTLTexture?
@@ -356,6 +404,7 @@ public final class RendererFrameContextStorage {
         forwardPlusAllowed = true
         forwardPlusCullingDepthSource = .none
         forwardPlusCullingDepthProducerMask = 0
+        frameDiagnostics.reset(viewSignature: viewContext.viewSignature)
         return RendererFrameContext(storage: self)
     }
 
@@ -546,6 +595,7 @@ public final class RendererFrameContextStorage {
         let changed = nextSettingsSignature != rendererSettingsSignature || nextViewSignature != renderViewSignature
         rendererSettings = settings
         self.viewContext = viewContext
+        frameDiagnostics.viewSignature = viewContext.viewSignature
         rendererSettingsSignature = nextSettingsSignature
         renderViewSignature = nextViewSignature
         if changed {
@@ -669,6 +719,7 @@ public final class RendererFrameContextStorage {
             forwardPlusCullingDepthProducerMask |= 1 << 1
         }
         forwardPlusCullingDepthSource = source
+        frameDiagnostics.forwardPlus.cullingDepthSource = source
     }
 
     fileprivate func forwardPlusCullingDepthSourceValue() -> ForwardPlusCullingDepthSource {
@@ -677,6 +728,10 @@ public final class RendererFrameContextStorage {
 
     fileprivate func forwardPlusCullingDepthProducerCountValue() -> Int {
         Int(forwardPlusCullingDepthProducerMask.nonzeroBitCount)
+    }
+
+    fileprivate func frameDiagnosticsValue() -> RendererFrameDiagnostics {
+        frameDiagnostics
     }
 
     private func ensureFrameStorage() {

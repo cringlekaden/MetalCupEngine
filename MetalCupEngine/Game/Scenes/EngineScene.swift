@@ -77,6 +77,7 @@ public class EngineScene {
     public lazy var transformAuthority = TransformAuthorityService(scene: self)
     private lazy var scriptSystem = ScriptSystemAdapter(scene: self)
     private let sceneSerializationService = SceneSerializationService()
+    private let updateScheduler = SceneUpdateScheduler()
 
     private let characterSystem = CharacterControllerSystem()
     private var fixedStepDiagnostics = FixedStepDiagnostics()
@@ -149,41 +150,57 @@ public class EngineScene {
                              isPlaying: Bool,
                              isPaused: Bool,
                              runRuntimeScripts: Bool) {
+        let request = SceneUpdateScheduler.UpdateRequest(
+            frame: frame,
+            isPlaying: isPlaying,
+            isPaused: isPaused,
+            runRuntimeScripts: runRuntimeScripts
+        )
+        let pipeline = SceneUpdateScheduler.UpdatePipeline(
+            beginDebugFrame: {
 #if DEBUG
-        transformAuthority.beginDebugBypassDetectionFrame()
-        defer { transformAuthority.endDebugBypassDetectionFrame() }
+                self.transformAuthority.beginDebugBypassDetectionFrame()
 #endif
-        previousInputKeys = currentInputKeys
-        currentInputKeys = frame.input.keys
-        lastFrameContext = frame
-        // Update order: camera -> scene constants -> sky system -> scene update -> light sync.
-        ensureCameraEntity()
-        updateCamera(isPlaying: isPlaying, frame: frame)
-        _sceneConstants.totalGameTime = frame.time.totalTime
-        let assetManager = engineContext?.assets
-        let hasEnvironment: Bool = {
-            guard let (_, sky) = ecs.activeSkyLight(), sky.enabled else { return false }
-            switch sky.mode {
-            case .hdri:
-                return sky.hdriHandle.flatMap { assetManager?.texture(handle: $0) } != nil
-            case .procedural:
-                return true
+            },
+            endDebugFrame: {
+#if DEBUG
+                self.transformAuthority.endDebugBypassDetectionFrame()
+#endif
+            },
+            updateInputSnapshot: { frame in
+                self.previousInputKeys = self.currentInputKeys
+                self.currentInputKeys = frame.input.keys
+                self.lastFrameContext = frame
+            },
+            ensureCamera: {
+                self.ensureCameraEntity()
+            },
+            updateCamera: { isPlaying, frame in
+                self.updateCamera(isPlaying: isPlaying, frame: frame)
+            },
+            updateSceneConstants: { frame in
+                self.updateSceneConstantsForFrame(frame)
+            },
+            updateSky: {
+                SkySystem.update(scene: self)
+            },
+            handleRuntimeCursorToggle: { isPlaying in
+                guard isPlaying, self.inputWasKeyPressed(KeyCodes.escape.rawValue) else { return }
+                runtimeToggleCursorLockOverride()
+            },
+            scriptUpdate: { dt, runRuntimeScripts in
+                self.scriptSystem.update(dt: dt, runRuntimeScripts: runRuntimeScripts)
+            },
+            runtimeUpdate: { isPlaying, isPaused, totalTime in
+                guard isPlaying, !isPaused else { return }
+                self.updateLightOrbits(totalTime: totalTime)
+                self.doUpdate()
+            },
+            syncLights: {
+                self.syncLights()
             }
-        }()
-        let settings = engineContext?.rendererSettings ?? RendererSettings()
-        let skyIntensity = ecs.activeSkyLight()?.1.intensity ?? 1.0
-        let iblIntensity = (hasEnvironment && settings.iblEnabled != 0) ? settings.iblIntensity * skyIntensity : 0.0
-        _sceneConstants.cameraPositionAndIBL.w = iblIntensity
-        SkySystem.update(scene: self)
-        if isPlaying && inputWasKeyPressed(KeyCodes.escape.rawValue) {
-            runtimeToggleCursorLockOverride()
-        }
-        scriptSystem.update(dt: frame.time.deltaTime, runRuntimeScripts: runRuntimeScripts)
-        if isPlaying && !isPaused {
-            updateLightOrbits(totalTime: frame.time.totalTime)
-            doUpdate()
-        }
-        syncLights()
+        )
+        updateScheduler.runUpdate(request: request, pipeline: pipeline)
     }
 
     func runtimeUpdate(isPlaying: Bool, isPaused: Bool, frame: FrameContext) {
@@ -496,17 +513,29 @@ public class EngineScene {
             ?? engineContext?.physicsSettings.fixedDeltaTime
             ?? lastFrameContext?.time.fixedDeltaTime
             ?? defaultDelta
+        let request = SceneUpdateScheduler.FixedRequest(mode: mode, fixedDelta: fixedDelta)
+        let pipeline = SceneUpdateScheduler.FixedPipeline(
+            profiler: engineContext?.renderer?.profiler,
+            scriptFixed: { executeScripts, fixedDelta in
+                self.scriptSystem.fixedUpdate(dt: executeScripts ? fixedDelta : 0.0)
+            },
+            characterFixed: { fixedDelta in
+                self.characterSystem.fixedStep(scene: self, fixedDelta: fixedDelta)
+            },
+            physicsStep: { fixedDelta in
+                self.physicsSystem?.fixedUpdate(scene: self, fixedDeltaTime: fixedDelta)
+            },
+            drainPhysicsEvents: { dispatchEvents in
+                guard dispatchEvents else { return nil }
+                return self.physicsSystem?.drainEvents()
+            },
+            dispatchScriptPhysicsEvents: { events in
+                self.scriptSystem.dispatchPhysicsEvents(events)
+            }
+        )
         isExecutingFixedStep = true
         defer { isExecutingFixedStep = false }
-        scriptSystem.fixedUpdate(dt: mode.contains(.executeScripts) ? fixedDelta : 0.0)
-        characterSystem.fixedStep(scene: self, fixedDelta: fixedDelta)
-        physicsSystem?.fixedUpdate(scene: self, fixedDeltaTime: fixedDelta)
-        if mode.contains(.dispatchScriptEvents),
-           let events = physicsSystem?.drainEvents(),
-           !events.isEmpty {
-            scriptSystem.dispatchPhysicsEvents(events)
-        }
-        return fixedDelta
+        return updateScheduler.runFixedStep(request: request, pipeline: pipeline)
     }
 
     public func notifyScriptSceneStart() {
@@ -637,6 +666,24 @@ public class EngineScene {
         _sceneConstants.projectionMatrix = SceneRenderer.projectionMatrix(from: camera, aspectRatio: aspectRatio)
         _sceneConstants.inverseProjectionMatrix = simd_inverse(_sceneConstants.projectionMatrix)
         _sceneConstants.cameraPositionAndIBL = SIMD4<Float>(transform.position, 1.0)
+    }
+
+    private func updateSceneConstantsForFrame(_ frame: FrameContext) {
+        _sceneConstants.totalGameTime = frame.time.totalTime
+        let assetManager = engineContext?.assets
+        let hasEnvironment: Bool = {
+            guard let (_, sky) = ecs.activeSkyLight(), sky.enabled else { return false }
+            switch sky.mode {
+            case .hdri:
+                return sky.hdriHandle.flatMap { assetManager?.texture(handle: $0) } != nil
+            case .procedural:
+                return true
+            }
+        }()
+        let settings = engineContext?.rendererSettings ?? RendererSettings()
+        let skyIntensity = ecs.activeSkyLight()?.1.intensity ?? 1.0
+        let iblIntensity = (hasEnvironment && settings.iblEnabled != 0) ? settings.iblIntensity * skyIntensity : 0.0
+        _sceneConstants.cameraPositionAndIBL.w = iblIntensity
     }
 
     public func onEvent(_ event: Event) {}

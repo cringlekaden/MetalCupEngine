@@ -916,6 +916,46 @@ public func MCERendererGetFixedUpdateMs(_ contextPtr: UnsafeRawPointer?) -> Floa
     profiler(contextPtr)?.averageMs(.fixedUpdate) ?? 0
 }
 
+@_cdecl("MCERendererGetLateUpdateMs")
+public func MCERendererGetLateUpdateMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.lateUpdate) ?? 0
+}
+
+@_cdecl("MCERendererGetSnapshotExtractMs")
+public func MCERendererGetSnapshotExtractMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.snapshotExtract) ?? 0
+}
+
+@_cdecl("MCERendererGetRenderGraphEncodeMs")
+public func MCERendererGetRenderGraphEncodeMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.renderGraphEncode) ?? 0
+}
+
+@_cdecl("MCERendererGetScriptFixedMs")
+public func MCERendererGetScriptFixedMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.scriptFixed) ?? 0
+}
+
+@_cdecl("MCERendererGetCharacterFixedMs")
+public func MCERendererGetCharacterFixedMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.characterFixed) ?? 0
+}
+
+@_cdecl("MCERendererGetPhysicsStepMs")
+public func MCERendererGetPhysicsStepMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.physicsStep) ?? 0
+}
+
+@_cdecl("MCERendererGetPhysicsEventsMs")
+public func MCERendererGetPhysicsEventsMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.physicsEvents) ?? 0
+}
+
+@_cdecl("MCERendererGetScriptPhysicsDispatchMs")
+public func MCERendererGetScriptPhysicsDispatchMs(_ contextPtr: UnsafeRawPointer?) -> Float {
+    profiler(contextPtr)?.averageMs(.scriptPhysicsDispatch) ?? 0
+}
+
 @_cdecl("MCERendererGetSceneMs")
 public func MCERendererGetSceneMs(_ contextPtr: UnsafeRawPointer?) -> Float {
     profiler(contextPtr)?.averageMs(.scene) ?? 0

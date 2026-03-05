@@ -233,6 +233,14 @@ public final class RendererProfiler {
         case update
         case sceneUpdate
         case fixedUpdate
+        case lateUpdate
+        case snapshotExtract
+        case renderGraphEncode
+        case scriptFixed
+        case characterFixed
+        case physicsStep
+        case physicsEvents
+        case scriptPhysicsDispatch
         case scene
         case render
         case renderBatches

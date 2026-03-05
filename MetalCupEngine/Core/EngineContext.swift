@@ -3,6 +3,41 @@
 /// Created by Kaden Cringle.
 
 import MetalKit
+import Foundation
+
+public final class RendererDiagnosticsService {
+    private var forwardPlusByViewSignature: [UInt64: RendererForwardPlusDiagnostics] = [:]
+    private var latestForwardPlus = RendererForwardPlusDiagnostics(
+        stats: ForwardPlusStats(),
+        cullingDepthSource: .none
+    )
+    private let lock = NSLock()
+
+    public init() {}
+
+    @discardableResult
+    public func commit(viewSignature: UInt64, forwardPlus: RendererForwardPlusDiagnostics) -> RendererForwardPlusDiagnostics {
+        lock.lock()
+        forwardPlusByViewSignature[viewSignature] = forwardPlus
+        latestForwardPlus = forwardPlus
+        lock.unlock()
+        return forwardPlus
+    }
+
+    public func latest() -> RendererForwardPlusDiagnostics {
+        lock.lock()
+        let value = latestForwardPlus
+        lock.unlock()
+        return value
+    }
+
+    public func forwardPlus(forViewSignature viewSignature: UInt64) -> RendererForwardPlusDiagnostics? {
+        lock.lock()
+        let value = forwardPlusByViewSignature[viewSignature]
+        lock.unlock()
+        return value
+    }
+}
 
 public final class EngineContext {
     public let device: MTLDevice
@@ -22,6 +57,7 @@ public final class EngineContext {
     public let pickingSystem: PickingSystem
     public var scriptRuntime: ScriptRuntime
     public var rendererSettings: RendererSettings = RendererSettings()
+    public let rendererDiagnostics = RendererDiagnosticsService()
     public var forwardPlusStats: ForwardPlusStats = ForwardPlusStats()
     public var forwardPlusCullingDepthSource: UInt32 = ForwardPlusCullingDepthSource.none.rawValue
     public private(set) var physicsSettingsVersion: UInt64 = 1
