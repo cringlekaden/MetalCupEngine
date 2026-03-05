@@ -174,7 +174,7 @@ public class EngineScene {
         let skyIntensity = ecs.activeSkyLight()?.1.intensity ?? 1.0
         let iblIntensity = (hasEnvironment && settings.iblEnabled != 0) ? settings.iblIntensity * skyIntensity : 0.0
         _sceneConstants.cameraPositionAndIBL.w = iblIntensity
-        SkySystem.update(scene: ecs)
+        SkySystem.update(scene: self)
         if isPlaying && inputWasKeyPressed(KeyCodes.escape.rawValue) {
             runtimeToggleCursorLockOverride()
         }
@@ -654,6 +654,12 @@ public class EngineScene {
 
     private func syncLights() {
         var lightData: [LightData] = []
+        let activeSky = ecs.activeSkyLight()
+        let activeSkyRayDirection: SIMD3<Float>? = {
+            guard let (_, sky) = activeSky, sky.enabled, sky.mode == .procedural else { return nil }
+            return SkySystem.sunRayDirection(azimuthDegrees: sky.azimuthDegrees,
+                                             elevationDegrees: sky.elevationDegrees)
+        }()
         ecs.viewLights { entity, _, light in
             var data = light.data
             let worldTransform = ecs.worldTransform(for: entity)
@@ -666,7 +672,12 @@ public class EngineScene {
                 data.direction = TransformMath.directionalLightDirection(from: worldTransform.rotation)
             case .directional:
                 data.type = 2
-                data.direction = TransformMath.directionalLightDirection(from: worldTransform.rotation)
+                if ecs.get(SkySunTag.self, for: entity) != nil,
+                   let activeSkyRayDirection {
+                    data.direction = activeSkyRayDirection
+                } else {
+                    data.direction = TransformMath.directionalLightDirection(from: worldTransform.rotation)
+                }
             }
             data.position = worldTransform.position
             data.range = light.range

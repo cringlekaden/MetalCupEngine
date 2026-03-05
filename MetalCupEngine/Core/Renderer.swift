@@ -605,7 +605,9 @@ public final class Renderer: NSObject {
 
     private func skyParams(from sky: SkyLightComponent) -> SkyParams {
         var params = SkyParams()
-        params.sunDirection = SkySystem.sunDirection(azimuthDegrees: sky.azimuthDegrees, elevationDegrees: sky.elevationDegrees)
+        let worldSunDirection = SkySystem.sunDirection(azimuthDegrees: sky.azimuthDegrees,
+                                                       elevationDegrees: sky.elevationDegrees)
+        params.sunDirection = SkySystem.skyShaderSunDirection(fromWorldSunDirection: worldSunDirection)
         params.sunAngularRadius = max(0.0001, sky.sunSizeDegrees * Float.pi / 180.0)
         params.sunColor = SIMD3<Float>(1.0, 0.98, 0.92)
         params.sunIntensity = max(1.0, sky.intensity * 10.0)

@@ -55,6 +55,7 @@
 #include <sstream>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <thread>
 
@@ -163,30 +164,36 @@ namespace {
                                   std::atomic<uint32_t> *overlapWriteIndex,
                                   std::atomic<uint32_t> *activeOverlapCount,
                                   std::unordered_map<uint64_t, OverlapEvent> *activeOverlaps,
-                                  std::mutex *overlapMutex)
+                                  std::mutex *overlapMutex,
+                                  std::unordered_set<uint64_t> *characterBodyIds,
+                                  std::unordered_map<uint32_t, uint32_t> *characterLayerRefCounts,
+                                  std::mutex *characterContactMutex)
         : mSamples(samples)
         , mWriteIndex(writeIndex)
         , mOverlapEvents(overlapEvents)
         , mOverlapWriteIndex(overlapWriteIndex)
         , mActiveOverlapCount(activeOverlapCount)
         , mActiveOverlaps(activeOverlaps)
-        , mOverlapMutex(overlapMutex) {}
+        , mOverlapMutex(overlapMutex)
+        , mCharacterBodyIds(characterBodyIds)
+        , mCharacterLayerRefCounts(characterLayerRefCounts)
+        , mCharacterContactMutex(characterContactMutex) {}
 
         void OnContactAdded(const Body &inBody1,
                             const Body &inBody2,
                             const ContactManifold &inManifold,
                             ContactSettings &ioSettings) override {
+            OverrideRestitutionForCharacterContact(inBody1, inBody2, ioSettings);
             RecordContact(inBody1, inBody2, inManifold);
             RecordOverlap(inBody1, inBody2, true);
-            (void)ioSettings;
         }
 
         void OnContactPersisted(const Body &inBody1,
                                 const Body &inBody2,
                                 const ContactManifold &inManifold,
                                 ContactSettings &ioSettings) override {
+            OverrideRestitutionForCharacterContact(inBody1, inBody2, ioSettings);
             RecordContact(inBody1, inBody2, inManifold);
-            (void)ioSettings;
         }
 
         void OnContactRemoved(const SubShapeIDPair &inSubShapePair) override {
@@ -217,6 +224,28 @@ namespace {
         }
 
     private:
+        void OverrideRestitutionForCharacterContact(const Body &inBody1,
+                                                    const Body &inBody2,
+                                                    ContactSettings &ioSettings) {
+            if (!mCharacterBodyIds || !mCharacterLayerRefCounts || !mCharacterContactMutex) { return; }
+            const uint64_t bodyIdA = static_cast<uint64_t>(inBody1.GetID().GetIndexAndSequenceNumber());
+            const uint64_t bodyIdB = static_cast<uint64_t>(inBody2.GetID().GetIndexAndSequenceNumber());
+            const uint32_t layerA = static_cast<uint32_t>(inBody1.GetObjectLayer());
+            const uint32_t layerB = static_cast<uint32_t>(inBody2.GetObjectLayer());
+            bool shouldDisableRestitution = false;
+            {
+                std::lock_guard<std::mutex> guard(*mCharacterContactMutex);
+                const bool bodyMatch = mCharacterBodyIds->find(bodyIdA) != mCharacterBodyIds->end()
+                    || mCharacterBodyIds->find(bodyIdB) != mCharacterBodyIds->end();
+                const bool layerMatch = mCharacterLayerRefCounts->find(layerA) != mCharacterLayerRefCounts->end()
+                    || mCharacterLayerRefCounts->find(layerB) != mCharacterLayerRefCounts->end();
+                shouldDisableRestitution = bodyMatch || layerMatch;
+            }
+            if (shouldDisableRestitution) {
+                ioSettings.mCombinedRestitution = 0.0f;
+            }
+        }
+
         static uint64_t MakePairKey(uint64_t a, uint64_t b) {
             if (a > b) { std::swap(a, b); }
             return (a << 32) | (b & 0xffffffffu);
@@ -282,12 +311,16 @@ namespace {
         std::atomic<uint32_t> *mActiveOverlapCount = nullptr;
         std::unordered_map<uint64_t, OverlapEvent> *mActiveOverlaps = nullptr;
         std::mutex *mOverlapMutex = nullptr;
+        std::unordered_set<uint64_t> *mCharacterBodyIds = nullptr;
+        std::unordered_map<uint32_t, uint32_t> *mCharacterLayerRefCounts = nullptr;
+        std::mutex *mCharacterContactMutex = nullptr;
     };
 
     struct JoltWorld {
         struct CharacterRecord {
             Ref<CharacterVirtual> character;
             ObjectLayer objectLayer = 0;
+            uint64_t innerBodyIdValue = 0;
             BodyID ignoreBodyID;
             bool hasIgnoreBodyID = false;
             Vec3 up = Vec3::sAxisY();
@@ -316,8 +349,11 @@ namespace {
         std::atomic<uint32_t> activeOverlapCount;
         std::unordered_map<uint64_t, OverlapEvent> activeOverlaps;
         std::unordered_map<uint64_t, CharacterRecord> characters;
+        std::unordered_set<uint64_t> characterBodyIds;
+        std::unordered_map<uint32_t, uint32_t> characterLayerRefCounts;
         std::atomic<uint64_t> nextCharacterHandle;
         std::mutex overlapMutex;
+        std::mutex characterContactMutex;
         ContactCollector contactCollector;
         bool useSingleThreaded;
 
@@ -340,7 +376,16 @@ namespace {
         , overlapWriteIndex(0)
         , activeOverlapCount(0)
         , nextCharacterHandle(1)
-        , contactCollector(contacts, &contactWriteIndex, overlapEvents, &overlapWriteIndex, &activeOverlapCount, &activeOverlaps, &overlapMutex)
+        , contactCollector(contacts,
+                           &contactWriteIndex,
+                           overlapEvents,
+                           &overlapWriteIndex,
+                           &activeOverlapCount,
+                           &activeOverlaps,
+                           &overlapMutex,
+                           &characterBodyIds,
+                           &characterLayerRefCounts,
+                           &characterContactMutex)
         , useSingleThreaded(singleThreaded) {
             const uint32_t fullMask = layerCount >= 32 ? 0xffffffffu : ((1u << layerCount) - 1u);
             for (uint32_t row = 0; row < layerCount; ++row) {
@@ -967,6 +1012,8 @@ extern "C" uint64_t MCECharacter_Create(void *worldPtr,
     CharacterVirtualSettings settings;
     settings.mShape = BuildCharacterCapsuleShape(record.radius, record.height);
     if (!settings.mShape) { return 0; }
+    settings.mInnerBodyShape = settings.mShape;
+    settings.mInnerBodyLayer = record.objectLayer;
     settings.mUp = record.up;
     settings.mSupportingVolume = Plane(record.up, -record.radius);
     settings.mMaxSlopeAngle = DegreesToRadians(50.0f);
@@ -985,8 +1032,20 @@ extern "C" uint64_t MCECharacter_Create(void *worldPtr,
         return 0;
     }
     record.character->SetUp(record.up);
+    record.character->SetInnerBodyShape(settings.mShape);
     record.updateSettings.mWalkStairsStepUp = record.up * record.stepOffset;
     record.updateSettings.mStickToFloorStepDown = -record.up * std::max(0.0f, record.stepOffset + 0.05f);
+
+    const BodyID innerBodyID = record.character->GetInnerBodyID();
+    record.innerBodyIdValue = static_cast<uint64_t>(innerBodyID.GetIndexAndSequenceNumber());
+    {
+        std::lock_guard<std::mutex> guard(world->characterContactMutex);
+        if (record.innerBodyIdValue != 0) {
+            world->characterBodyIds.insert(record.innerBodyIdValue);
+        }
+        const uint32_t layer = static_cast<uint32_t>(record.objectLayer);
+        world->characterLayerRefCounts[layer] += 1;
+    }
 
     const uint64_t handle = world->nextCharacterHandle.fetch_add(1, std::memory_order_relaxed);
     world->characters.emplace(handle, std::move(record));
@@ -996,7 +1055,24 @@ extern "C" uint64_t MCECharacter_Create(void *worldPtr,
 extern "C" void MCECharacter_Destroy(void *worldPtr, uint64_t handle) {
     if (!worldPtr || handle == 0) { return; }
     JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
-    world->characters.erase(handle);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return; }
+    {
+        std::lock_guard<std::mutex> guard(world->characterContactMutex);
+        if (it->second.innerBodyIdValue != 0) {
+            world->characterBodyIds.erase(it->second.innerBodyIdValue);
+        }
+        const uint32_t layer = static_cast<uint32_t>(it->second.objectLayer);
+        auto layerIt = world->characterLayerRefCounts.find(layer);
+        if (layerIt != world->characterLayerRefCounts.end()) {
+            if (layerIt->second > 1) {
+                layerIt->second -= 1;
+            } else {
+                world->characterLayerRefCounts.erase(layerIt);
+            }
+        }
+    }
+    world->characters.erase(it);
 }
 
 extern "C" void MCECharacter_SetShapeCapsule(void *worldPtr, uint64_t handle, float radius, float height) {
@@ -1024,6 +1100,18 @@ extern "C" void MCECharacter_SetShapeCapsule(void *worldPtr, uint64_t handle, fl
                                    shapeFilter,
                                    allocator)) {
         record.character->SetInnerBodyShape(shape);
+        const BodyID innerBodyID = record.character->GetInnerBodyID();
+        const uint64_t newInnerBodyIdValue = static_cast<uint64_t>(innerBodyID.GetIndexAndSequenceNumber());
+        if (newInnerBodyIdValue != record.innerBodyIdValue) {
+            std::lock_guard<std::mutex> guard(world->characterContactMutex);
+            if (record.innerBodyIdValue != 0) {
+                world->characterBodyIds.erase(record.innerBodyIdValue);
+            }
+            if (newInnerBodyIdValue != 0) {
+                world->characterBodyIds.insert(newInnerBodyIdValue);
+            }
+            record.innerBodyIdValue = newInnerBodyIdValue;
+        }
     }
 }
 

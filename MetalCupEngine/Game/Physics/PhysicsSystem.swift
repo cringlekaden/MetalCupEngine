@@ -161,7 +161,7 @@ public final class PhysicsSystem {
     }
 
     public func pullTransformsFromPhysics(scene: EngineScene) {
-        pullSimulatedTransforms(ecs: scene.ecs)
+        pullSimulatedTransforms(scene: scene)
     }
 
     public func buildBodies(scene: EngineScene) {
@@ -234,7 +234,7 @@ public final class PhysicsSystem {
         pushKinematicTransforms(ecs: ecs, fixedDeltaTime: fixedDeltaTime)
         world.step(dt: fixedDeltaTime)
         updateOverlapEvents()
-        pullSimulatedTransforms(ecs: ecs)
+        pullSimulatedTransforms(scene: scene)
     }
 
     public func rebuildBody(entity: Entity, scene: EngineScene) -> Bool {
@@ -869,7 +869,8 @@ public final class PhysicsSystem {
         world.sphereCastClosest(origin: origin, direction: direction, radius: radius, maxDistance: maxDistance)
     }
 
-    private func pullSimulatedTransforms(ecs: SceneECS) {
+    private func pullSimulatedTransforms(scene: EngineScene) {
+        let ecs = scene.ecs
         ecs.forEachEntity { entity in
             if let controller = ecs.get(CharacterControllerComponent.self, for: entity),
                controller.isEnabled {
@@ -879,7 +880,7 @@ public final class PhysicsSystem {
                   rigidbody.isEnabled,
                   (rigidbody.motionType == .dynamic || rigidbody.motionType == .kinematic),
                   let bodyId = rigidbody.bodyId,
-                  var localTransform = ecs.get(TransformComponent.self, for: entity) else {
+                  ecs.get(TransformComponent.self, for: entity) != nil else {
                 return
             }
             guard let result = world.getBodyTransform(bodyId: bodyId) else { return }
@@ -892,22 +893,12 @@ public final class PhysicsSystem {
                 return
             }
             let resultRotation = TransformMath.normalizedQuaternion(result.rotation)
-            if let parent = ecs.getParent(entity) {
-                let parentWorldMatrix = ecs.worldMatrix(for: parent)
-                let desiredWorldMatrix = TransformMath.makeMatrix(
-                    position: result.position,
-                    rotation: resultRotation,
-                    scale: worldTransform.scale
-                )
-                let desiredLocalMatrix = simd_inverse(parentWorldMatrix) * desiredWorldMatrix
-                let decomposedLocal = TransformMath.decomposeMatrix(desiredLocalMatrix)
-                localTransform.position = decomposedLocal.position
-                localTransform.rotation = decomposedLocal.rotation
-            } else {
-                localTransform.position = result.position
-                localTransform.rotation = resultRotation
-            }
-            ecs.add(localTransform, to: entity)
+            let resolvedWorldTransform = TransformComponent(position: result.position,
+                                                            rotation: resultRotation,
+                                                            scale: worldTransform.scale)
+            _ = scene.transformAuthority.setWorldTransform(entity: entity,
+                                                           transform: resolvedWorldTransform,
+                                                           source: .physics)
         }
     }
 
@@ -1526,7 +1517,7 @@ public final class PhysicsSystem {
                   let preserved = preservedStateByEntity[entity.id] else { continue }
             restoreMotionStateIfPossible(preserved, to: bodyId)
         }
-        pullSimulatedTransforms(ecs: ecs)
+        pullSimulatedTransforms(scene: scene)
     }
 
     private func preserveMotionStateIfPossible(rigidbody: RigidbodyComponent) -> BodyMotionState? {

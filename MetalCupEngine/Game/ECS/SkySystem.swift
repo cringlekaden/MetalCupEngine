@@ -6,16 +6,28 @@ import Foundation
 import simd
 
 public enum SkySystem {
+    /// Returns the world-space direction from origin toward the sun disk in the sky.
     public static func sunDirection(azimuthDegrees: Float, elevationDegrees: Float) -> SIMD3<Float> {
         let azimuth = azimuthDegrees * Float.pi / 180.0
         let elevation = elevationDegrees * Float.pi / 180.0
         let cosEl = cos(elevation)
         let dir = SIMD3<Float>(
-            cosEl * cos(-azimuth),
+            cosEl * cos(azimuth),
             sin(elevation),
-            cosEl * sin(-azimuth)
+            cosEl * sin(azimuth)
         )
         return simd_normalize(dir)
+    }
+
+    /// Returns the world-space direction that sunlight rays travel (sun -> scene).
+    public static func sunRayDirection(azimuthDegrees: Float, elevationDegrees: Float) -> SIMD3<Float> {
+        -sunDirection(azimuthDegrees: azimuthDegrees, elevationDegrees: elevationDegrees)
+    }
+
+    /// Converts a world-space sun direction into procedural sky shader cubemap space.
+    /// The sky cubemap sampling basis uses opposite handedness on Z versus world-space.
+    public static func skyShaderSunDirection(fromWorldSunDirection direction: SIMD3<Float>) -> SIMD3<Float> {
+        simd_normalize(SIMD3<Float>(direction.x, direction.y, -direction.z))
     }
 
     public static func requiresIBLRebuild(previous: SkyLightComponent, next: SkyLightComponent) -> Bool {
@@ -54,36 +66,39 @@ public enum SkySystem {
             && lhs.cloudsSunInfluence == rhs.cloudsSunInfluence
     }
 
-    public static func update(scene: SceneECS) {
-        guard let (_, sky) = scene.activeSkyLight() else {
-            disableSkySunIfNeeded(in: scene)
+    public static func update(scene: EngineScene) {
+        let ecs = scene.ecs
+        guard let (_, sky) = ecs.activeSkyLight() else {
+            disableSkySunIfNeeded(in: ecs)
             return
         }
         guard sky.enabled, sky.mode == .procedural else {
-            disableSkySunIfNeeded(in: scene)
+            disableSkySunIfNeeded(in: ecs)
             return
         }
 
         // sunDir points from world origin toward the visible sun disc.
         // Directional light rays travel from sun to scene, so ray direction is -sunDir.
-        let sunDir = sunDirection(azimuthDegrees: sky.azimuthDegrees, elevationDegrees: sky.elevationDegrees)
-        let sunEntity = scene.firstEntity(with: SkySunTag.self) ?? createSunLight(in: scene, name: "Sun")
-        let lightRayDirection = -sunDir
+        let sunEntity = ecs.firstEntity(with: SkySunTag.self) ?? createSunLight(in: ecs, name: "Sun")
+        let lightRayDirection = sunRayDirection(azimuthDegrees: sky.azimuthDegrees,
+                                                elevationDegrees: sky.elevationDegrees)
 
-        var light = scene.get(LightComponent.self, for: sunEntity) ?? LightComponent(type: .directional)
+        var light = ecs.get(LightComponent.self, for: sunEntity) ?? LightComponent(type: .directional)
         light.type = .directional
         light.direction = lightRayDirection
         light.data.color = SIMD3<Float>(repeating: 1.0)
         light.data.brightness = max(sky.intensity, 0.0)
         light.data.diffuseIntensity = 1.0
         light.data.specularIntensity = 1.0
-        scene.add(light, to: sunEntity)
+        ecs.add(light, to: sunEntity)
 
-        var transform = scene.get(TransformComponent.self, for: sunEntity) ?? TransformComponent()
+        var transform = ecs.get(TransformComponent.self, for: sunEntity) ?? TransformComponent()
         transform.rotation = TransformMath.rotationForDirectionalLight(direction: lightRayDirection)
-        scene.add(transform, to: sunEntity)
-        if scene.get(NameComponent.self, for: sunEntity) == nil {
-            scene.add(NameComponent(name: "Sun"), to: sunEntity)
+        _ = scene.transformAuthority.setLocalTransform(entity: sunEntity,
+                                                       transform: transform,
+                                                       source: .system)
+        if ecs.get(NameComponent.self, for: sunEntity) == nil {
+            ecs.add(NameComponent(name: "Sun"), to: sunEntity)
         }
     }
 

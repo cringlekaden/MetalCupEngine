@@ -226,6 +226,17 @@ final class ShadowRenderer {
     }
 
     private func resolveDirectionalShadowLight(in scene: EngineScene) -> SIMD3<Float>? {
+        if let (_, sky) = scene.ecs.activeSkyLight(),
+           sky.enabled,
+           sky.mode == .procedural,
+           let sunEntity = scene.ecs.firstEntity(with: SkySunTag.self),
+           let sunLight = scene.ecs.get(LightComponent.self, for: sunEntity),
+           sunLight.type == .directional,
+           sunLight.castsShadows {
+            return SkySystem.sunRayDirection(azimuthDegrees: sky.azimuthDegrees,
+                                             elevationDegrees: sky.elevationDegrees)
+        }
+
         var direction: SIMD3<Float>?
         scene.ecs.viewLights { entity, _, light in
             if direction != nil { return }
