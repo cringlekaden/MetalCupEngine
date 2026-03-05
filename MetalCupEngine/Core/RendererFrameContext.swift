@@ -11,6 +11,52 @@ public struct RendererBatchStats {
     public var nonInstancedDrawCalls: Int = 0
 }
 
+public struct LightingInputs {
+    public var lightCountBuffer: MTLBuffer
+    public var lightDataBuffer: MTLBuffer
+    public var lightGridBuffer: MTLBuffer?
+    public var lightIndexListBuffer: MTLBuffer?
+    public var lightIndexCountBuffer: MTLBuffer?
+    public var clusterParamsBuffer: MTLBuffer?
+}
+
+public struct RenderViewContext {
+    public var viewId: UInt64
+    public var viewportSize: SIMD2<Float>
+    public var layerFilterMask: LayerMask
+    public var depthPrepassEnabled: Bool
+    public var debugFlags: UInt32
+    public var showEditorOverlays: Bool
+
+    public init(
+        viewId: UInt64 = 0,
+        viewportSize: SIMD2<Float> = .zero,
+        layerFilterMask: LayerMask = .all,
+        depthPrepassEnabled: Bool = true,
+        debugFlags: UInt32 = 0,
+        showEditorOverlays: Bool = false
+    ) {
+        self.viewId = viewId
+        self.viewportSize = viewportSize
+        self.layerFilterMask = layerFilterMask
+        self.depthPrepassEnabled = depthPrepassEnabled
+        self.debugFlags = debugFlags
+        self.showEditorOverlays = showEditorOverlays
+    }
+
+    public func cacheSignature() -> UInt64 {
+        var hasher = Hasher()
+        hasher.combine(viewId)
+        hasher.combine(viewportSize.x.bitPattern)
+        hasher.combine(viewportSize.y.bitPattern)
+        hasher.combine(layerFilterMask.rawValue)
+        hasher.combine(depthPrepassEnabled)
+        hasher.combine(debugFlags)
+        hasher.combine(showEditorOverlays)
+        return UInt64(bitPattern: Int64(hasher.finalize()))
+    }
+}
+
 public struct RendererFrameContext {
     fileprivate let storage: RendererFrameContextStorage
 
@@ -96,6 +142,34 @@ public struct RendererFrameContext {
         storage.rendererSettingsValue()
     }
 
+    public func rendererStateRevision() -> UInt64 {
+        storage.rendererStateRevisionValue()
+    }
+
+    func setRenderResourceRegistry(_ registry: RenderResourceRegistry) {
+        storage.setRenderResourceRegistry(registry)
+    }
+
+    func renderResourceRegistry() -> RenderResourceRegistry? {
+        storage.renderResourceRegistryValue()
+    }
+
+    public func setRenderFrameSnapshot(_ snapshot: RenderFrameSnapshot?) {
+        storage.setRenderFrameSnapshot(snapshot)
+    }
+
+    public func renderFrameSnapshot() -> RenderFrameSnapshot? {
+        storage.renderFrameSnapshotValue()
+    }
+
+    public func setLightingInputs(_ inputs: LightingInputs) {
+        storage.setLightingInputs(inputs)
+    }
+
+    public func lightingInputs() -> LightingInputs? {
+        storage.lightingInputsValue()
+    }
+
     public func setShadowConstants(_ constants: ShadowConstants) {
         storage.setShadowConstants(constants)
     }
@@ -124,24 +198,40 @@ public struct RendererFrameContext {
         storage.setCurrentRenderPass(pass)
     }
 
+    public func viewContext() -> RenderViewContext {
+        storage.viewContextValue()
+    }
+
+    public func setViewContext(_ context: RenderViewContext) {
+        storage.setViewContext(context)
+    }
+
     public func useDepthPrepass() -> Bool {
-        storage.useDepthPrepassValue()
+        storage.viewContextValue().depthPrepassEnabled
     }
 
     public func setUseDepthPrepass(_ enabled: Bool) {
-        storage.setUseDepthPrepass(enabled)
+        var context = storage.viewContextValue()
+        context.depthPrepassEnabled = enabled
+        storage.setViewContext(context)
     }
 
     public func layerFilterMask() -> LayerMask {
-        storage.layerFilterMaskValue()
+        storage.viewContextValue().layerFilterMask
     }
 
     public func setLayerFilterMask(_ mask: LayerMask) {
-        storage.setLayerFilterMask(mask)
+        var context = storage.viewContextValue()
+        context.layerFilterMask = mask
+        storage.setViewContext(context)
     }
 
     public func engineContext() -> EngineContext {
         storage.engineContextValue()
+    }
+
+    public func assetStateRevision() -> UInt64 {
+        storage.assetStateRevisionValue()
     }
 
 }
@@ -153,9 +243,13 @@ public final class RendererFrameContextStorage {
     private let engineContext: EngineContext
     private let device: MTLDevice
     private var rendererSettings = RendererSettings()
+    private var rendererStateRevision: UInt64 = 0
+    private var assetStateRevision: UInt64 = 0
+    private var renderResourceRegistry: RenderResourceRegistry?
+    private var renderFrameSnapshot: RenderFrameSnapshot?
+    private var lightingInputs: LightingInputs?
     private var currentRenderPass: RenderPassType = .main
-    private var useDepthPrepass: Bool = true
-    private var layerFilterMask: LayerMask = .all
+    private var viewContext = RenderViewContext()
 
     public struct IBLTextures {
         public let environment: MTLTexture?
@@ -194,9 +288,13 @@ public final class RendererFrameContextStorage {
         frameCounter &+= 1
         ensureFrameStorage()
         batchStats = RendererBatchStats()
+        currentRenderPass = .main
         iblReady = false
         sceneConstantsUploaded[frameIndex] = false
         rendererSettingsWriteOffsets[frameIndex] = 0
+        renderResourceRegistry = nil
+        renderFrameSnapshot = nil
+        lightingInputs = nil
         return RendererFrameContext(storage: self)
     }
 
@@ -350,15 +448,50 @@ public final class RendererFrameContextStorage {
         return (countBuffer, dataBuffer)
     }
 
-    func updateRendererState(settings: RendererSettings, currentRenderPass: RenderPassType, useDepthPrepass: Bool, layerFilterMask: LayerMask) {
+    func updateRendererState(settings: RendererSettings, viewContext: RenderViewContext) {
         rendererSettings = settings
-        self.currentRenderPass = currentRenderPass
-        self.useDepthPrepass = useDepthPrepass
-        self.layerFilterMask = layerFilterMask
+        self.viewContext = viewContext
+        rendererStateRevision &+= 1
     }
 
     fileprivate func rendererSettingsValue() -> RendererSettings {
         rendererSettings
+    }
+
+    fileprivate func rendererStateRevisionValue() -> UInt64 {
+        rendererStateRevision
+    }
+
+    fileprivate func setRenderResourceRegistry(_ registry: RenderResourceRegistry) {
+        renderResourceRegistry = registry
+    }
+
+    fileprivate func renderResourceRegistryValue() -> RenderResourceRegistry? {
+        renderResourceRegistry
+    }
+
+    fileprivate func setRenderFrameSnapshot(_ snapshot: RenderFrameSnapshot?) {
+        renderFrameSnapshot = snapshot
+    }
+
+    fileprivate func renderFrameSnapshotValue() -> RenderFrameSnapshot? {
+        renderFrameSnapshot
+    }
+
+    func setAssetStateRevision(_ revision: UInt64) {
+        assetStateRevision = revision
+    }
+
+    fileprivate func assetStateRevisionValue() -> UInt64 {
+        assetStateRevision
+    }
+
+    fileprivate func setLightingInputs(_ inputs: LightingInputs) {
+        lightingInputs = inputs
+    }
+
+    fileprivate func lightingInputsValue() -> LightingInputs? {
+        lightingInputs
     }
 
     fileprivate func setShadowConstants(_ constants: ShadowConstants) {
@@ -407,20 +540,12 @@ public final class RendererFrameContextStorage {
         currentRenderPass = pass
     }
 
-    fileprivate func useDepthPrepassValue() -> Bool {
-        useDepthPrepass
+    fileprivate func viewContextValue() -> RenderViewContext {
+        viewContext
     }
 
-    fileprivate func setUseDepthPrepass(_ enabled: Bool) {
-        useDepthPrepass = enabled
-    }
-
-    fileprivate func layerFilterMaskValue() -> LayerMask {
-        layerFilterMask
-    }
-
-    fileprivate func setLayerFilterMask(_ mask: LayerMask) {
-        layerFilterMask = mask
+    fileprivate func setViewContext(_ context: RenderViewContext) {
+        viewContext = context
     }
 
     fileprivate func engineContextValue() -> EngineContext {

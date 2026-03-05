@@ -24,9 +24,6 @@ public final class Renderer: NSObject {
         set { engineContext.rendererSettings = newValue }
     }
     public let profiler = RendererProfiler()
-    public var currentRenderPass: RenderPassType = .main
-    public var useDepthPrepass: Bool = true
-    public var layerFilterMask: LayerMask = .all
 
     private let _projection = float4x4(perspectiveFov: .pi / 2, aspect: 1.0, nearZ: 0.1, farZ: 10.0)
     private var _lastPerfFlags: UInt32 = 0
@@ -164,9 +161,7 @@ public final class Renderer: NSObject {
         let frameContext = _frameContextStorage.beginFrame()
         _frameContextStorage.updateRendererState(
             settings: settings,
-            currentRenderPass: currentRenderPass,
-            useDepthPrepass: useDepthPrepass,
-            layerFilterMask: layerFilterMask
+            viewContext: RenderViewContext()
         )
         renderBRDFLUT(frameContext: frameContext)
     }
@@ -968,6 +963,28 @@ extension Renderer: MTKViewDelegate {
         encoder.endEncoding()
     }
 
+    private func makeRenderViewContext(sceneView: SceneView, view: MTKView) -> RenderViewContext {
+        let resolvedViewport = SIMD2<Float>(
+            max(1.0, sceneView.viewportSize.x),
+            max(1.0, sceneView.viewportSize.y)
+        )
+        let resolvedViewId: UInt64 = {
+            if sceneView.viewId != 0 {
+                return sceneView.viewId
+            }
+            let fallbackId = ObjectIdentifier(view).hashValue
+            return UInt64(bitPattern: Int64(fallbackId))
+        }()
+        return RenderViewContext(
+            viewId: resolvedViewId,
+            viewportSize: resolvedViewport,
+            layerFilterMask: sceneView.layerMask,
+            depthPrepassEnabled: sceneView.depthPrepassEnabled,
+            debugFlags: sceneView.debugFlags,
+            showEditorOverlays: sceneView.isEditorView
+        )
+    }
+
     public func draw(in view: MTKView) {
         let frameStart = CACurrentMediaTime()
         updateFrameSizingIfNeeded(view: view)
@@ -990,15 +1007,21 @@ extension Renderer: MTKViewDelegate {
         delegate?.update(frame: frame)
         profiler.record(.update, seconds: CACurrentMediaTime() - updateStart)
         let frameContext = _frameContextStorage.beginFrame()
-        _frameContextStorage.updateRendererState(
-            settings: settings,
-            currentRenderPass: currentRenderPass,
-            useDepthPrepass: useDepthPrepass,
-            layerFilterMask: layerFilterMask
-        )
         let renderStart = CACurrentMediaTime()
         // Scene Pass -> Bloom -> Final Composite -> ImGui overlays
         let sceneView = delegate?.buildSceneView(renderer: self) ?? SceneView(viewportSize: viewportSize)
+        _frameContextStorage.updateRendererState(
+            settings: settings,
+            viewContext: makeRenderViewContext(sceneView: sceneView, view: view)
+        )
+        _frameContextStorage.setAssetStateRevision(engineContext.assets.cacheRevisionToken())
+        frameContext.setRenderResourceRegistry(_renderResources.buildRegistry())
+        let activeScene = delegate?.activeScene()
+        if let activeScene {
+            SceneRenderer.prepareRenderFrameSnapshot(scene: activeScene, frameContext: frameContext)
+        } else {
+            frameContext.setRenderFrameSnapshot(nil)
+        }
         guard let overlayCommandBuffer = engineContext.commandQueue.makeCommandBuffer() else { return }
         overlayCommandBuffer.label = "MetalCup Frame"
         let frameId = frameContext.currentFrameCounter()
@@ -1017,7 +1040,9 @@ extension Renderer: MTKViewDelegate {
             sceneView: sceneView,
             commandBuffer: overlayCommandBuffer,
             resources: _renderResources,
+            resourceRegistry: frameContext.renderResourceRegistry() ?? _renderResources.buildRegistry(),
             delegate: delegate,
+            sceneSnapshot: frameContext.renderFrameSnapshot(),
             frameContext: frameContext,
             profiler: profiler
         )
@@ -1036,7 +1061,7 @@ extension Renderer: MTKViewDelegate {
         profiler.record(.overlays, seconds: CACurrentMediaTime() - overlaysStart)
         profiler.record(.render, seconds: CACurrentMediaTime() - renderStart)
 
-        if let scene = delegate?.activeScene() {
+        if let scene = activeScene {
             updateSkyIfNeeded(scene: scene)
         }
 

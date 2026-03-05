@@ -21,20 +21,23 @@ final class ShadowRenderer {
     }
 
     func render(frame: RenderGraphFrame) {
-        guard let scene = frame.delegate?.activeScene() else {
+        guard let snapshot = frame.sceneSnapshot else {
+#if DEBUG
+            assertionFailure("ShadowRenderer requires RenderFrameSnapshot in RenderGraphFrame.")
+#endif
             resetShadowState(frame: frame)
             return
         }
-        render(scene: scene, frame: frame)
+        render(snapshot: snapshot, frame: frame)
     }
 
-    private func render(scene: EngineScene, frame: RenderGraphFrame) {
-        let settings = frame.renderer.settings.shadows
+    private func render(snapshot: RenderFrameSnapshot, frame: RenderGraphFrame) {
+        let settings = frame.frameContext.rendererSettings().shadows
         guard settings.enabled != 0, settings.directionalEnabled != 0 else {
             resetShadowState(frame: frame)
             return
         }
-        guard let lightDirection = resolveDirectionalShadowLight(in: scene) else {
+        guard let lightDirection = snapshot.directionalShadowLightDirection else {
             resetShadowState(frame: frame)
             return
         }
@@ -171,6 +174,9 @@ final class ShadowRenderer {
 
         frame.frameContext.setShadowConstants(constants)
         frame.frameContext.setShadowMapTexture(shadowMap)
+        frame.resourceRegistry.registerNamedTexture("shadow.map", texture: shadowMap, lifetime: .transientPerFrame)
+        let shadowConstantsBuffer = frame.frameContext.shadowConstantsBuffer()
+        frame.resourceRegistry.registerBuffer("shadow.constants", buffer: shadowConstantsBuffer, lifetime: .transientPerFrame)
 
         let frameIndex = frame.frameContext.currentFrameIndex()
         var didSampleBegin = false
@@ -193,14 +199,14 @@ final class ShadowRenderer {
                 shadowSceneConstants(
                     viewMatrix: lightViews[cascadeIndex],
                     projectionMatrix: lightProjections[cascadeIndex],
-                    totalTime: scene.getSceneConstants().totalGameTime
+                    totalTime: snapshot.sceneConstants.totalGameTime
                 ),
                 label: "SceneConstants.ShadowCascade\(cascadeIndex)"
             )
-            RenderPassHelpers.withRenderPass(.shadow, renderer: frame.renderer, frameContext: frame.frameContext) {
+            RenderPassHelpers.withRenderPass(.shadow, frameContext: frame.frameContext) {
                 SceneRenderer.renderShadowCasters(
                     into: encoder,
-                    scene: scene,
+                    snapshot: snapshot,
                     frameContext: frame.frameContext,
                     sceneConstantsBuffer: constantsBuffer,
                     shadowCullVolume: SceneRenderer.ShadowCullVolume(
@@ -223,28 +229,6 @@ final class ShadowRenderer {
     private func resetShadowState(frame: RenderGraphFrame) {
         frame.frameContext.setShadowConstants(ShadowConstants())
         frame.frameContext.setShadowMapTexture(nil)
-    }
-
-    private func resolveDirectionalShadowLight(in scene: EngineScene) -> SIMD3<Float>? {
-        if let (_, sky) = scene.ecs.activeSkyLight(),
-           sky.enabled,
-           sky.mode == .procedural,
-           let sunEntity = scene.ecs.firstEntity(with: SkySunTag.self),
-           let sunLight = scene.ecs.get(LightComponent.self, for: sunEntity),
-           sunLight.type == .directional,
-           sunLight.castsShadows {
-            return SkySystem.sunRayDirection(azimuthDegrees: sky.azimuthDegrees,
-                                             elevationDegrees: sky.elevationDegrees)
-        }
-
-        var direction: SIMD3<Float>?
-        scene.ecs.viewLights { entity, _, light in
-            if direction != nil { return }
-            guard light.type == .directional, light.castsShadows else { return }
-            let worldTransform = scene.ecs.worldTransform(for: entity)
-            direction = TransformMath.directionalLightDirection(from: worldTransform.rotation)
-        }
-        return direction
     }
 
     private enum CameraProjection {

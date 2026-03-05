@@ -288,6 +288,24 @@ public func MCERendererSetSkipSpecIBLHighRoughness(_ contextPtr: UnsafeRawPointe
     }
 }
 
+@_cdecl("MCERendererGetForwardPlusEnabled")
+public func MCERendererGetForwardPlusEnabled(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    (getSettings(contextPtr).perfFlags & RendererPerfFlags.forwardPlusEnabled.rawValue) != 0 ? 1 : 0
+}
+
+@_cdecl("MCERendererSetForwardPlusEnabled")
+public func MCERendererSetForwardPlusEnabled(_ contextPtr: UnsafeRawPointer?, _ value: UInt32) {
+    updateSettings(contextPtr) { settings in
+        settings.setPerfFlag(.forwardPlusEnabled, enabled: value != 0)
+    }
+}
+
+@_cdecl("MCERendererGetForwardPlusMaxLightsPerCluster")
+public func MCERendererGetForwardPlusMaxLightsPerCluster(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
+    _ = contextPtr
+    return ForwardPlusConfig.maxLightsPerCluster
+}
+
 @_cdecl("MCERendererGetShadingDebugMode")
 public func MCERendererGetShadingDebugMode(_ contextPtr: UnsafeRawPointer?) -> UInt32 {
     getSettings(contextPtr).shadingDebugMode

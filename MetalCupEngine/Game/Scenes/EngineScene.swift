@@ -228,10 +228,15 @@ public class EngineScene {
     }
 
     public func renderPreview(encoder: MTLRenderCommandEncoder, cameraEntity: Entity, viewportSize: SIMD2<Float>, frameContext: RendererFrameContext) {
+        guard ecs.get(TransformComponent.self, for: cameraEntity) != nil,
+              let camera = ecs.get(CameraComponent.self, for: cameraEntity) else { return }
+        let worldTransform = ecs.worldTransform(for: cameraEntity)
+        let snapshot = makeRenderFrameSnapshot(frameToken: frameContext.currentFrameCounter(), layerFilterMask: .all)
         SceneRenderer.renderPreview(
             encoder: encoder,
-            scene: self,
-            cameraEntity: cameraEntity,
+            snapshot: snapshot,
+            camera: camera,
+            worldTransform: worldTransform,
             viewportSize: viewportSize,
             frameContext: frameContext
         )
@@ -392,13 +397,51 @@ public class EngineScene {
                 )
             )
         }
+        let activeSkyLight = ecs.activeSkyLight()?.1
+        let lightData = _lightManager.snapshotLightData()
+        let shadowLightDirection = resolveDirectionalShadowLightDirection(activeSkyLight: activeSkyLight)
+        var hasher = Hasher()
+        hasher.combine(frameToken)
+        hasher.combine(layerFilterMask.rawValue)
+        hasher.combine(renderables.count)
+        hasher.combine(lightData.count)
+        hasher.combine(activeSkyLight != nil)
+        hasher.combine(_sceneConstants.cameraPositionAndIBL.x.bitPattern)
+        hasher.combine(_sceneConstants.cameraPositionAndIBL.y.bitPattern)
+        hasher.combine(_sceneConstants.cameraPositionAndIBL.z.bitPattern)
+
         return RenderFrameSnapshot(
             sceneKey: ObjectIdentifier(self),
             frameToken: frameToken,
+            signature: UInt64(bitPattern: Int64(hasher.finalize())),
             sceneConstants: _sceneConstants,
-            activeSkyLight: ecs.activeSkyLight()?.1,
+            activeSkyLight: activeSkyLight,
+            lightData: lightData,
+            directionalShadowLightDirection: shadowLightDirection,
             renderables: renderables
         )
+    }
+
+    private func resolveDirectionalShadowLightDirection(activeSkyLight: SkyLightComponent?) -> SIMD3<Float>? {
+        if let sky = activeSkyLight,
+           sky.enabled,
+           sky.mode == .procedural,
+           let sunEntity = ecs.firstEntity(with: SkySunTag.self),
+           let sunLight = ecs.get(LightComponent.self, for: sunEntity),
+           sunLight.type == .directional,
+           sunLight.castsShadows {
+            return SkySystem.sunRayDirection(azimuthDegrees: sky.azimuthDegrees,
+                                             elevationDegrees: sky.elevationDegrees)
+        }
+
+        var direction: SIMD3<Float>?
+        ecs.viewLights { entity, _, light in
+            if direction != nil { return }
+            guard light.type == .directional, light.castsShadows else { return }
+            let worldTransform = ecs.worldTransform(for: entity)
+            direction = TransformMath.directionalLightDirection(from: worldTransform.rotation)
+        }
+        return direction
     }
 
     func updateCameras() {

@@ -31,6 +31,7 @@ public final class AssetManager {
     private var materialCacheModified: [AssetHandle: TimeInterval] = [:]
     private var runtimeTextureHandles = Set<AssetHandle>()
     private var runtimeMeshHandles = Set<AssetHandle>()
+    private var cacheRevision: UInt64 = 0
     private let cacheLock = NSLock()
 
     public weak var assetDatabase: AssetDatabase?
@@ -235,6 +236,7 @@ public final class AssetManager {
         cacheLock.lock()
         textureCache[handle] = texture
         runtimeTextureHandles.insert(handle)
+        cacheRevision &+= 1
         cacheLock.unlock()
     }
 
@@ -242,6 +244,7 @@ public final class AssetManager {
         cacheLock.lock()
         meshCache[handle] = mesh
         runtimeMeshHandles.insert(handle)
+        cacheRevision &+= 1
         cacheLock.unlock()
     }
 
@@ -268,7 +271,15 @@ public final class AssetManager {
         meshCache = meshCache.filter { runtimeMeshHandles.contains($0.key) }
         materialCache.removeAll()
         materialCacheModified.removeAll()
+        cacheRevision &+= 1
         cacheLock.unlock()
+    }
+
+    public func cacheRevisionToken() -> UInt64 {
+        cacheLock.lock()
+        let revision = cacheRevision
+        cacheLock.unlock()
+        return revision
     }
 
     public static func isColorTexture(path: String) -> Bool {

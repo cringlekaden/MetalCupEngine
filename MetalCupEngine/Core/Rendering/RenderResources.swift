@@ -4,6 +4,210 @@
 
 import MetalKit
 
+enum RenderResourceLifetime: String {
+    case transientPerFrame
+    case persistent
+}
+
+enum RenderNamedResourceKey {
+    static let forwardPlusCullingDepth = "forwardPlus.cullingDepth"
+    static let forwardPlusLightGrid = "forwardPlus.lightGrid"
+    static let forwardPlusLightIndexList = "forwardPlus.lightIndexList"
+    static let forwardPlusLightIndexCount = "forwardPlus.lightIndexCount"
+    static let forwardPlusClusterParams = "forwardPlus.clusterParams"
+}
+
+struct RenderTextureMetadata {
+    let size: SIMD2<Int>
+    let pixelFormat: MTLPixelFormat
+    let usage: MTLTextureUsage
+    let lifetime: RenderResourceLifetime
+}
+
+struct RenderBufferMetadata {
+    let length: Int
+    let lifetime: RenderResourceLifetime
+    let storageMode: MTLStorageMode
+    let usage: RenderBufferUsage
+}
+
+struct RenderBufferUsage: OptionSet {
+    let rawValue: UInt8
+
+    static let computeRead = RenderBufferUsage(rawValue: 1 << 0)
+    static let computeWrite = RenderBufferUsage(rawValue: 1 << 1)
+}
+
+struct RenderTextureHandle: Hashable {
+    let key: RenderResourceTexture
+}
+
+struct RenderBufferHandle: Hashable {
+    let key: String
+}
+
+enum RenderResourceHandle: Hashable {
+    case texture(RenderTextureHandle)
+    case namedTexture(String)
+    case buffer(RenderBufferHandle)
+
+    var debugName: String {
+        switch self {
+        case .texture(let texture):
+            return "texture.\(String(describing: texture.key))"
+        case .namedTexture(let key):
+            return "texture.\(key)"
+        case .buffer(let buffer):
+            return "buffer.\(buffer.key)"
+        }
+    }
+}
+
+struct RenderPassResourceUsage {
+    let handle: RenderResourceHandle
+    let expectedTextureFormat: MTLPixelFormat?
+    let requiredTextureUsage: MTLTextureUsage?
+    let requiredBufferUsage: RenderBufferUsage
+    let allowedBufferStorageModes: Set<MTLStorageMode>
+
+    static func texture(_ key: RenderResourceTexture, expectedFormat: MTLPixelFormat? = nil) -> RenderPassResourceUsage {
+        RenderPassResourceUsage(
+            handle: .texture(RenderTextureHandle(key: key)),
+            expectedTextureFormat: expectedFormat,
+            requiredTextureUsage: nil,
+            requiredBufferUsage: [],
+            allowedBufferStorageModes: []
+        )
+    }
+
+    static func namedTexture(_ key: String,
+                             expectedFormat: MTLPixelFormat? = nil,
+                             requiredUsage: MTLTextureUsage? = nil) -> RenderPassResourceUsage {
+        RenderPassResourceUsage(
+            handle: .namedTexture(key),
+            expectedTextureFormat: expectedFormat,
+            requiredTextureUsage: requiredUsage,
+            requiredBufferUsage: [],
+            allowedBufferStorageModes: []
+        )
+    }
+
+    static func buffer(_ key: String,
+                       requiredUsage: RenderBufferUsage = [],
+                       allowedStorageModes: Set<MTLStorageMode> = [.shared, .private]) -> RenderPassResourceUsage {
+        RenderPassResourceUsage(
+            handle: .buffer(RenderBufferHandle(key: key)),
+            expectedTextureFormat: nil,
+            requiredTextureUsage: nil,
+            requiredBufferUsage: requiredUsage,
+            allowedBufferStorageModes: allowedStorageModes
+        )
+    }
+}
+
+final class RenderResourceRegistry {
+    private struct TextureEntry {
+        let texture: MTLTexture
+        let metadata: RenderTextureMetadata
+    }
+
+    private struct BufferEntry {
+        let buffer: MTLBuffer
+        let metadata: RenderBufferMetadata
+    }
+
+    private var textures: [RenderTextureHandle: TextureEntry] = [:]
+    private var namedTextures: [String: TextureEntry] = [:]
+    private var buffers: [RenderBufferHandle: BufferEntry] = [:]
+
+    func registerTexture(_ key: RenderResourceTexture,
+                         texture: MTLTexture,
+                         lifetime: RenderResourceLifetime) {
+        let handle = RenderTextureHandle(key: key)
+        textures[handle] = TextureEntry(
+            texture: texture,
+            metadata: RenderTextureMetadata(
+                size: SIMD2<Int>(texture.width, texture.height),
+                pixelFormat: texture.pixelFormat,
+                usage: texture.usage,
+                lifetime: lifetime
+            )
+        )
+    }
+
+    func registerBuffer(_ key: String,
+                        buffer: MTLBuffer,
+                        lifetime: RenderResourceLifetime,
+                        usage: RenderBufferUsage = []) {
+        let handle = RenderBufferHandle(key: key)
+#if DEBUG
+        if !usage.isEmpty {
+            let mode = buffer.storageMode
+            MC_ASSERT(mode == .shared || mode == .private,
+                      "RenderResourceRegistry: buffer '\(key)' is marked for compute use but has unsupported storage mode \(mode.rawValue).")
+        }
+#endif
+        buffers[handle] = BufferEntry(
+            buffer: buffer,
+            metadata: RenderBufferMetadata(
+                length: buffer.length,
+                lifetime: lifetime,
+                storageMode: buffer.storageMode,
+                usage: usage
+            )
+        )
+    }
+
+    func registerNamedTexture(_ key: String,
+                              texture: MTLTexture,
+                              lifetime: RenderResourceLifetime) {
+        namedTextures[key] = TextureEntry(
+            texture: texture,
+            metadata: RenderTextureMetadata(
+                size: SIMD2<Int>(texture.width, texture.height),
+                pixelFormat: texture.pixelFormat,
+                usage: texture.usage,
+                lifetime: lifetime
+            )
+        )
+    }
+
+    func texture(_ key: RenderResourceTexture) -> MTLTexture? {
+        textures[RenderTextureHandle(key: key)]?.texture
+    }
+
+    func textureMetadata(_ key: RenderResourceTexture) -> RenderTextureMetadata? {
+        textures[RenderTextureHandle(key: key)]?.metadata
+    }
+
+    func namedTexture(_ key: String) -> MTLTexture? {
+        namedTextures[key]?.texture
+    }
+
+    func namedTextureMetadata(_ key: String) -> RenderTextureMetadata? {
+        namedTextures[key]?.metadata
+    }
+
+    func buffer(_ key: String) -> MTLBuffer? {
+        buffers[RenderBufferHandle(key: key)]?.buffer
+    }
+
+    func bufferMetadata(_ key: String) -> RenderBufferMetadata? {
+        buffers[RenderBufferHandle(key: key)]?.metadata
+    }
+
+    func contains(_ handle: RenderResourceHandle) -> Bool {
+        switch handle {
+        case .texture(let texture):
+            return textures[texture] != nil
+        case .namedTexture(let key):
+            return namedTextures[key] != nil
+        case .buffer(let buffer):
+            return buffers[buffer] != nil
+        }
+    }
+}
+
 enum RenderResourceTexture {
     case baseColor
     case finalColor
@@ -172,6 +376,26 @@ final class RenderResources {
 
     func texture(_ texture: RenderResourceTexture) -> MTLTexture? {
         assetManager.texture(handle: texture.handle)
+    }
+
+    func buildRegistry() -> RenderResourceRegistry {
+        let registry = RenderResourceRegistry()
+        let allTextures: [RenderResourceTexture] = [
+            .baseColor,
+            .finalColor,
+            .baseDepth,
+            .bloomPing,
+            .bloomPong,
+            .outlineMask,
+            .gridColor,
+            .pickId,
+            .pickDepth
+        ]
+        for key in allTextures {
+            guard let texture = texture(key) else { continue }
+            registry.registerTexture(key, texture: texture, lifetime: .persistent)
+        }
+        return registry
     }
 
     private func registerTexture(descriptor: MTLTextureDescriptor, handle: RenderResourceTexture, label: String) {

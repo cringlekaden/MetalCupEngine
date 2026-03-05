@@ -194,6 +194,16 @@ public struct RendererPerfFlags: OptionSet {
     public static let disableClearcoat = RendererPerfFlags(rawValue: 1 << 3)
     public static let disableSheen = RendererPerfFlags(rawValue: 1 << 4)
     public static let skipSpecIBLHighRoughness = RendererPerfFlags(rawValue: 1 << 5)
+    public static let forwardPlusEnabled = RendererPerfFlags(rawValue: 1 << 6)
+}
+
+public enum ForwardPlusConfig {
+    public static let abiVersion: UInt32 = 1
+    public static let tileSizeX: UInt32 = 16
+    public static let tileSizeY: UInt32 = 16
+    public static let zSliceCount: UInt32 = 1
+    public static let maxLightsPerCluster: UInt32 = 64
+    public static let configVersion: UInt32 = 1
 }
 
 public extension RendererSettings {

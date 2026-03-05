@@ -6,6 +6,7 @@ import Foundation
 import simd
 
 public struct SceneView {
+    public var viewId: UInt64
     public var viewMatrix: matrix_float4x4
     public var projectionMatrix: matrix_float4x4
     public var cameraPosition: SIMD3<Float>
@@ -17,9 +18,11 @@ public struct SceneView {
     public var layerMask: LayerMask
     public var selectedEntityIds: [UUID]
     public var debugFlags: UInt32
+    public var depthPrepassEnabled: Bool
     public var isEditorView: Bool
 
-    public init(viewMatrix: matrix_float4x4 = matrix_identity_float4x4,
+    public init(viewId: UInt64 = 0,
+                viewMatrix: matrix_float4x4 = matrix_identity_float4x4,
                 projectionMatrix: matrix_float4x4 = matrix_identity_float4x4,
                 cameraPosition: SIMD3<Float> = .zero,
                 viewportSize: SIMD2<Float> = .zero,
@@ -30,7 +33,9 @@ public struct SceneView {
                 layerMask: LayerMask = .all,
                 selectedEntityIds: [UUID] = [],
                 debugFlags: UInt32 = 0,
+                depthPrepassEnabled: Bool = true,
                 isEditorView: Bool = false) {
+        self.viewId = viewId
         self.viewMatrix = viewMatrix
         self.projectionMatrix = projectionMatrix
         self.cameraPosition = cameraPosition
@@ -42,6 +47,7 @@ public struct SceneView {
         self.layerMask = layerMask
         self.selectedEntityIds = selectedEntityIds
         self.debugFlags = debugFlags
+        self.depthPrepassEnabled = depthPrepassEnabled
         self.isEditorView = isEditorView
     }
 }

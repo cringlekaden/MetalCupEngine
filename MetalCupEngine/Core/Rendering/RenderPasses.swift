@@ -58,17 +58,16 @@ struct RenderPassHelpers {
         SIMD2<Float>(Float(texture.width), Float(texture.height))
     }
 
-    static func withRenderPass(_ pass: RenderPassType, renderer: Renderer, frameContext: RendererFrameContext, _ body: () -> Void) {
+    static func withRenderPass(_ pass: RenderPassType, frameContext: RendererFrameContext, _ body: () -> Void) {
         let previous = frameContext.currentRenderPass()
-        renderer.currentRenderPass = pass
         frameContext.setCurrentRenderPass(pass)
         body()
-        renderer.currentRenderPass = previous
         frameContext.setCurrentRenderPass(previous)
     }
 
-    static func shouldRenderEditorOverlays(_ sceneView: SceneView) -> Bool {
-        return sceneView.isEditorView
+    static func shouldRenderEditorOverlays(_ frameContext: RendererFrameContext, fallback sceneView: SceneView) -> Bool {
+        let contextFlag = frameContext.viewContext().showEditorOverlays
+        return contextFlag || sceneView.isEditorView
     }
 }
 
@@ -124,6 +123,10 @@ struct FullscreenPass {
 final class ShadowPass: RenderGraphPass {
     let name = "ShadowPass"
     let gpuPass: RendererProfiler.GpuPass? = .shadows
+    let outputs: [RenderPassResourceUsage] = [
+        .namedTexture("shadow.map"),
+        .buffer("shadow.constants")
+    ]
 
     func execute(frame: RenderGraphFrame) {
         frame.renderer.shadowRenderer.render(frame: frame)
@@ -133,10 +136,18 @@ final class ShadowPass: RenderGraphPass {
 final class DepthPrepassPass: RenderGraphPass {
     let name = "DepthPrepassPass"
     let gpuPass: RendererProfiler.GpuPass? = .depthPrepass
+    let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
+        .texture(RenderTextureHandle(key: .baseDepth)),
+        .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.baseDepth),
+        .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth, requiredUsage: .shaderRead)
+    ]
 
     func execute(frame: RenderGraphFrame) {
-        guard frame.renderer.useDepthPrepass else { return }
-        guard let depth = frame.resources.texture(.baseDepth) else { return }
+        guard frame.frameContext.useDepthPrepass() else { return }
+        guard let depth = frame.resourceRegistry.texture(.baseDepth) else { return }
         let frameIndex = frame.frameContext.currentFrameIndex()
         let pass = RenderPassBuilder.depth(texture: depth)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
@@ -144,36 +155,429 @@ final class DepthPrepassPass: RenderGraphPass {
         encoder.pushDebugGroup("Depth Prepass")
         frame.profiler.sampleGpuPassBegin(.depthPrepass, encoder: encoder, frameIndex: frameIndex)
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(depth))
-        RenderPassHelpers.withRenderPass(.depthPrepass, renderer: frame.renderer, frameContext: frame.frameContext) {
+        RenderPassHelpers.withRenderPass(.depthPrepass, frameContext: frame.frameContext) {
             frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
         encoder.endEncoding()
         frame.profiler.sampleGpuPassEnd(.depthPrepass, encoder: encoder, frameIndex: frameIndex)
+        frame.resourceRegistry.registerNamedTexture(
+            RenderNamedResourceKey.forwardPlusCullingDepth,
+            texture: depth,
+            lifetime: .transientPerFrame
+        )
+    }
+}
+
+final class CullingDepthFallbackPass: RenderGraphPass {
+    let name = "CullingDepthFallbackPass"
+    let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
+        .texture(RenderTextureHandle(key: .baseDepth)),
+        .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.baseDepth),
+        .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth, requiredUsage: .shaderRead)
+    ]
+
+    func execute(frame: RenderGraphFrame) {
+        guard !frame.frameContext.useDepthPrepass() else { return }
+        guard let depth = frame.resourceRegistry.texture(.baseDepth) else { return }
+        let pass = RenderPassBuilder.depth(texture: depth)
+        guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        encoder.label = "Culling Depth Fallback"
+        encoder.pushDebugGroup("Culling Depth Fallback")
+        RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(depth))
+        RenderPassHelpers.withRenderPass(.depthPrepass, frameContext: frame.frameContext) {
+            frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
+        }
+        encoder.popDebugGroup()
+        encoder.endEncoding()
+        frame.resourceRegistry.registerNamedTexture(
+            RenderNamedResourceKey.forwardPlusCullingDepth,
+            texture: depth,
+            lifetime: .transientPerFrame
+        )
+    }
+}
+
+final class LightCullingPass: RenderGraphPass {
+    let name = "LightCullingPass"
+    let inputs: [RenderPassResourceUsage] = [
+        .namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth, requiredUsage: .shaderRead)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .buffer(RenderNamedResourceKey.forwardPlusLightGrid, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexList, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexCount, requiredUsage: [.computeWrite]),
+        .buffer(RenderNamedResourceKey.forwardPlusClusterParams, requiredUsage: [.computeWrite])
+    ]
+    private let tileSize = SIMD2<UInt32>(ForwardPlusConfig.tileSizeX, ForwardPlusConfig.tileSizeY)
+    private let maxLightsPerCluster: UInt32 = ForwardPlusConfig.maxLightsPerCluster
+    private var computePipeline: MTLComputePipelineState?
+#if DEBUG
+    private var wasForwardPlusEnabledLastFrame = false
+#endif
+
+    func execute(frame: RenderGraphFrame) {
+#if DEBUG
+        MC_ASSERT(ForwardPlusClusterParams.stride == ForwardPlusClusterParams.expectedMetalStride,
+                  "ForwardPlusClusterParams ABI mismatch: expected stride \(ForwardPlusClusterParams.expectedMetalStride), got \(ForwardPlusClusterParams.stride).")
+        MC_ASSERT(MemoryLayout<ForwardPlusClusterParams>.alignment == ForwardPlusClusterParams.expectedMetalAlignment,
+                  "ForwardPlusClusterParams ABI mismatch: expected alignment \(ForwardPlusClusterParams.expectedMetalAlignment), got \(MemoryLayout<ForwardPlusClusterParams>.alignment).")
+        MC_ASSERT(ForwardPlusIndexHeader.stride == ForwardPlusIndexHeader.expectedMetalStride,
+                  "ForwardPlusIndexHeader ABI mismatch: expected stride \(ForwardPlusIndexHeader.expectedMetalStride), got \(ForwardPlusIndexHeader.stride).")
+        MC_ASSERT(MemoryLayout<ForwardPlusIndexHeader>.alignment == ForwardPlusIndexHeader.expectedMetalAlignment,
+                  "ForwardPlusIndexHeader ABI mismatch: expected alignment \(ForwardPlusIndexHeader.expectedMetalAlignment), got \(MemoryLayout<ForwardPlusIndexHeader>.alignment).")
+        MC_ASSERT(ForwardPlusCullLight.stride == ForwardPlusCullLight.expectedMetalStride,
+                  "ForwardPlusCullLight ABI mismatch: expected stride \(ForwardPlusCullLight.expectedMetalStride), got \(ForwardPlusCullLight.stride).")
+        MC_ASSERT(MemoryLayout<ForwardPlusCullLight>.alignment == ForwardPlusCullLight.expectedMetalAlignment,
+                  "ForwardPlusCullLight ABI mismatch: expected alignment \(ForwardPlusCullLight.expectedMetalAlignment), got \(MemoryLayout<ForwardPlusCullLight>.alignment).")
+        MC_ASSERT(ForwardPlusCullUniforms.stride == ForwardPlusCullUniforms.expectedMetalStride,
+                  "ForwardPlusCullUniforms ABI mismatch: expected stride \(ForwardPlusCullUniforms.expectedMetalStride), got \(ForwardPlusCullUniforms.stride).")
+#endif
+        guard let baseDepth = frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) else {
+#if DEBUG
+            fatalError("LightCullingPass requires \(RenderNamedResourceKey.forwardPlusCullingDepth) to be produced before culling.")
+#else
+            return
+#endif
+        }
+
+        let viewport = SIMD2<UInt32>(UInt32(max(baseDepth.width, 1)), UInt32(max(baseDepth.height, 1)))
+        let tileCount = SIMD2<UInt32>(
+            max(1, (viewport.x + tileSize.x - 1) / tileSize.x),
+            max(1, (viewport.y + tileSize.y - 1) / tileSize.y)
+        )
+        let tileTotalU32 = max(1, tileCount.x * tileCount.y)
+        let tileTotal = Int(tileTotalU32)
+        let gridByteCount = max(tileTotal * MemoryLayout<SIMD2<UInt32>>.stride, MemoryLayout<SIMD2<UInt32>>.stride)
+        let indexCapacity64 = UInt64(tileTotalU32) * UInt64(maxLightsPerCluster)
+        let indexCapacity = Int(min(indexCapacity64, UInt64(Int.max / MemoryLayout<UInt32>.stride)))
+        let indexListByteCount = max(indexCapacity * MemoryLayout<UInt32>.stride, MemoryLayout<UInt32>.stride)
+        let device = frame.engineContext.device
+
+        guard let gridBuffer = device.makeBuffer(length: gridByteCount, options: [.storageModeShared]),
+              let indexListBuffer = device.makeBuffer(length: indexListByteCount, options: [.storageModeShared]),
+              let indexCountBuffer = device.makeBuffer(length: ForwardPlusIndexHeader.stride, options: [.storageModeShared]),
+              let clusterParamsBuffer = device.makeBuffer(length: ForwardPlusClusterParams.stride, options: [.storageModeShared]) else {
+            return
+        }
+
+        gridBuffer.label = "ForwardPlus.LightGrid"
+        indexListBuffer.label = "ForwardPlus.LightIndexList"
+        indexCountBuffer.label = "ForwardPlus.LightIndexCount"
+        clusterParamsBuffer.label = "ForwardPlus.ClusterParams"
+        gridBuffer.contents().initializeMemory(as: UInt8.self, repeating: 0, count: gridBuffer.length)
+        indexListBuffer.contents().initializeMemory(as: UInt8.self, repeating: 0, count: indexListBuffer.length)
+        indexCountBuffer.contents().initializeMemory(as: UInt8.self, repeating: 0, count: indexCountBuffer.length)
+
+        var params = ForwardPlusClusterParams()
+        params.header = SIMD4<UInt32>(
+            ForwardPlusConfig.abiVersion,
+            ForwardPlusConfig.zSliceCount,
+            tileCount.x,
+            tileCount.y
+        )
+        params.tileAndViewport = SIMD4<UInt32>(
+            tileSize.x,
+            tileSize.y,
+            viewport.x,
+            viewport.y
+        )
+        withUnsafeBytes(of: &params) { bytes in
+            clusterParamsBuffer.contents().copyMemory(from: bytes.baseAddress!, byteCount: ForwardPlusClusterParams.stride)
+        }
+        var indexHeader = ForwardPlusIndexHeader()
+        indexHeader.abiVersion = ForwardPlusConfig.abiVersion
+        indexHeader.totalIndexCount = 0
+        indexHeader.overflowClusterCount = 0
+        indexHeader.maxIndexCapacity = UInt32(indexCapacity)
+        withUnsafeBytes(of: &indexHeader) { bytes in
+            indexCountBuffer.contents().copyMemory(from: bytes.baseAddress!, byteCount: ForwardPlusIndexHeader.stride)
+        }
+
+        let forwardPlusEnabled = frame.frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled)
+        if forwardPlusEnabled {
+            runComputeCulling(frame: frame,
+                              depthTexture: baseDepth,
+                              tileCount: tileCount,
+                              viewport: viewport,
+                              indexCapacity: UInt32(indexCapacity),
+                              clusterParamsBuffer: clusterParamsBuffer,
+                              indexHeaderBuffer: indexCountBuffer,
+                              gridBuffer: gridBuffer,
+                              indexListBuffer: indexListBuffer)
+        }
+
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusLightGrid,
+            buffer: gridBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusLightIndexList,
+            buffer: indexListBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusLightIndexCount,
+            buffer: indexCountBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+        frame.resourceRegistry.registerBuffer(
+            RenderNamedResourceKey.forwardPlusClusterParams,
+            buffer: clusterParamsBuffer,
+            lifetime: .transientPerFrame,
+            usage: [.computeWrite]
+        )
+#if DEBUG
+        if forwardPlusEnabled && !wasForwardPlusEnabledLastFrame {
+            runForwardPlusEnableSelfCheck(
+                frame: frame,
+                depthTexture: baseDepth,
+                clusterParamsBuffer: clusterParamsBuffer,
+                indexHeaderBuffer: indexCountBuffer
+            )
+        }
+        wasForwardPlusEnabledLastFrame = forwardPlusEnabled
+#endif
+    }
+
+    private func runComputeCulling(frame: RenderGraphFrame,
+                                   depthTexture: MTLTexture,
+                                   tileCount: SIMD2<UInt32>,
+                                   viewport: SIMD2<UInt32>,
+                                   indexCapacity: UInt32,
+                                   clusterParamsBuffer: MTLBuffer,
+                                   indexHeaderBuffer: MTLBuffer,
+                                   gridBuffer: MTLBuffer,
+                                   indexListBuffer: MTLBuffer) {
+        guard let pipeline = resolvePipeline(frame: frame) else { return }
+        let snapshotLights = frame.sceneSnapshot?.lightData ?? []
+        let cullLights = snapshotLights.map { light in
+            var out = ForwardPlusCullLight()
+            out.positionAndRange = SIMD4<Float>(light.position, max(light.range, 0.0))
+            out.directionAndType = SIMD4<Float>(light.direction, Float(light.type))
+            out.colorAndIntensity = SIMD4<Float>(light.color, max(light.brightness, 0.0))
+            out.spotParams = SIMD4<Float>(light.innerConeCos, light.outerConeCos, 0.0, 0.0)
+            return out
+        }
+        let lightBufferLength = max(ForwardPlusCullLight.stride(cullLights.count), ForwardPlusCullLight.stride)
+        guard let lightBuffer = frame.engineContext.device.makeBuffer(length: lightBufferLength, options: [.storageModeShared]),
+              let uniformsBuffer = frame.engineContext.device.makeBuffer(length: ForwardPlusCullUniforms.stride, options: [.storageModeShared]) else {
+            return
+        }
+        lightBuffer.label = "ForwardPlus.CullLights"
+        uniformsBuffer.label = "ForwardPlus.CullUniforms"
+        if cullLights.isEmpty {
+            lightBuffer.contents().initializeMemory(as: UInt8.self, repeating: 0, count: lightBufferLength)
+        } else {
+            cullLights.withUnsafeBytes { bytes in
+                lightBuffer.contents().copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
+            }
+        }
+
+        var uniforms = ForwardPlusCullUniforms()
+        if let snapshot = frame.sceneSnapshot {
+            uniforms.viewMatrix = snapshot.sceneConstants.viewMatrix
+            uniforms.projectionMatrix = snapshot.sceneConstants.projectionMatrix
+        }
+        uniforms.params0 = SIMD4<UInt32>(viewport.x, viewport.y, UInt32(cullLights.count), maxLightsPerCluster)
+        uniforms.params1 = SIMD4<UInt32>(tileCount.x, tileCount.y, indexCapacity, 0)
+#if DEBUG
+        MC_ASSERT(uniforms.viewMatrix.columns.0.x.isFinite &&
+                  uniforms.projectionMatrix.columns.0.x.isFinite,
+                  "Forward+ cull uniforms contain invalid matrix values.")
+#endif
+        withUnsafeBytes(of: &uniforms) { bytes in
+            uniformsBuffer.contents().copyMemory(from: bytes.baseAddress!, byteCount: ForwardPlusCullUniforms.stride)
+        }
+
+        guard let encoder = frame.commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.label = "Forward+ Light Culling"
+        encoder.pushDebugGroup("Forward+ Light Culling")
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(depthTexture, index: ShaderBindings.ComputeTexture.depth)
+        encoder.setBuffer(lightBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.cullLights)
+        encoder.setBuffer(clusterParamsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.clusterParams)
+        encoder.setBuffer(indexHeaderBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.indexHeader)
+        encoder.setBuffer(uniformsBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.cullUniforms)
+        encoder.setBuffer(gridBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.lightGrid)
+        encoder.setBuffer(indexListBuffer, offset: 0, index: ShaderBindings.ComputeBuffer.lightIndexList)
+
+        let w = min(pipeline.threadExecutionWidth, Int(tileSize.x))
+        let maxThreads = max(pipeline.maxTotalThreadsPerThreadgroup / max(w, 1), 1)
+        let h = min(maxThreads, Int(tileSize.y))
+        let threadsPerThreadgroup = MTLSize(width: max(w, 1), height: max(h, 1), depth: 1)
+        let threadgroups = MTLSize(
+            width: (Int(tileCount.x) + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
+            height: (Int(tileCount.y) + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
+            depth: 1
+        )
+        encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+        encoder.popDebugGroup()
+        encoder.endEncoding()
+
+#if DEBUG
+        scheduleForwardPlusDebugValidation(
+            commandBuffer: frame.commandBuffer,
+            gridBuffer: gridBuffer,
+            indexListBuffer: indexListBuffer,
+            indexHeaderBuffer: indexHeaderBuffer,
+            tileCount: Int(tileCount.x * tileCount.y),
+            lightCount: cullLights.count,
+            maxLightsPerCluster: Int(maxLightsPerCluster)
+        )
+#endif
+    }
+
+#if DEBUG
+    private func scheduleForwardPlusDebugValidation(commandBuffer: MTLCommandBuffer,
+                                                    gridBuffer: MTLBuffer,
+                                                    indexListBuffer: MTLBuffer,
+                                                    indexHeaderBuffer: MTLBuffer,
+                                                    tileCount: Int,
+                                                    lightCount: Int,
+                                                    maxLightsPerCluster: Int) {
+        commandBuffer.addCompletedHandler { _ in
+            let header = indexHeaderBuffer.contents().bindMemory(to: ForwardPlusIndexHeader.self, capacity: 1).pointee
+            let maxCapacity = Int(header.maxIndexCapacity)
+            let totalIndexCount = Int(header.totalIndexCount)
+            MC_ASSERT(totalIndexCount <= maxCapacity,
+                      "Forward+ validation failed: totalIndexCount \(totalIndexCount) exceeds maxIndexCapacity \(maxCapacity).")
+
+            let entryCount = max(tileCount, 1)
+            let gridEntries = gridBuffer.contents().bindMemory(to: SIMD2<UInt32>.self, capacity: entryCount)
+            let indices = indexListBuffer.contents().bindMemory(to: UInt32.self, capacity: max(maxCapacity, 1))
+
+            for i in 0..<entryCount {
+                let entry = gridEntries[i]
+                let offset = Int(entry.x)
+                let count = Int(entry.y)
+                MC_ASSERT(count <= maxLightsPerCluster,
+                          "Forward+ validation failed: cluster \(i) count \(count) exceeds maxLightsPerCluster \(maxLightsPerCluster).")
+                if count == 0 {
+                    continue
+                }
+                MC_ASSERT(offset < totalIndexCount,
+                          "Forward+ validation failed: cluster \(i) offset \(offset) is out of bounds (totalIndexCount \(totalIndexCount)).")
+                MC_ASSERT(offset + count <= totalIndexCount,
+                          "Forward+ validation failed: cluster \(i) range [\(offset), \(offset + count)) exceeds totalIndexCount \(totalIndexCount).")
+                MC_ASSERT(offset + count <= maxCapacity,
+                          "Forward+ validation failed: cluster \(i) range [\(offset), \(offset + count)) exceeds maxIndexCapacity \(maxCapacity).")
+                if lightCount <= 0 {
+                    MC_ASSERT(count == 0, "Forward+ validation failed: cluster \(i) has lights while snapshot lightCount is zero.")
+                    continue
+                }
+                for j in 0..<count {
+                    let lightIndex = Int(indices[offset + j])
+                    MC_ASSERT(lightIndex < lightCount,
+                              "Forward+ validation failed: cluster \(i) contains lightIndex \(lightIndex) >= lightCount \(lightCount).")
+                }
+            }
+        }
+    }
+
+    private func runForwardPlusEnableSelfCheck(frame: RenderGraphFrame,
+                                               depthTexture: MTLTexture,
+                                               clusterParamsBuffer: MTLBuffer,
+                                               indexHeaderBuffer: MTLBuffer) {
+        MC_ASSERT(depthTexture.usage.contains(.shaderRead),
+                  "Forward+ self-check failed: culling depth texture must be shader-readable.")
+        MC_ASSERT(frame.resourceRegistry.namedTexture(RenderNamedResourceKey.forwardPlusCullingDepth) != nil,
+                  "Forward+ self-check failed: missing culling depth texture contract resource.")
+
+        let requiredBuffers = [
+            RenderNamedResourceKey.forwardPlusLightGrid,
+            RenderNamedResourceKey.forwardPlusLightIndexList,
+            RenderNamedResourceKey.forwardPlusLightIndexCount,
+            RenderNamedResourceKey.forwardPlusClusterParams
+        ]
+        for key in requiredBuffers {
+            let metadata = frame.resourceRegistry.bufferMetadata(key)
+            MC_ASSERT(metadata != nil, "Forward+ self-check failed: missing required buffer '\(key)'.")
+            MC_ASSERT(metadata?.usage.contains(.computeWrite) == true,
+                      "Forward+ self-check failed: buffer '\(key)' must declare computeWrite usage.")
+            MC_ASSERT(metadata?.storageMode == .shared || metadata?.storageMode == .private,
+                      "Forward+ self-check failed: buffer '\(key)' has unsupported storage mode.")
+        }
+
+        MC_ASSERT(ForwardPlusConfig.abiVersion == ForwardPlusClusterParams.abiVersion,
+                  "Forward+ self-check failed: ABI mismatch between config and cluster params.")
+        MC_ASSERT(ForwardPlusConfig.abiVersion == ForwardPlusIndexHeader.abiVersion,
+                  "Forward+ self-check failed: ABI mismatch between config and index header.")
+        MC_ASSERT(ForwardPlusConfig.zSliceCount > 0, "Forward+ self-check failed: zSliceCount must be > 0.")
+
+        let clusterParams = clusterParamsBuffer.contents().bindMemory(to: ForwardPlusClusterParams.self, capacity: 1).pointee
+        MC_ASSERT(clusterParams.header.x == ForwardPlusConfig.abiVersion,
+                  "Forward+ self-check failed: cluster params ABI version mismatch.")
+        MC_ASSERT(clusterParams.header.y == ForwardPlusConfig.zSliceCount,
+                  "Forward+ self-check failed: cluster params z-slice count mismatch.")
+
+        let indexHeader = indexHeaderBuffer.contents().bindMemory(to: ForwardPlusIndexHeader.self, capacity: 1).pointee
+        MC_ASSERT(indexHeader.abiVersion == ForwardPlusConfig.abiVersion,
+                  "Forward+ self-check failed: index header ABI version mismatch.")
+        MC_ASSERT(indexHeader.maxIndexCapacity > 0,
+                  "Forward+ self-check failed: index list capacity must be > 0.")
+    }
+#endif
+
+    private func resolvePipeline(frame: RenderGraphFrame) -> MTLComputePipelineState? {
+        if let computePipeline { return computePipeline }
+        guard let fn = frame.engineContext.resources.resolveFunction(
+            "kernel_forward_plus_cull",
+            device: frame.engineContext.device,
+            fallbackLibrary: frame.engineContext.defaultLibrary
+        ) else {
+            frame.engineContext.log.logWarning("Forward+ compute function 'kernel_forward_plus_cull' not found; using empty culling output.", category: .renderer)
+            return nil
+        }
+        do {
+            let pipeline = try frame.engineContext.device.makeComputePipelineState(function: fn)
+            computePipeline = pipeline
+            return pipeline
+        } catch {
+            frame.engineContext.log.logWarning("Failed to create Forward+ compute pipeline: \(error)", category: .renderer)
+            return nil
+        }
     }
 }
 
 final class ScenePass: RenderGraphPass {
     let name = "ScenePass"
     let gpuPass: RendererProfiler.GpuPass? = .scene
+    let inputs: [RenderPassResourceUsage] = [
+        .texture(.baseDepth),
+        .buffer(RenderNamedResourceKey.forwardPlusLightGrid),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
+        .buffer(RenderNamedResourceKey.forwardPlusLightIndexCount),
+        .buffer(RenderNamedResourceKey.forwardPlusClusterParams)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.baseColor)
+    ]
 
     func execute(frame: RenderGraphFrame) {
         let sceneStart = CACurrentMediaTime()
         guard
-            let baseColor = frame.resources.texture(.baseColor),
-            let baseDepth = frame.resources.texture(.baseDepth)
+            let baseColor = frame.resourceRegistry.texture(.baseColor),
+            let baseDepth = frame.resourceRegistry.texture(.baseDepth)
         else { return }
 
-        let depthLoad: MTLLoadAction = frame.renderer.useDepthPrepass ? .load : .clear
+        let depthLoad: MTLLoadAction = frame.frameContext.useDepthPrepass() ? .load : .clear
         let frameIndex = frame.frameContext.currentFrameIndex()
         let pass = RenderPassBuilder.colorDepth(color: baseColor, depth: baseDepth, depthLoadAction: depthLoad)
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
-        encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates.hdrInstancedPipeline(settings: frame.renderer.settings))
+        encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates.hdrInstancedPipeline(settings: frame.frameContext.rendererSettings()))
         encoder.label = "Scene Pass"
         encoder.pushDebugGroup("Scene Pass")
         frame.profiler.sampleGpuPassBegin(.scene, encoder: encoder, frameIndex: frameIndex)
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(baseColor))
-        RenderPassHelpers.withRenderPass(.main, renderer: frame.renderer, frameContext: frame.frameContext) {
+        RenderPassHelpers.withRenderPass(.main, frameContext: frame.frameContext) {
             frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
@@ -186,17 +590,21 @@ final class ScenePass: RenderGraphPass {
 final class PickingPass: RenderGraphPass {
     let name = "PickingPass"
     let gpuPass: RendererProfiler.GpuPass? = .picking
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.pickId, expectedFormat: .r32Uint),
+        .texture(.pickDepth)
+    ]
 
     func execute(frame: RenderGraphFrame) {
         // Outline relies on the pickId buffer, so keep it current while a selection is active.
-        let hasSelection = frame.renderer.settings.outlineEnabled != 0
-            && RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView)
+        let hasSelection = frame.frameContext.rendererSettings().outlineEnabled != 0
+            && RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView)
             && !frame.sceneView.selectedEntityIds.isEmpty
         let needsPickingPass = frame.engineContext.pickingSystem.hasPendingRequest() || hasSelection
         guard needsPickingPass else { return }
         guard
-            let pickId = frame.resources.texture(.pickId),
-            let pickDepth = frame.resources.texture(.pickDepth)
+            let pickId = frame.resourceRegistry.texture(.pickId),
+            let pickDepth = frame.resourceRegistry.texture(.pickDepth)
         else { return }
         let request = frame.engineContext.pickingSystem.consumeRequest()
 
@@ -212,7 +620,7 @@ final class PickingPass: RenderGraphPass {
         encoder.pushDebugGroup("Picking Pass")
         frame.profiler.sampleGpuPassBegin(.picking, encoder: encoder, frameIndex: frameIndex)
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(pickId))
-        RenderPassHelpers.withRenderPass(.picking, renderer: frame.renderer, frameContext: frame.frameContext) {
+        RenderPassHelpers.withRenderPass(.picking, frameContext: frame.frameContext) {
             frame.delegate?.renderScene(into: encoder, frameContext: frame.frameContext)
         }
         encoder.popDebugGroup()
@@ -235,11 +643,20 @@ final class PickingPass: RenderGraphPass {
 final class GridOverlayPass: RenderGraphPass {
     let name = "GridOverlayPass"
     let gpuPass: RendererProfiler.GpuPass? = .grid
+    let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
+        .texture(RenderTextureHandle(key: .gridColor))
+    ]
+    let inputs: [RenderPassResourceUsage] = [
+        .texture(.baseDepth)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.gridColor)
+    ]
 
     func execute(frame: RenderGraphFrame) {
-        guard frame.renderer.settings.gridEnabled != 0,
-              RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) else { return }
-        guard let grid = frame.resources.texture(.gridColor) else { return }
+        guard frame.frameContext.rendererSettings().gridEnabled != 0,
+              RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView) else { return }
+        guard let grid = frame.resourceRegistry.texture(.gridColor) else { return }
         let frameIndex = frame.frameContext.currentFrameIndex()
         let pass = RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
@@ -260,11 +677,11 @@ final class GridOverlayPass: RenderGraphPass {
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(grid))
         encoder.setRenderPipelineState(frame.engineContext.graphics.renderPipelineStates[.GridOverlay])
         encoder.setCullMode(.none)
-        let depthTexture = frame.resources.texture(.baseDepth) ?? frame.engineContext.fallbackTextures.depth1x1
+        let depthTexture = frame.resourceRegistry.texture(.baseDepth) ?? frame.engineContext.fallbackTextures.depth1x1
         encoder.setFragmentSamplerState(frame.engineContext.graphics.samplerStates[.LinearClampToZero], index: FragmentSamplerIndex.linearClamp)
         encoder.setFragmentTexture(depthTexture, index: PostProcessTextureIndex.depth)
         encoder.setFragmentBytes(&params, length: GridParams.stride, index: FragmentBufferIndex.gridParams)
-        let settingsBuffer = frame.frameContext.uploadRendererSettings(frame.renderer.settings)
+        let settingsBuffer = frame.frameContext.uploadRendererSettings(frame.frameContext.rendererSettings())
         encoder.setFragmentBuffer(settingsBuffer.buffer, offset: settingsBuffer.offset, index: FragmentBufferIndex.rendererSettings)
         quadMesh.drawPrimitives(encoder, frameContext: frame.frameContext)
     }
@@ -273,19 +690,25 @@ final class GridOverlayPass: RenderGraphPass {
 final class DebugDrawPass: RenderGraphPass {
     let name = "DebugDrawPass"
     let gpuPass: RendererProfiler.GpuPass? = nil
+    let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
+        .texture(RenderTextureHandle(key: .gridColor))
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.gridColor)
+    ]
 
     func execute(frame: RenderGraphFrame) {
-        let allowDebugDraw = RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView)
+        let allowDebugDraw = RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView)
             || (frame.engineContext.physicsSettings.debugDrawInPlay && !frame.sceneView.isEditorView)
         guard frame.engineContext.physicsSettings.debugDrawEnabled,
               allowDebugDraw,
-              let scene = frame.delegate?.activeScene(),
-              let grid = frame.resources.texture(.gridColor) else { return }
+              let snapshot = frame.sceneSnapshot,
+              let grid = frame.resourceRegistry.texture(.gridColor) else { return }
         let debugDraw = frame.engineContext.debugDraw
         let lines = debugDraw.lines()
         let polylines = debugDraw.polylines()
         if lines.isEmpty && polylines.isEmpty {
-            if frame.renderer.settings.gridEnabled == 0 {
+            if frame.frameContext.rendererSettings().gridEnabled == 0 {
                 let pass = RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
                 if let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) {
                     encoder.label = "Debug Draw Clear"
@@ -294,7 +717,7 @@ final class DebugDrawPass: RenderGraphPass {
             }
             return
         }
-        let sceneConstants = scene.getSceneConstants()
+        let sceneConstants = snapshot.sceneConstants
         let cameraPosition = SIMD3<Float>(
             sceneConstants.cameraPositionAndIBL.x,
             sceneConstants.cameraPositionAndIBL.y,
@@ -449,7 +872,7 @@ final class DebugDrawPass: RenderGraphPass {
                                                                  length: DebugLineVertex.stride(vertices.count),
                                                                  options: [.storageModeShared]) else { return }
         let size = RenderPassHelpers.textureSize(grid)
-        let pass = frame.renderer.settings.gridEnabled != 0
+        let pass = frame.frameContext.rendererSettings().gridEnabled != 0
             ? RenderPassBuilder.colorLoad(texture: grid)
             : RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
@@ -470,6 +893,12 @@ final class DebugDrawPass: RenderGraphPass {
 final class SelectionOutlinePass: RenderGraphPass {
     let name = "SelectionOutlinePass"
     let gpuPass: RendererProfiler.GpuPass? = .outline
+    let inputs: [RenderPassResourceUsage] = [
+        .texture(.pickId, expectedFormat: .r32Uint)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.outlineMask, expectedFormat: .r8Unorm)
+    ]
 
     func execute(frame: RenderGraphFrame) {
         OutlineSystem.encodeSelectionOutline(frame: frame)
@@ -479,11 +908,20 @@ final class SelectionOutlinePass: RenderGraphPass {
 final class BloomExtractPass: RenderGraphPass {
     let name = "BloomExtractPass"
     let gpuPass: RendererProfiler.GpuPass? = .bloomExtract
+    let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
+        .texture(RenderTextureHandle(key: .bloomPing))
+    ]
+    let inputs: [RenderPassResourceUsage] = [
+        .texture(.baseColor)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.bloomPing)
+    ]
 
     func execute(frame: RenderGraphFrame) {
-        let settings = frame.renderer.settings
+        let settings = frame.frameContext.rendererSettings()
         if settings.bloomEnabled == 0 {
-            if let ping = frame.resources.texture(.bloomPing),
+            if let ping = frame.resourceRegistry.texture(.bloomPing),
                let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: ping, level: 0)) {
                 encoder.label = "Bloom Clear"
                 encoder.endEncoding()
@@ -491,8 +929,8 @@ final class BloomExtractPass: RenderGraphPass {
             return
         }
         guard
-            let sceneTex = frame.resources.texture(.baseColor),
-            let ping = frame.resources.texture(.bloomPing),
+            let sceneTex = frame.resourceRegistry.texture(.baseColor),
+            let ping = frame.resourceRegistry.texture(.bloomPing),
             let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
         else { return }
 
@@ -538,13 +976,25 @@ final class BloomExtractPass: RenderGraphPass {
 final class BloomBlurPass: RenderGraphPass {
     let name = "BloomBlurPass"
     let gpuPass: RendererProfiler.GpuPass? = .bloomBlur
+    let allowedDoubleWriteOutputs: Set<RenderResourceHandle> = [
+        .texture(RenderTextureHandle(key: .bloomPing)),
+        .texture(RenderTextureHandle(key: .bloomPong))
+    ]
+    let inputs: [RenderPassResourceUsage] = [
+        .texture(.bloomPing),
+        .texture(.bloomPong)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.bloomPing),
+        .texture(.bloomPong)
+    ]
 
     func execute(frame: RenderGraphFrame) {
-        let settings = frame.renderer.settings
+        let settings = frame.frameContext.rendererSettings()
         if settings.bloomEnabled == 0 { return }
         guard
-            let ping = frame.resources.texture(.bloomPing),
-            let pong = frame.resources.texture(.bloomPong),
+            let ping = frame.resourceRegistry.texture(.bloomPing),
+            let pong = frame.resourceRegistry.texture(.bloomPong),
             let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh)
         else { return }
 
@@ -675,15 +1125,24 @@ final class BloomBlurPass: RenderGraphPass {
 final class FinalCompositePass: RenderGraphPass {
     let name = "FinalCompositePass"
     let gpuPass: RendererProfiler.GpuPass? = .finalComposite
+    let inputs: [RenderPassResourceUsage] = [
+        .texture(.baseColor),
+        .texture(.bloomPing),
+        .texture(.outlineMask),
+        .texture(.gridColor)
+    ]
+    let outputs: [RenderPassResourceUsage] = [
+        .texture(.finalColor)
+    ]
 
     func execute(frame: RenderGraphFrame) {
         guard
-            let baseColor = frame.resources.texture(.baseColor),
-            let bloom = frame.resources.texture(.bloomPing),
-            let outline = frame.resources.texture(.outlineMask),
-            let grid = frame.resources.texture(.gridColor),
+            let baseColor = frame.resourceRegistry.texture(.baseColor),
+            let bloom = frame.resourceRegistry.texture(.bloomPing),
+            let outline = frame.resourceRegistry.texture(.outlineMask),
+            let grid = frame.resourceRegistry.texture(.gridColor),
             let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh),
-            let finalColor = frame.resources.texture(.finalColor)
+            let finalColor = frame.resourceRegistry.texture(.finalColor)
         else { return }
 
         let compositeStart = CACurrentMediaTime()
@@ -691,7 +1150,7 @@ final class FinalCompositePass: RenderGraphPass {
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: finalColor)) else { return }
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(finalColor))
         frame.profiler.sampleGpuPassBegin(.finalComposite, encoder: encoder, frameIndex: frameIndex)
-        let showEditorOverlays = RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView)
+        let showEditorOverlays = RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView)
         let pass = FullscreenPass(
             pipeline: .Final,
             label: "Final Composite",
@@ -707,7 +1166,7 @@ final class FinalCompositePass: RenderGraphPass {
             useDepth: false,
             grid: showEditorOverlays ? grid : nil,
             useGrid: showEditorOverlays,
-            settings: frame.renderer.settings
+            settings: frame.frameContext.rendererSettings()
         )
         pass.encode(into: encoder, quad: quadMesh, frameContext: frame.frameContext, graphics: frame.engineContext.graphics)
         encoder.endEncoding()

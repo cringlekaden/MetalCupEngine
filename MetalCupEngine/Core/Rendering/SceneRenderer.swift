@@ -17,25 +17,62 @@ public struct RenderFrameSnapshot {
 
     let sceneKey: ObjectIdentifier
     let frameToken: UInt64
+    let signature: UInt64
     let sceneConstants: SceneConstants
     let activeSkyLight: SkyLightComponent?
+    let lightData: [LightData]
+    let directionalShadowLightDirection: SIMD3<Float>?
     let renderables: [Renderable]
 }
 
 public enum SceneRenderer {
-    private struct FrameCacheEntry {
+    private struct FrameCacheKey: Hashable {
+        let sceneKey: ObjectIdentifier
         let frameToken: UInt64
+        let snapshotSignature: UInt64
+        let viewSignature: UInt64
+        let cullingConfigSignature: UInt64
+        let stateRevision: UInt64
+        let assetStateRevision: UInt64
+    }
+
+    private struct FrameCacheEntry {
+        let key: FrameCacheKey
         let snapshot: RenderFrameSnapshot
         let result: RenderBatchResult?
     }
 
-    private static var frameCacheByScene: [ObjectIdentifier: FrameCacheEntry] = [:]
+    private static var frameCache: [FrameCacheKey: FrameCacheEntry] = [:]
+    private struct SnapshotPreparationKey: Hashable {
+        let sceneKey: ObjectIdentifier
+        let frameToken: UInt64
+        let viewSignature: UInt64
+    }
+
+    #if DEBUG
+    private static var preparedSnapshotFrameToken: UInt64 = 0
+    private static var preparedSnapshotKeys: Set<SnapshotPreparationKey> = []
+    #else
+    private static var lastMissingSnapshotFrameToken: UInt64 = 0
+    private static var missingSnapshotLogKeys: Set<SnapshotPreparationKey> = []
+    #endif
 
     #if DEBUG
     private static var didInstanceSanityCheck = false
     #endif
     @discardableResult
     public static func render(scene: EngineScene, view: SceneView, context: RenderContext, frameContext: RendererFrameContext) -> RenderOutputs {
+        frameContext.setViewContext(
+            RenderViewContext(
+                viewId: view.viewId,
+                viewportSize: view.viewportSize,
+                layerFilterMask: view.layerMask,
+                depthPrepassEnabled: view.depthPrepassEnabled,
+                debugFlags: view.debugFlags,
+                showEditorOverlays: view.isEditorView
+            )
+        )
+        prepareRenderFrameSnapshot(scene: scene, frameContext: frameContext)
         if let encoder = context.renderEncoder {
             renderScene(into: encoder, scene: scene, frameContext: frameContext)
         }
@@ -53,14 +90,18 @@ public enum SceneRenderer {
 
     static func renderScene(into encoder: MTLRenderCommandEncoder, scene: EngineScene, frameContext: RendererFrameContext) {
         encoder.pushDebugGroup("Rendering Scene \(scene.name)...")
-        let snapshot = currentFrameSnapshot(scene: scene, frameContext: frameContext)
+        guard let snapshot = currentFrameSnapshot(scene: scene, frameContext: frameContext) else {
+            encoder.popDebugGroup()
+            return
+        }
+        prepareLightingInputs(snapshot: snapshot, frameContext: frameContext)
         syncIBLTextures(snapshot: snapshot, frameContext: frameContext)
         let sceneConstantsBuffer = resolvedSceneConstantsBuffer(snapshot: snapshot, frameContext: frameContext)
         switch frameContext.currentRenderPass() {
         case .main:
             bindRendererSettings(encoder, settings: frameContext.rendererSettings(), frameContext: frameContext)
             bindShadowResources(encoder, frameContext: frameContext)
-            scene.getLightManager().setLightData(encoder, frameContext: frameContext)
+            bindLightingInputs(encoder, frameContext: frameContext)
             renderSky(encoder, snapshot: snapshot, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
             renderMeshes(encoder, snapshot: snapshot, pass: .main, frameContext: frameContext, sceneConstantsBuffer: sceneConstantsBuffer)
         case .shadow:
@@ -74,19 +115,16 @@ public enum SceneRenderer {
     }
 
     static func renderPreview(encoder: MTLRenderCommandEncoder,
-                              scene: EngineScene,
-                              cameraEntity: Entity,
+                              snapshot: RenderFrameSnapshot,
+                              camera: CameraComponent,
+                              worldTransform: TransformComponent,
                               viewportSize: SIMD2<Float>,
                               frameContext: RendererFrameContext) {
-        guard scene.ecs.get(TransformComponent.self, for: cameraEntity) != nil,
-              let camera = scene.ecs.get(CameraComponent.self, for: cameraEntity),
-              viewportSize.x > 1, viewportSize.y > 1 else { return }
-        let worldTransform = scene.ecs.worldTransform(for: cameraEntity)
+        guard viewportSize.x > 1, viewportSize.y > 1 else { return }
         let previousPass = frameContext.currentRenderPass()
         let previousUsePrepass = frameContext.useDepthPrepass()
         let aspect = max(0.01, viewportSize.x / viewportSize.y)
-        let sceneConstants = scene.getSceneConstants()
-        var previewConstants = sceneConstants
+        var previewConstants = snapshot.sceneConstants
         previewConstants.viewMatrix = viewMatrix(from: worldTransform)
         previewConstants.skyViewMatrix = previewConstants.viewMatrix
         previewConstants.skyViewMatrix[3][0] = 0
@@ -94,7 +132,7 @@ public enum SceneRenderer {
         previewConstants.skyViewMatrix[3][2] = 0
         previewConstants.projectionMatrix = projectionMatrix(from: camera, aspectRatio: aspect)
         previewConstants.inverseProjectionMatrix = simd_inverse(previewConstants.projectionMatrix)
-        previewConstants.cameraPositionAndIBL = SIMD4<Float>(worldTransform.position, sceneConstants.cameraPositionAndIBL.w)
+        previewConstants.cameraPositionAndIBL = SIMD4<Float>(worldTransform.position, snapshot.sceneConstants.cameraPositionAndIBL.w)
         let previewConstantsBuffer = frameContext.makeSceneConstantsBuffer(
             previewConstants,
             label: "SceneConstants.Preview"
@@ -107,11 +145,11 @@ public enum SceneRenderer {
                                         height: Double(viewportSize.y),
                                         znear: 0,
                                         zfar: 1))
-        let snapshot = currentFrameSnapshot(scene: scene, frameContext: frameContext)
+        prepareLightingInputs(snapshot: snapshot, frameContext: frameContext)
         syncIBLTextures(snapshot: snapshot, frameContext: frameContext)
         bindRendererSettings(encoder, settings: frameContext.rendererSettings(), frameContext: frameContext)
         bindShadowResources(encoder, frameContext: frameContext)
-        scene.getLightManager().setLightData(encoder, frameContext: frameContext)
+        bindLightingInputs(encoder, frameContext: frameContext)
         renderSky(encoder, snapshot: snapshot, frameContext: frameContext, sceneConstantsBuffer: previewConstantsBuffer)
         renderMeshes(encoder, snapshot: snapshot, pass: .main, frameContext: frameContext, sceneConstantsBuffer: previewConstantsBuffer)
         frameContext.setUseDepthPrepass(previousUsePrepass)
@@ -504,7 +542,6 @@ public enum SceneRenderer {
     }
 
     private static func bindShadowResources(_ encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {
-        let settings = frameContext.rendererSettings()
         let shadowBuffer = frameContext.shadowConstantsBuffer()
         encoder.setFragmentBuffer(shadowBuffer, offset: 0, index: FragmentBufferIndex.shadowConstants)
         let fallback = frameContext.engineContext().fallbackTextures
@@ -515,6 +552,30 @@ public enum SceneRenderer {
         encoder.setFragmentSamplerState(frameContext.engineContext().graphics.samplerStates[.ShadowCompare], index: FragmentSamplerIndex.shadowCompare)
         encoder.setFragmentSamplerState(frameContext.engineContext().graphics.samplerStates[.ShadowDepth], index: FragmentSamplerIndex.shadowDepth)
 
+    }
+
+    private static func prepareLightingInputs(snapshot: RenderFrameSnapshot, frameContext: RendererFrameContext) {
+        let lightBuffers = frameContext.uploadLightData(snapshot.lightData)
+        let registry = frameContext.renderResourceRegistry()
+        let inputs = LightingInputs(
+            lightCountBuffer: lightBuffers.countBuffer,
+            lightDataBuffer: lightBuffers.dataBuffer,
+            lightGridBuffer: registry?.buffer(RenderNamedResourceKey.forwardPlusLightGrid),
+            lightIndexListBuffer: registry?.buffer(RenderNamedResourceKey.forwardPlusLightIndexList),
+            lightIndexCountBuffer: registry?.buffer(RenderNamedResourceKey.forwardPlusLightIndexCount),
+            clusterParamsBuffer: registry?.buffer(RenderNamedResourceKey.forwardPlusClusterParams)
+        )
+        frameContext.setLightingInputs(inputs)
+    }
+
+    private static func bindLightingInputs(_ encoder: MTLRenderCommandEncoder, frameContext: RendererFrameContext) {
+        guard let inputs = frameContext.lightingInputs() else { return }
+        encoder.setFragmentBuffer(inputs.lightCountBuffer, offset: 0, index: FragmentBufferIndex.lightCount)
+        encoder.setFragmentBuffer(inputs.lightDataBuffer, offset: 0, index: FragmentBufferIndex.lightData)
+        encoder.setFragmentBuffer(inputs.lightGridBuffer, offset: 0, index: FragmentBufferIndex.lightGrid)
+        encoder.setFragmentBuffer(inputs.lightIndexListBuffer, offset: 0, index: FragmentBufferIndex.lightIndexList)
+        encoder.setFragmentBuffer(inputs.lightIndexCountBuffer, offset: 0, index: FragmentBufferIndex.lightIndexCount)
+        encoder.setFragmentBuffer(inputs.clusterParamsBuffer, offset: 0, index: FragmentBufferIndex.lightClusterParams)
     }
 
     private static func pipelineState(for pass: RenderPassType, key: MaterialPassKey, frameContext: RendererFrameContext) -> MTLRenderPipelineState {
@@ -539,11 +600,10 @@ public enum SceneRenderer {
 
 
     static func renderShadowCasters(into encoder: MTLRenderCommandEncoder,
-                                    scene: EngineScene,
+                                    snapshot: RenderFrameSnapshot,
                                     frameContext: RendererFrameContext,
                                     sceneConstantsBuffer: MTLBuffer?,
                                     shadowCullVolume: ShadowCullVolume? = nil) {
-        let snapshot = currentFrameSnapshot(scene: scene, frameContext: frameContext)
         renderMeshes(
             encoder,
             snapshot: snapshot,
@@ -551,6 +611,34 @@ public enum SceneRenderer {
             frameContext: frameContext,
             sceneConstantsBuffer: sceneConstantsBuffer,
             shadowCullVolume: shadowCullVolume
+        )
+    }
+
+    static func prepareRenderFrameSnapshot(scene: EngineScene, frameContext: RendererFrameContext) {
+        let snapshot = scene.makeRenderFrameSnapshot(
+            frameToken: frameContext.currentFrameCounter(),
+            layerFilterMask: frameContext.layerFilterMask()
+        )
+        frameContext.setRenderFrameSnapshot(snapshot)
+        let key = FrameCacheKey(
+            sceneKey: snapshot.sceneKey,
+            frameToken: snapshot.frameToken,
+            snapshotSignature: snapshot.signature,
+            viewSignature: frameContext.viewContext().cacheSignature(),
+            cullingConfigSignature: cullingConfigSignature(frameContext: frameContext),
+            stateRevision: frameContext.rendererStateRevision(),
+            assetStateRevision: frameContext.assetStateRevision()
+        )
+        if frameCache[key] == nil {
+            frameCache[key] = FrameCacheEntry(key: key, snapshot: snapshot, result: nil)
+            trimFrameCache(keepingFrameToken: key.frameToken)
+        }
+        markSnapshotPrepared(
+            SnapshotPreparationKey(
+                sceneKey: snapshot.sceneKey,
+                frameToken: snapshot.frameToken,
+                viewSignature: key.viewSignature
+            )
         )
     }
 
@@ -634,27 +722,128 @@ public enum SceneRenderer {
         var radius: Float
     }
 
-    private static func currentFrameSnapshot(scene: EngineScene, frameContext: RendererFrameContext) -> RenderFrameSnapshot {
-        let frameToken = frameContext.currentFrameCounter()
-        let sceneKey = ObjectIdentifier(scene)
-        if let cached = frameCacheByScene[sceneKey], cached.frameToken == frameToken {
+    private static func currentFrameSnapshot(scene: EngineScene, frameContext: RendererFrameContext) -> RenderFrameSnapshot? {
+        let viewSignature = frameContext.viewContext().cacheSignature()
+        let expectedKey = SnapshotPreparationKey(
+            sceneKey: ObjectIdentifier(scene),
+            frameToken: frameContext.currentFrameCounter(),
+            viewSignature: viewSignature
+        )
+        guard let resolvedSnapshot = frameContext.renderFrameSnapshot(),
+              resolvedSnapshot.sceneKey == expectedKey.sceneKey,
+              resolvedSnapshot.frameToken == expectedKey.frameToken
+        else {
+#if DEBUG
+            fatalError("SceneRenderer requires a prebuilt frame snapshot before render. Missing snapshot for viewSignature=\(viewSignature) frameToken=\(frameContext.currentFrameCounter()). Prepare via SceneRenderer.prepareRenderFrameSnapshot(...) before graph execution.")
+#else
+            logMissingSnapshotIfNeeded(expectedKey)
+            return nil
+#endif
+        }
+#if DEBUG
+        guard isSnapshotPrepared(expectedKey) else {
+            fatalError("SceneRenderer render started without snapshot preparation tracking for viewSignature=\(viewSignature) frameToken=\(frameContext.currentFrameCounter()). Ensure prepareRenderFrameSnapshot(...) is called once per view per frame before rendering.")
+        }
+#endif
+
+        let key = FrameCacheKey(
+            sceneKey: resolvedSnapshot.sceneKey,
+            frameToken: resolvedSnapshot.frameToken,
+            snapshotSignature: resolvedSnapshot.signature,
+            viewSignature: viewSignature,
+            cullingConfigSignature: cullingConfigSignature(frameContext: frameContext),
+            stateRevision: frameContext.rendererStateRevision(),
+            assetStateRevision: frameContext.assetStateRevision()
+        )
+        if let cached = frameCache[key] {
             return cached.snapshot
         }
-        let snapshot = scene.makeRenderFrameSnapshot(frameToken: frameToken, layerFilterMask: frameContext.layerFilterMask())
-        frameCacheByScene[sceneKey] = FrameCacheEntry(frameToken: frameToken, snapshot: snapshot, result: nil)
-        return snapshot
+        frameCache[key] = FrameCacheEntry(key: key, snapshot: resolvedSnapshot, result: nil)
+        trimFrameCache(keepingFrameToken: key.frameToken)
+        return resolvedSnapshot
+    }
+
+    private static func markSnapshotPrepared(_ key: SnapshotPreparationKey) {
+#if DEBUG
+        if preparedSnapshotFrameToken != key.frameToken {
+            preparedSnapshotFrameToken = key.frameToken
+            preparedSnapshotKeys.removeAll(keepingCapacity: true)
+        }
+        preparedSnapshotKeys.insert(key)
+#endif
+    }
+
+    private static func isSnapshotPrepared(_ key: SnapshotPreparationKey) -> Bool {
+#if DEBUG
+        if preparedSnapshotFrameToken != key.frameToken {
+            return false
+        }
+        return preparedSnapshotKeys.contains(key)
+#else
+        true
+#endif
+    }
+
+    private static func logMissingSnapshotIfNeeded(_ key: SnapshotPreparationKey) {
+#if !DEBUG
+        if lastMissingSnapshotFrameToken != key.frameToken {
+            lastMissingSnapshotFrameToken = key.frameToken
+            missingSnapshotLogKeys.removeAll(keepingCapacity: true)
+        }
+        guard !missingSnapshotLogKeys.contains(key) else { return }
+        missingSnapshotLogKeys.insert(key)
+        EngineLoggerContext.log(
+            "Skipping render: missing prepared frame snapshot for viewSignature=\(key.viewSignature) frameToken=\(key.frameToken).",
+            level: .debug,
+            category: .renderer
+        )
+#endif
     }
 
     private static func currentBatchResult(snapshot: RenderFrameSnapshot,
                                            frameContext: RendererFrameContext) -> RenderBatchResult {
-        if let cached = frameCacheByScene[snapshot.sceneKey],
-           cached.frameToken == snapshot.frameToken,
-           let result = cached.result {
+        let key = FrameCacheKey(
+            sceneKey: snapshot.sceneKey,
+            frameToken: snapshot.frameToken,
+            snapshotSignature: snapshot.signature,
+            viewSignature: frameContext.viewContext().cacheSignature(),
+            cullingConfigSignature: cullingConfigSignature(frameContext: frameContext),
+            stateRevision: frameContext.rendererStateRevision(),
+            assetStateRevision: frameContext.assetStateRevision()
+        )
+        if let cached = frameCache[key], let result = cached.result {
             return result
         }
         let result = buildRenderBatches(snapshot: snapshot, frameContext: frameContext)
-        frameCacheByScene[snapshot.sceneKey] = FrameCacheEntry(frameToken: snapshot.frameToken, snapshot: snapshot, result: result)
+        frameCache[key] = FrameCacheEntry(key: key, snapshot: snapshot, result: result)
+        trimFrameCache(keepingFrameToken: snapshot.frameToken)
         return result
+    }
+
+    private static func trimFrameCache(keepingFrameToken frameToken: UInt64) {
+        if frameCache.count <= 64 { return }
+        frameCache = frameCache.filter { $0.key.frameToken == frameToken }
+    }
+
+    private static func cullingConfigSignature(frameContext: RendererFrameContext) -> UInt64 {
+        let viewContext = frameContext.viewContext()
+        let viewportWidth = UInt32(max(Int(viewContext.viewportSize.x), 1))
+        let viewportHeight = UInt32(max(Int(viewContext.viewportSize.y), 1))
+        let tileCountX = max(1, (viewportWidth + ForwardPlusConfig.tileSizeX - 1) / ForwardPlusConfig.tileSizeX)
+        let tileCountY = max(1, (viewportHeight + ForwardPlusConfig.tileSizeY - 1) / ForwardPlusConfig.tileSizeY)
+        let forwardPlusEnabled = frameContext.rendererSettings().hasPerfFlag(.forwardPlusEnabled)
+
+        var hasher = Hasher()
+        hasher.combine(ForwardPlusConfig.configVersion)
+        hasher.combine(ForwardPlusConfig.abiVersion)
+        hasher.combine(ForwardPlusConfig.tileSizeX)
+        hasher.combine(ForwardPlusConfig.tileSizeY)
+        hasher.combine(ForwardPlusConfig.zSliceCount)
+        hasher.combine(ForwardPlusConfig.maxLightsPerCluster)
+        hasher.combine(tileCountX)
+        hasher.combine(tileCountY)
+        hasher.combine(forwardPlusEnabled)
+        return UInt64(bitPattern: Int64(hasher.finalize()))
     }
 
     private static func buildRenderItems(snapshot: RenderFrameSnapshot,

@@ -51,6 +51,10 @@ public enum FragmentBufferIndex {
     public static let outlineParams = ShaderBindings.FragmentBuffer.outlineParams
     public static let gridParams = ShaderBindings.FragmentBuffer.gridParams
     public static let shadowConstants = ShaderBindings.FragmentBuffer.shadowConstants
+    public static let lightGrid = ShaderBindings.FragmentBuffer.lightGrid
+    public static let lightIndexList = ShaderBindings.FragmentBuffer.lightIndexList
+    public static let lightIndexCount = ShaderBindings.FragmentBuffer.lightIndexCount
+    public static let lightClusterParams = ShaderBindings.FragmentBuffer.lightClusterParams
 }
 
 public enum FragmentTextureIndex {
@@ -207,6 +211,55 @@ public struct LightData: sizeable {
     public var padding: SIMD2<Float> = .zero
 
     public init() {}
+}
+
+public struct ForwardPlusClusterParams: sizeable {
+    public static let abiVersion: UInt32 = 1
+    public static let expectedMetalStride: Int = 32
+    public static let expectedMetalAlignment: Int = 16
+
+    /// header: x=abiVersion, y=zSliceCount, z=tileCountX, w=tileCountY
+    public var header = SIMD4<UInt32>(ForwardPlusClusterParams.abiVersion, 1, 0, 0)
+    /// tileAndViewport: x=tileSizeX, y=tileSizeY, z=viewportX, w=viewportY
+    public var tileAndViewport = SIMD4<UInt32>(16, 16, 0, 0)
+}
+
+public struct ForwardPlusIndexHeader: sizeable {
+    public static let abiVersion: UInt32 = 1
+    public static let expectedMetalStride: Int = 16
+    public static let expectedMetalAlignment: Int = 4
+
+    /// Scalar fields keep atomic targets addressable in MSL.
+    public var abiVersion: UInt32 = ForwardPlusIndexHeader.abiVersion
+    public var totalIndexCount: UInt32 = 0
+    public var overflowClusterCount: UInt32 = 0
+    public var maxIndexCapacity: UInt32 = 0
+}
+
+public struct ForwardPlusCullLight: sizeable {
+    public static let expectedMetalStride: Int = 64
+    public static let expectedMetalAlignment: Int = 16
+
+    // positionAndRange: xyz = world position, w = range
+    public var positionAndRange = SIMD4<Float>(0, 0, 0, 0)
+    // directionAndType: xyz = world direction, w = LightType raw value
+    public var directionAndType = SIMD4<Float>(0, -1, 0, 0)
+    // colorAndIntensity: rgb = color, w = brightness scalar
+    public var colorAndIntensity = SIMD4<Float>(1, 1, 1, 1)
+    // spotParams: x = innerConeCos, y = outerConeCos, z/w reserved
+    public var spotParams = SIMD4<Float>(1, 1, 0, 0)
+}
+
+public struct ForwardPlusCullUniforms: sizeable {
+    public static let expectedMetalStride: Int = 160
+    public static let expectedMetalAlignment: Int = 16
+
+    public var viewMatrix = matrix_identity_float4x4
+    public var projectionMatrix = matrix_identity_float4x4
+    // x = viewportWidth, y = viewportHeight, z = lightCount, w = maxLightsPerCluster
+    public var params0 = SIMD4<UInt32>(0, 0, 0, 0)
+    // x = tileCountX, y = tileCountY, z = indexCapacity, w = reserved
+    public var params1 = SIMD4<UInt32>(0, 0, 0, 0)
 }
 
 public struct IBLIrradianceParams: sizeable {

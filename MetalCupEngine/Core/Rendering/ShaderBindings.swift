@@ -23,6 +23,10 @@ enum ShaderBindings {
         static let outlineParams = 5
         static let gridParams = 6
         static let shadowConstants = 7
+        static let lightGrid = 8
+        static let lightIndexList = 9
+        static let lightIndexCount = 10
+        static let lightClusterParams = 11
     }
 
     enum FragmentTexture {
@@ -63,5 +67,18 @@ enum ShaderBindings {
 
     enum IBLTexture {
         static let environment = 0
+    }
+
+    enum ComputeBuffer {
+        static let cullLights = 0
+        static let clusterParams = 1
+        static let indexHeader = 2
+        static let cullUniforms = 3
+        static let lightGrid = 4
+        static let lightIndexList = 5
+    }
+
+    enum ComputeTexture {
+        static let depth = 0
     }
 }

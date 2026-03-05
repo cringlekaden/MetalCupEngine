@@ -36,18 +36,21 @@ public final class TransformAuthorityService {
         if let rigidbody, rigidbody.isEnabled {
             switch rigidbody.motionType {
             case .dynamic:
-                guard source == .physics else {
+                if source != .physics {
                     if source == .script,
                        illegalScriptTransformWarnings.insert(entity.id).inserted {
                         EngineLoggerContext.log("Script attempted direct transform write on dynamic body \(entity.id.uuidString). Routed to physics body transform.",
                                                 level: .warning,
                                                 category: .scene)
                     }
-                    return scene.physicsSystem?.setBodyTransform(entity: entity,
-                                                                 scene: scene,
-                                                                 position: worldTransform.position,
-                                                                 rotation: worldTransform.rotation,
-                                                                 activate: true) ?? false
+                    let appliedToPhysics = scene.physicsSystem?.setBodyTransform(entity: entity,
+                                                                                 scene: scene,
+                                                                                 position: worldTransform.position,
+                                                                                 rotation: worldTransform.rotation,
+                                                                                 activate: true) ?? false
+                    if source == .script {
+                        return appliedToPhysics
+                    }
                 }
             case .kinematic:
                 if source != .physics {

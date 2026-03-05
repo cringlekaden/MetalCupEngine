@@ -8,15 +8,15 @@ import Foundation
 public enum OutlineSystem {
 
     static func encodeSelectionOutline(frame: RenderGraphFrame) {
-        guard frame.renderer.settings.outlineEnabled != 0,
-              RenderPassHelpers.shouldRenderEditorOverlays(frame.sceneView) else { return }
-        guard let outline = frame.resources.texture(.outlineMask) else { return }
+        guard frame.frameContext.rendererSettings().outlineEnabled != 0,
+              RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView) else { return }
+        guard let outline = frame.resourceRegistry.texture(.outlineMask) else { return }
         let clearPass = RenderPassBuilder.color(texture: outline, clearColor: MTLClearColorMake(0, 0, 0, 0))
         guard let clearEncoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: clearPass) else { return }
         clearEncoder.label = "Selection Outline Clear"
         clearEncoder.endEncoding()
 
-        guard let pickId = frame.resources.texture(.pickId) else { return }
+        guard let pickId = frame.resourceRegistry.texture(.pickId) else { return }
         guard let quadMesh = frame.engineContext.assets.mesh(handle: BuiltinAssets.fullscreenQuadMesh) else { return }
         guard !frame.sceneView.selectedEntityIds.isEmpty else { return }
 
@@ -37,7 +37,7 @@ public enum OutlineSystem {
         encoder.setCullMode(.none)
         encoder.setFragmentTexture(pickId, index: PostProcessTextureIndex.source)
 
-        let thickness = max(1, min(4, Int(frame.renderer.settings.outlineThickness)))
+        let thickness = max(1, min(4, Int(frame.frameContext.rendererSettings().outlineThickness)))
         let texelSize = SIMD2<Float>(1.0 / Float(pickId.width), 1.0 / Float(pickId.height))
         for selectedId in frame.sceneView.selectedEntityIds {
             let selectedPickId = frame.engineContext.pickingSystem.pickId(for: selectedId)
