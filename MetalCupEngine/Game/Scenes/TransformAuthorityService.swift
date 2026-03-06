@@ -5,16 +5,58 @@
 import Foundation
 import simd
 
+#if DEBUG
+public enum TransformAuthorityDebug {
+    /// Central debug toggle for policy diagnostics. Kept off by default to avoid log clutter.
+    public static var policyDiagnosticsEnabled: Bool = false
+}
+#endif
+
+/// Central authority for all external transform mutation.
+/// Rules:
+/// - Allowed mutation sources are validated against scene mode (Edit/Play/Simulate).
+/// - Parent/local/world conversions are handled only here.
+/// - Rigidbody-backed transforms are routed through physics first, then synchronized to ECS local space.
 public final class TransformAuthorityService {
     private unowned let scene: EngineScene
-    private var illegalScriptTransformWarnings: Set<UUID> = []
+    private var forbiddenSourceModeWarnings: Set<String> = []
+    private var dynamicRouteWarnings: Set<String> = []
+
+    private static let editAllowedSources: Set<TransformMutationSource> = [
+        .editor, .serialization, .prefab, .engineSystem
+    ]
+    private static let playAllowedSources: Set<TransformMutationSource> = [
+        .script, .physics, .characterController, .engineSystem
+    ]
+    private static let simulateAllowedSources: Set<TransformMutationSource> = [
+        .script, .physics, .characterController, .engineSystem
+    ]
 #if DEBUG
     private var debugFrameBaseline: [UUID: TransformComponent] = [:]
     private var debugAuthorizedWrites: Set<UUID> = []
+    private var debugEditorMutationCount: Int = 0
 #endif
 
     public init(scene: EngineScene) {
         self.scene = scene
+    }
+
+    @discardableResult
+    public func ensureLocalTransform(entity: Entity,
+                                     default transform: TransformComponent = TransformComponent(),
+                                     source: TransformMutationSource) -> Bool {
+        validateMutationSource(source, entity: entity, operation: "ensureLocalTransform")
+        if scene.ecs.get(TransformComponent.self, for: entity) == nil {
+#if DEBUG
+            debugAuthorizedWrites.insert(entity.id)
+            if source == .editor {
+                debugEditorMutationCount += 1
+            }
+#endif
+            scene.ecs.add(transform, to: entity)
+            return true
+        }
+        return setLocalTransform(entity: entity, transform: transform, source: source)
     }
 
     @discardableResult
@@ -30,6 +72,7 @@ public final class TransformAuthorityService {
     public func setWorldTransform(entity: Entity,
                                   transform worldTransform: TransformComponent,
                                   source: TransformMutationSource) -> Bool {
+        validateMutationSource(source, entity: entity, operation: "setWorldTransform")
         guard var localTransform = scene.ecs.get(TransformComponent.self, for: entity) else { return false }
         let rigidbody = scene.ecs.get(RigidbodyComponent.self, for: entity)
 
@@ -37,12 +80,7 @@ public final class TransformAuthorityService {
             switch rigidbody.motionType {
             case .dynamic:
                 if source != .physics {
-                    if source == .script,
-                       illegalScriptTransformWarnings.insert(entity.id).inserted {
-                        EngineLoggerContext.log("Script attempted direct transform write on dynamic body \(entity.id.uuidString). Routed to physics body transform.",
-                                                level: .warning,
-                                                category: .scene)
-                    }
+                    noteDynamicBodyRoute(source: source, entity: entity)
                     let appliedToPhysics = scene.physicsSystem?.setBodyTransform(entity: entity,
                                                                                  scene: scene,
                                                                                  position: worldTransform.position,
@@ -74,6 +112,9 @@ public final class TransformAuthorityService {
         localTransform = self.localTransform(fromWorld: worldTransform, for: entity)
 #if DEBUG
         debugAuthorizedWrites.insert(entity.id)
+        if source == .editor {
+            debugEditorMutationCount += 1
+        }
 #endif
         scene.ecs.add(localTransform, to: entity)
         return true
@@ -108,6 +149,14 @@ public final class TransformAuthorityService {
     }
 
 #if DEBUG
+    public func assertNoExternalTransformWrites() {
+        endDebugBypassDetectionFrame()
+    }
+
+    public func debugSnapshotEditorMutationCount() -> Int {
+        debugEditorMutationCount
+    }
+
     public func beginDebugBypassDetectionFrame() {
         debugAuthorizedWrites.removeAll(keepingCapacity: true)
         debugFrameBaseline.removeAll(keepingCapacity: true)
@@ -139,4 +188,46 @@ public final class TransformAuthorityService {
         return positionDelta > 1.0e-12 || scaleDelta > 1.0e-12 || rotationDot < (1.0 - 1.0e-6)
     }
 #endif
+
+    private func validateMutationSource(_ source: TransformMutationSource,
+                                        entity: Entity,
+                                        operation: String) {
+        guard !isSourceAllowed(source, in: scene.transformAuthorityMode) else { return }
+#if DEBUG
+        let key = "\(scene.transformAuthorityMode.description)|\(source.description)|\(operation)|\(entity.id.uuidString)"
+        if forbiddenSourceModeWarnings.insert(key).inserted {
+            assertionFailure("TransformAuthority policy violation: source \(source.description) attempted \(operation) in \(scene.transformAuthorityMode.description) mode for entity \(entity.id.uuidString).")
+        }
+        if TransformAuthorityDebug.policyDiagnosticsEnabled {
+            EngineLoggerContext.log("TransformAuthority blocked-policy write detected: source=\(source.description) mode=\(scene.transformAuthorityMode.description) operation=\(operation) entity=\(entity.id.uuidString)",
+                                    level: .warning,
+                                    category: .scene)
+        }
+#endif
+    }
+
+    private func isSourceAllowed(_ source: TransformMutationSource,
+                                 in mode: EngineScene.TransformAuthorityMode) -> Bool {
+        switch mode {
+        case .edit:
+            return Self.editAllowedSources.contains(source)
+        case .play:
+            return Self.playAllowedSources.contains(source)
+        case .simulate:
+            return Self.simulateAllowedSources.contains(source)
+        }
+    }
+
+    private func noteDynamicBodyRoute(source: TransformMutationSource, entity: Entity) {
+        guard source == .script || source == .editor else { return }
+#if DEBUG
+        let key = "\(source.description)|\(entity.id.uuidString)"
+        guard dynamicRouteWarnings.insert(key).inserted else { return }
+        if TransformAuthorityDebug.policyDiagnosticsEnabled {
+            EngineLoggerContext.log("TransformAuthority routed \(source.description) transform write for dynamic rigidbody \(entity.id.uuidString) through physics.",
+                                    level: .warning,
+                                    category: .scene)
+        }
+#endif
+    }
 }

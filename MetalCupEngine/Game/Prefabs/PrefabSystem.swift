@@ -56,7 +56,7 @@ public final class PrefabSystem {
               let prefabEntity = prefab.entities.first(where: { $0.localId == link.prefabEntityId }) else {
             return false
         }
-        applyPrefabEntity(prefabEntity, to: entity, ecs: ecs)
+        applyPrefabEntity(prefabEntity, to: entity, scene: scene, ecs: ecs)
         return true
     }
 
@@ -117,13 +117,19 @@ public final class PrefabSystem {
                 let entity = ecs.createEntity(name: entityName)
                 entityByLocalId[localId] = entity
                 if let transform = prefabEntity.components.transform {
-                    ecs.add(TransformComponent(
-                        position: transform.position.toSIMD(),
-                        rotation: transform.rotationQuat.toSIMD(),
-                        scale: transform.scale.toSIMD()
-                    ), to: entity)
+                    _ = scene.transformAuthority.ensureLocalTransform(
+                        entity: entity,
+                        default: TransformComponent(
+                            position: transform.position.toSIMD(),
+                            rotation: transform.rotationQuat.toSIMD(),
+                            scale: transform.scale.toSIMD()
+                        ),
+                        source: .prefab
+                    )
                 } else {
-                    ecs.add(TransformComponent(), to: entity)
+                    _ = scene.transformAuthority.ensureLocalTransform(entity: entity,
+                                                                      default: TransformComponent(),
+                                                                      source: .prefab)
                 }
                 ecs.add(PrefabInstanceComponent(prefabHandle: prefabHandle, prefabEntityId: localId, instanceId: instanceId), to: entity)
             }
@@ -148,14 +154,14 @@ public final class PrefabSystem {
 
             for (localId, prefabEntity) in prefabEntities {
                 guard let entity = entityByLocalId[localId] else { continue }
-                applyPrefabEntity(prefabEntity, to: entity, ecs: ecs)
+                applyPrefabEntity(prefabEntity, to: entity, scene: scene, ecs: ecs)
             }
             updatedInstances += 1
         }
         return updatedInstances
     }
 
-    private func applyPrefabEntity(_ prefabEntity: PrefabEntityDocument, to entity: Entity, ecs: SceneECS) {
+    private func applyPrefabEntity(_ prefabEntity: PrefabEntityDocument, to entity: Entity, scene: EngineScene, ecs: SceneECS) {
         let overrides = ecs.get(PrefabOverrideComponent.self, for: entity)
 
         func isOverridden(_ type: PrefabOverrideType) -> Bool {
@@ -165,7 +171,9 @@ public final class PrefabSystem {
         // Instance transforms are per-entity state in editor scenes.
         // Never overwrite an existing transform from prefab reapply/apply.
         if ecs.get(TransformComponent.self, for: entity) == nil {
-            ecs.add(TransformComponent(), to: entity)
+            _ = scene.transformAuthority.ensureLocalTransform(entity: entity,
+                                                              default: TransformComponent(),
+                                                              source: .prefab)
         }
 
         if !isOverridden(.name) {
@@ -258,6 +266,38 @@ public final class PrefabSystem {
                 ecs.add(script.toComponent(), to: entity)
             } else {
                 ecs.remove(ScriptComponent.self, from: entity)
+            }
+        }
+
+        if !isOverridden(.skinnedMesh) {
+            if let skinnedMesh = prefabEntity.components.skinnedMesh {
+                ecs.add(skinnedMesh.toComponent(), to: entity)
+            } else {
+                ecs.remove(SkinnedMeshComponent.self, from: entity)
+            }
+        }
+
+        if !isOverridden(.animator) {
+            if let animator = prefabEntity.components.animator {
+                ecs.add(animator.toComponent(), to: entity)
+            } else {
+                ecs.remove(AnimatorComponent.self, from: entity)
+            }
+        }
+
+        if !isOverridden(.audioSource) {
+            if let audioSource = prefabEntity.components.audioSource {
+                ecs.add(audioSource.toComponent(), to: entity)
+            } else {
+                ecs.remove(AudioSourceComponent.self, from: entity)
+            }
+        }
+
+        if !isOverridden(.audioListener) {
+            if let audioListener = prefabEntity.components.audioListener {
+                ecs.add(audioListener.toComponent(), to: entity)
+            } else {
+                ecs.remove(AudioListenerComponent.self, from: entity)
             }
         }
 

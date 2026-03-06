@@ -79,6 +79,12 @@ public final class SceneSerializationService {
                             )
                         }
                         : nil,
+                    skinnedMesh: shouldSerializeOverride(.skinnedMesh, for: entity)
+                        ? scene.ecs.get(SkinnedMeshComponent.self, for: entity).map { SkinnedMeshComponentDTO(component: $0) }
+                        : nil,
+                    animator: shouldSerializeOverride(.animator, for: entity)
+                        ? scene.ecs.get(AnimatorComponent.self, for: entity).map { AnimatorComponentDTO(component: $0) }
+                        : nil,
                     materialComponent: shouldSerializeOverride(.material, for: entity)
                         ? scene.ecs.get(MaterialComponent.self, for: entity).map { MaterialComponentDTO(materialHandle: $0.materialHandle) }
                         : nil,
@@ -127,6 +133,12 @@ public final class SceneSerializationService {
                         ? scene.ecs.get(ScriptComponent.self, for: entity).map { ScriptComponentDTO(component: $0) }
                         : nil,
                     characterController: scene.ecs.get(CharacterControllerComponent.self, for: entity).map { CharacterControllerComponentDTO(component: $0) },
+                    audioSource: shouldSerializeOverride(.audioSource, for: entity)
+                        ? scene.ecs.get(AudioSourceComponent.self, for: entity).map { AudioSourceComponentDTO(component: $0) }
+                        : nil,
+                    audioListener: shouldSerializeOverride(.audioListener, for: entity)
+                        ? scene.ecs.get(AudioListenerComponent.self, for: entity).map { AudioListenerComponentDTO(component: $0) }
+                        : nil,
                     sky: shouldSerializeOverride(.sky, for: entity)
                         ? scene.ecs.get(SkyComponent.self, for: entity).map { SkyComponentDTO(environmentMapHandle: $0.environmentMapHandle) }
                         : nil,
@@ -196,6 +208,12 @@ public final class SceneSerializationService {
                         emissiveMapHandle: component.emissiveMapHandle
                     )
                 },
+                skinnedMesh: scene.ecs.get(SkinnedMeshComponent.self, for: entity).map { component in
+                    SkinnedMeshComponentDTO(component: component)
+                },
+                animator: scene.ecs.get(AnimatorComponent.self, for: entity).map { component in
+                    AnimatorComponentDTO(component: component)
+                },
                 materialComponent: scene.ecs.get(MaterialComponent.self, for: entity).map { component in
                     MaterialComponentDTO(materialHandle: component.materialHandle)
                 },
@@ -239,6 +257,12 @@ public final class SceneSerializationService {
                 },
                 characterController: scene.ecs.get(CharacterControllerComponent.self, for: entity).map { component in
                     CharacterControllerComponentDTO(component: component)
+                },
+                audioSource: scene.ecs.get(AudioSourceComponent.self, for: entity).map { component in
+                    AudioSourceComponentDTO(component: component)
+                },
+                audioListener: scene.ecs.get(AudioListenerComponent.self, for: entity).map { component in
+                    AudioListenerComponentDTO(component: component)
                 },
                 sky: scene.ecs.get(SkyComponent.self, for: entity).map { component in
                     SkyComponentDTO(environmentMapHandle: component.environmentMapHandle)
@@ -309,9 +333,13 @@ public final class SceneSerializationService {
                     rotation: transform.rotationQuat.toSIMD(),
                     scale: transform.scale.toSIMD()
                 )
-                scene.ecs.add(component, to: entity)
+                _ = scene.transformAuthority.ensureLocalTransform(entity: entity,
+                                                                  default: component,
+                                                                  source: .serialization)
             } else {
-                scene.ecs.add(TransformComponent(), to: entity)
+                _ = scene.transformAuthority.ensureLocalTransform(entity: entity,
+                                                                  default: TransformComponent(),
+                                                                  source: .serialization)
             }
 
             if let prefabLink = entityDoc.components.prefabLink {
@@ -349,6 +377,12 @@ public final class SceneSerializationService {
                     )
                     scene.ecs.add(component, to: entity)
                 }
+                if let skinnedMesh = entityDoc.components.skinnedMesh {
+                    scene.ecs.add(skinnedMesh.toComponent(), to: entity)
+                }
+                if let animator = entityDoc.components.animator {
+                    scene.ecs.add(animator.toComponent(), to: entity)
+                }
                 if let materialComponent = entityDoc.components.materialComponent {
                     scene.ecs.add(MaterialComponent(materialHandle: materialComponent.materialHandle), to: entity)
                 }
@@ -384,6 +418,12 @@ public final class SceneSerializationService {
                 }
                 if let controller = entityDoc.components.characterController {
                     scene.ecs.add(controller.toComponent(), to: entity)
+                }
+                if let audioSource = entityDoc.components.audioSource {
+                    scene.ecs.add(audioSource.toComponent(), to: entity)
+                }
+                if let audioListener = entityDoc.components.audioListener {
+                    scene.ecs.add(audioListener.toComponent(), to: entity)
                 }
                 if let sky = entityDoc.components.sky {
                     scene.ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
@@ -458,6 +498,12 @@ public final class SceneSerializationService {
                 )
                 scene.ecs.add(component, to: entity)
             }
+            if let skinnedMesh = entityDoc.components.skinnedMesh {
+                scene.ecs.add(skinnedMesh.toComponent(), to: entity)
+            }
+            if let animator = entityDoc.components.animator {
+                scene.ecs.add(animator.toComponent(), to: entity)
+            }
             if let materialComponent = entityDoc.components.materialComponent {
                 let component = MaterialComponent(materialHandle: materialComponent.materialHandle)
                 scene.ecs.add(component, to: entity)
@@ -497,6 +543,12 @@ public final class SceneSerializationService {
             }
             if let controller = entityDoc.components.characterController {
                 scene.ecs.add(controller.toComponent(), to: entity)
+            }
+            if let audioSource = entityDoc.components.audioSource {
+                scene.ecs.add(audioSource.toComponent(), to: entity)
+            }
+            if let audioListener = entityDoc.components.audioListener {
+                scene.ecs.add(audioListener.toComponent(), to: entity)
             }
             if let sky = entityDoc.components.sky {
                 scene.ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)
@@ -584,9 +636,13 @@ public final class SceneSerializationService {
                     rotation: transform.rotationQuat.toSIMD(),
                     scale: transform.scale.toSIMD()
                 )
-                scene.ecs.add(component, to: entity)
+                _ = scene.transformAuthority.ensureLocalTransform(entity: entity,
+                                                                  default: component,
+                                                                  source: .prefab)
             } else {
-                scene.ecs.add(TransformComponent(), to: entity)
+                _ = scene.transformAuthority.ensureLocalTransform(entity: entity,
+                                                                  default: TransformComponent(),
+                                                                  source: .prefab)
             }
             if let layer = entityDoc.components.layer {
                 scene.ecs.add(LayerComponent(index: layer.layerIndex), to: entity)
@@ -620,6 +676,12 @@ public final class SceneSerializationService {
                 )
                 scene.ecs.add(component, to: entity)
             }
+            if let skinnedMesh = entityDoc.components.skinnedMesh {
+                scene.ecs.add(skinnedMesh.toComponent(), to: entity)
+            }
+            if let animator = entityDoc.components.animator {
+                scene.ecs.add(animator.toComponent(), to: entity)
+            }
             if let materialComponent = entityDoc.components.materialComponent {
                 let component = MaterialComponent(materialHandle: materialComponent.materialHandle)
                 scene.ecs.add(component, to: entity)
@@ -643,6 +705,12 @@ public final class SceneSerializationService {
             }
             if let script = entityDoc.components.script {
                 scene.ecs.add(script.toComponent(), to: entity)
+            }
+            if let audioSource = entityDoc.components.audioSource {
+                scene.ecs.add(audioSource.toComponent(), to: entity)
+            }
+            if let audioListener = entityDoc.components.audioListener {
+                scene.ecs.add(audioListener.toComponent(), to: entity)
             }
             if let sky = entityDoc.components.sky {
                 scene.ecs.add(SkyComponent(environmentMapHandle: sky.environmentMapHandle), to: entity)

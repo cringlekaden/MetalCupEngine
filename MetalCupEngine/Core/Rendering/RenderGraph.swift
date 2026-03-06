@@ -13,6 +13,9 @@ struct RenderPlan {
     let sceneDepthLoadAction: MTLLoadAction
     let bloomEnabled: Bool
     let pickingEnabled: Bool
+    let showEditorOverlays: Bool
+    let gridEnabled: Bool
+    let debugDrawEnabled: Bool
 
     static func unplanned(viewSignature: UInt64) -> RenderPlan {
         RenderPlan(
@@ -23,7 +26,10 @@ struct RenderPlan {
             cullingDepthBinding: nil,
             sceneDepthLoadAction: .clear,
             bloomEnabled: false,
-            pickingEnabled: false
+            pickingEnabled: false,
+            showEditorOverlays: false,
+            gridEnabled: false,
+            debugDrawEnabled: false
         )
     }
 
@@ -96,6 +102,8 @@ final class RenderGraph {
         static let lightCulling = "LightCullingPass"
         static let scene = "ScenePass"
         static let picking = "PickingPass"
+        static let gridOverlay = "GridOverlayPass"
+        static let debugDraw = "DebugDrawPass"
         static let bloomExtract = "BloomExtractPass"
         static let bloomBlur = "BloomBlurPass"
     }
@@ -157,6 +165,7 @@ final class RenderGraph {
         let settings = frame.frameContext.rendererSettings()
         var enabledPassNames = Set(passes.map(\.name))
         let depthPrepassEnabled = frame.frameContext.useDepthPrepass()
+        let showEditorOverlays = RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView)
         if depthPrepassEnabled {
             enabledPassNames.remove(PassName.cullingDepthFallback)
         } else {
@@ -175,6 +184,17 @@ final class RenderGraph {
         if !bloomEnabled {
             enabledPassNames.remove(PassName.bloomExtract)
             enabledPassNames.remove(PassName.bloomBlur)
+        }
+
+        let gridEnabled = settings.gridEnabled != 0 && showEditorOverlays
+        if !gridEnabled {
+            enabledPassNames.remove(PassName.gridOverlay)
+        }
+
+        let debugDrawEnabled = frame.engineContext.physicsSettings.debugDrawEnabled
+            && (showEditorOverlays || (frame.engineContext.physicsSettings.debugDrawInPlay && !frame.sceneView.isEditorView))
+        if !debugDrawEnabled {
+            enabledPassNames.remove(PassName.debugDraw)
         }
 
         var forwardPlusEnabled = settings.hasPerfFlag(.forwardPlusEnabled) && frame.frameContext.isForwardPlusAllowed()
@@ -211,7 +231,10 @@ final class RenderGraph {
             cullingDepthBinding: cullingDepthBinding,
             sceneDepthLoadAction: depthPrepassEnabled ? .load : .clear,
             bloomEnabled: bloomEnabled,
-            pickingEnabled: pickingEnabled
+            pickingEnabled: pickingEnabled,
+            showEditorOverlays: showEditorOverlays,
+            gridEnabled: gridEnabled,
+            debugDrawEnabled: debugDrawEnabled
         )
     }
 

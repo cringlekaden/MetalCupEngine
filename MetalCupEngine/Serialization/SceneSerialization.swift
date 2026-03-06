@@ -53,6 +53,8 @@ public struct ComponentsDocument: Codable {
     public var prefabLink: PrefabLinkComponentDTO?
     public var prefabOverrides: PrefabOverrideComponentDTO?
     public var meshRenderer: MeshRendererComponentDTO?
+    public var skinnedMesh: SkinnedMeshComponentDTO?
+    public var animator: AnimatorComponentDTO?
     public var materialComponent: MaterialComponentDTO?
     public var rigidbody: RigidbodyComponentDTO?
     public var collider: ColliderComponentDTO?
@@ -61,6 +63,8 @@ public struct ComponentsDocument: Codable {
     public var camera: CameraComponentDTO?
     public var script: ScriptComponentDTO?
     public var characterController: CharacterControllerComponentDTO?
+    public var audioSource: AudioSourceComponentDTO?
+    public var audioListener: AudioListenerComponentDTO?
     public var sky: SkyComponentDTO?
     public var skyLight: SkyLightComponentDTO?
     public var skyLightTag: TagComponentDTO?
@@ -73,6 +77,8 @@ public struct ComponentsDocument: Codable {
         prefabLink: PrefabLinkComponentDTO? = nil,
         prefabOverrides: PrefabOverrideComponentDTO? = nil,
         meshRenderer: MeshRendererComponentDTO? = nil,
+        skinnedMesh: SkinnedMeshComponentDTO? = nil,
+        animator: AnimatorComponentDTO? = nil,
         materialComponent: MaterialComponentDTO? = nil,
         rigidbody: RigidbodyComponentDTO? = nil,
         collider: ColliderComponentDTO? = nil,
@@ -81,6 +87,8 @@ public struct ComponentsDocument: Codable {
         camera: CameraComponentDTO? = nil,
         script: ScriptComponentDTO? = nil,
         characterController: CharacterControllerComponentDTO? = nil,
+        audioSource: AudioSourceComponentDTO? = nil,
+        audioListener: AudioListenerComponentDTO? = nil,
         sky: SkyComponentDTO? = nil,
         skyLight: SkyLightComponentDTO? = nil,
         skyLightTag: TagComponentDTO? = nil,
@@ -92,6 +100,8 @@ public struct ComponentsDocument: Codable {
         self.prefabLink = prefabLink
         self.prefabOverrides = prefabOverrides
         self.meshRenderer = meshRenderer
+        self.skinnedMesh = skinnedMesh
+        self.animator = animator
         self.materialComponent = materialComponent
         self.rigidbody = rigidbody
         self.collider = collider
@@ -100,6 +110,8 @@ public struct ComponentsDocument: Codable {
         self.camera = camera
         self.script = script
         self.characterController = characterController
+        self.audioSource = audioSource
+        self.audioListener = audioListener
         self.sky = sky
         self.skyLight = skyLight
         self.skyLightTag = skyLightTag
@@ -247,6 +259,151 @@ public struct MeshRendererComponentDTO: Codable {
         self.ormMapHandle = ormMapHandle
         self.aoMapHandle = aoMapHandle
         self.emissiveMapHandle = emissiveMapHandle
+    }
+}
+
+public struct SkinnedMeshComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var skeletonHandle: AssetHandle?
+    public var rootBoneName: String
+
+    public init(schemaVersion: Int = 1,
+                skeletonHandle: AssetHandle?,
+                rootBoneName: String) {
+        self.schemaVersion = schemaVersion
+        self.skeletonHandle = skeletonHandle
+        self.rootBoneName = rootBoneName
+    }
+
+    public init(component: SkinnedMeshComponent) {
+        self.schemaVersion = 1
+        self.skeletonHandle = component.skeletonHandle
+        self.rootBoneName = component.rootBoneName
+    }
+
+    public func toComponent() -> SkinnedMeshComponent {
+        SkinnedMeshComponent(skeletonHandle: skeletonHandle, rootBoneName: rootBoneName)
+    }
+}
+
+public struct AnimatorComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var clipHandle: AssetHandle?
+    public var playbackTime: Float
+    public var isPlaying: Bool
+    public var isLooping: Bool
+
+    public init(schemaVersion: Int = 1,
+                clipHandle: AssetHandle?,
+                playbackTime: Float,
+                isPlaying: Bool,
+                isLooping: Bool) {
+        self.schemaVersion = schemaVersion
+        self.clipHandle = clipHandle
+        self.playbackTime = playbackTime
+        self.isPlaying = isPlaying
+        self.isLooping = isLooping
+    }
+
+    public init(component: AnimatorComponent) {
+        self.schemaVersion = 1
+        self.clipHandle = component.clipHandle
+        self.playbackTime = component.playbackTime
+        self.isPlaying = component.isPlaying
+        self.isLooping = component.isLooping
+    }
+
+    public func toComponent() -> AnimatorComponent {
+        AnimatorComponent(clipHandle: clipHandle,
+                          playbackTime: playbackTime,
+                          isPlaying: isPlaying,
+                          isLooping: isLooping)
+    }
+}
+
+public struct AudioSourceComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var audioAssetHandle: AssetHandle?
+    public var volume: Float
+    public var pitch: Float
+    public var looping: Bool
+    public var playOnAwake: Bool
+    public var spatialized: Bool
+    public var maxDistance: Float
+    public var isPlaying: Bool
+
+    public init(schemaVersion: Int = 1,
+                enabled: Bool,
+                audioAssetHandle: AssetHandle?,
+                volume: Float,
+                pitch: Float,
+                looping: Bool,
+                playOnAwake: Bool,
+                spatialized: Bool,
+                maxDistance: Float,
+                isPlaying: Bool) {
+        self.schemaVersion = schemaVersion
+        self.enabled = enabled
+        self.audioAssetHandle = audioAssetHandle
+        self.volume = volume
+        self.pitch = pitch
+        self.looping = looping
+        self.playOnAwake = playOnAwake
+        self.spatialized = spatialized
+        self.maxDistance = maxDistance
+        self.isPlaying = isPlaying
+    }
+
+    public init(component: AudioSourceComponent) {
+        self.schemaVersion = 1
+        self.enabled = component.isEnabled
+        self.audioAssetHandle = component.audioAssetHandle
+        self.volume = component.volume
+        self.pitch = component.pitch
+        self.looping = component.isLooping
+        self.playOnAwake = component.playOnAwake
+        self.spatialized = component.isSpatialized
+        self.maxDistance = component.maxDistance
+        self.isPlaying = component.isPlaying
+    }
+
+    public func toComponent() -> AudioSourceComponent {
+        AudioSourceComponent(
+            isEnabled: enabled,
+            audioAssetHandle: audioAssetHandle,
+            volume: volume,
+            pitch: pitch,
+            isLooping: looping,
+            playOnAwake: playOnAwake,
+            isSpatialized: spatialized,
+            maxDistance: maxDistance,
+            isPlaying: isPlaying
+        )
+    }
+}
+
+public struct AudioListenerComponentDTO: Codable {
+    public var schemaVersion: Int
+    public var enabled: Bool
+    public var isPrimary: Bool
+
+    public init(schemaVersion: Int = 1,
+                enabled: Bool,
+                isPrimary: Bool) {
+        self.schemaVersion = schemaVersion
+        self.enabled = enabled
+        self.isPrimary = isPrimary
+    }
+
+    public init(component: AudioListenerComponent) {
+        self.schemaVersion = 1
+        self.enabled = component.isEnabled
+        self.isPrimary = component.isPrimary
+    }
+
+    public func toComponent() -> AudioListenerComponent {
+        AudioListenerComponent(isEnabled: enabled, isPrimary: isPrimary)
     }
 }
 

@@ -43,6 +43,10 @@ public enum SceneECSComponentType: Int32 {
     case skyLightTag = 17
     case skySunTag = 18
     case characterController = 19
+    case skinnedMesh = 20
+    case animator = 21
+    case audioSource = 22
+    case audioListener = 23
 }
 
 public struct SceneECSChange {
@@ -68,6 +72,8 @@ public final class SceneECS {
     private var prefabInstanceComponents: [Entity: PrefabInstanceComponent] = [:]
     private var prefabOverrideComponents: [Entity: PrefabOverrideComponent] = [:]
     private var meshRendererComponents: [Entity: MeshRendererComponent] = [:]
+    private var skinnedMeshComponents: [Entity: SkinnedMeshComponent] = [:]
+    private var animatorComponents: [Entity: AnimatorComponent] = [:]
     private var materialComponents: [Entity: MaterialComponent] = [:]
     private var cameraComponents: [Entity: CameraComponent] = [:]
     private var scriptComponents: [Entity: ScriptComponent] = [:]
@@ -78,6 +84,8 @@ public final class SceneECS {
     private var skyLightTags: [Entity: SkyLightTag] = [:]
     private var skySunTags: [Entity: SkySunTag] = [:]
     private var characterControllerComponents: [Entity: CharacterControllerComponent] = [:]
+    private var audioSourceComponents: [Entity: AudioSourceComponent] = [:]
+    private var audioListenerComponents: [Entity: AudioListenerComponent] = [:]
 
     private var parentByEntity: [Entity: Entity] = [:]
     private var childrenByEntity: [Entity: [Entity]] = [:]
@@ -148,6 +156,8 @@ public final class SceneECS {
         prefabInstanceComponents.removeAll()
         prefabOverrideComponents.removeAll()
         meshRendererComponents.removeAll()
+        skinnedMeshComponents.removeAll()
+        animatorComponents.removeAll()
         materialComponents.removeAll()
         cameraComponents.removeAll()
         scriptComponents.removeAll()
@@ -158,6 +168,8 @@ public final class SceneECS {
         skyLightTags.removeAll()
         skySunTags.removeAll()
         characterControllerComponents.removeAll()
+        audioSourceComponents.removeAll()
+        audioListenerComponents.removeAll()
         parentByEntity.removeAll()
         childrenByEntity.removeAll()
         rootEntities.removeAll()
@@ -310,6 +322,18 @@ public final class SceneECS {
             if !existed {
                 enqueueChange(.componentAdded, entity: entity, componentType: .meshRenderer)
             }
+        case let value as SkinnedMeshComponent:
+            let existed = skinnedMeshComponents[entity] != nil
+            skinnedMeshComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .skinnedMesh)
+            }
+        case let value as AnimatorComponent:
+            let existed = animatorComponents[entity] != nil
+            animatorComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .animator)
+            }
         case let value as MaterialComponent:
             let existed = materialComponents[entity] != nil
             materialComponents[entity] = value
@@ -379,6 +403,28 @@ public final class SceneECS {
                                           current: value.isEnabled,
                                           entity: entity,
                                           componentType: .characterController)
+        case let value as AudioSourceComponent:
+            let previousEnabled = audioSourceComponents[entity]?.isEnabled
+            let existed = audioSourceComponents[entity] != nil
+            audioSourceComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .audioSource)
+            }
+            enqueueEnabledChangedIfNeeded(previous: previousEnabled,
+                                          current: value.isEnabled,
+                                          entity: entity,
+                                          componentType: .audioSource)
+        case let value as AudioListenerComponent:
+            let previousEnabled = audioListenerComponents[entity]?.isEnabled
+            let existed = audioListenerComponents[entity] != nil
+            audioListenerComponents[entity] = value
+            if !existed {
+                enqueueChange(.componentAdded, entity: entity, componentType: .audioListener)
+            }
+            enqueueEnabledChangedIfNeeded(previous: previousEnabled,
+                                          current: value.isEnabled,
+                                          entity: entity,
+                                          componentType: .audioListener)
         default:
             return
         }
@@ -426,6 +472,14 @@ public final class SceneECS {
             if meshRendererComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .meshRenderer)
             }
+        case is SkinnedMeshComponent.Type:
+            if skinnedMeshComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .skinnedMesh)
+            }
+        case is AnimatorComponent.Type:
+            if animatorComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .animator)
+            }
         case is MaterialComponent.Type:
             if materialComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .material)
@@ -466,6 +520,14 @@ public final class SceneECS {
             if characterControllerComponents.removeValue(forKey: entity) != nil {
                 enqueueChange(.componentRemoved, entity: entity, componentType: .characterController)
             }
+        case is AudioSourceComponent.Type:
+            if audioSourceComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .audioSource)
+            }
+        case is AudioListenerComponent.Type:
+            if audioListenerComponents.removeValue(forKey: entity) != nil {
+                enqueueChange(.componentRemoved, entity: entity, componentType: .audioListener)
+            }
         default:
             return
         }
@@ -494,6 +556,10 @@ public final class SceneECS {
             return prefabOverrideComponents[entity] as? T
         case is MeshRendererComponent.Type:
             return meshRendererComponents[entity] as? T
+        case is SkinnedMeshComponent.Type:
+            return skinnedMeshComponents[entity] as? T
+        case is AnimatorComponent.Type:
+            return animatorComponents[entity] as? T
         case is MaterialComponent.Type:
             return materialComponents[entity] as? T
         case is CameraComponent.Type:
@@ -514,6 +580,10 @@ public final class SceneECS {
             return skySunTags[entity] as? T
         case is CharacterControllerComponent.Type:
             return characterControllerComponents[entity] as? T
+        case is AudioSourceComponent.Type:
+            return audioSourceComponents[entity] as? T
+        case is AudioListenerComponent.Type:
+            return audioListenerComponents[entity] as? T
         default:
             return nil
         }
@@ -887,6 +957,12 @@ public final class SceneECS {
         if meshRendererComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .meshRenderer)
         }
+        if skinnedMeshComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .skinnedMesh)
+        }
+        if animatorComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .animator)
+        }
         if materialComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .material)
         }
@@ -916,6 +992,12 @@ public final class SceneECS {
         }
         if characterControllerComponents.removeValue(forKey: entity) != nil {
             enqueueChange(.componentRemoved, entity: entity, componentType: .characterController)
+        }
+        if audioSourceComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .audioSource)
+        }
+        if audioListenerComponents.removeValue(forKey: entity) != nil {
+            enqueueChange(.componentRemoved, entity: entity, componentType: .audioListener)
         }
     }
 

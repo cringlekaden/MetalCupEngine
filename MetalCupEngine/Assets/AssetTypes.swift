@@ -3,6 +3,7 @@
 /// Created by Kaden Cringle.
 
 import Foundation
+import simd
 
 public struct AssetHandle: Hashable, Codable {
     public let rawValue: UUID
@@ -34,6 +35,9 @@ public struct AssetHandle: Hashable, Codable {
 public typealias TextureHandle = AssetHandle
 public typealias MeshHandle = AssetHandle
 public typealias MaterialHandle = AssetHandle
+public typealias SkeletonHandle = AssetHandle
+public typealias AnimationClipHandle = AssetHandle
+public typealias AudioHandle = AssetHandle
 
 public enum AssetType: String, Codable {
     case texture
@@ -43,7 +47,134 @@ public enum AssetType: String, Codable {
     case scene
     case prefab
     case script
+    case skeleton
+    case animationClip
+    case audio
     case unknown
+}
+
+public struct SkeletonAsset {
+    public struct Joint {
+        public var name: String
+        public var parentIndex: Int
+        public var bindLocalPosition: SIMD3<Float>
+        public var bindLocalRotation: SIMD4<Float>
+        public var bindLocalScale: SIMD3<Float>
+
+        public init(name: String,
+                    parentIndex: Int,
+                    bindLocalPosition: SIMD3<Float> = .zero,
+                    bindLocalRotation: SIMD4<Float> = TransformMath.identityQuaternion,
+                    bindLocalScale: SIMD3<Float> = SIMD3<Float>(repeating: 1.0)) {
+            self.name = name
+            self.parentIndex = parentIndex
+            self.bindLocalPosition = bindLocalPosition
+            self.bindLocalRotation = TransformMath.normalizedQuaternion(bindLocalRotation)
+            self.bindLocalScale = bindLocalScale
+        }
+    }
+
+    public var handle: SkeletonHandle
+    public var name: String
+    public var sourcePath: String
+    public var boneCount: Int
+    public var joints: [Joint]
+
+    public init(handle: SkeletonHandle,
+                name: String,
+                sourcePath: String,
+                boneCount: Int = 0,
+                joints: [Joint] = []) {
+        self.handle = handle
+        self.name = name
+        self.sourcePath = sourcePath
+        self.joints = joints
+        self.boneCount = joints.isEmpty ? boneCount : joints.count
+    }
+}
+
+public struct AnimationClipAsset {
+    public struct TranslationKeyframe {
+        public var time: Float
+        public var value: SIMD3<Float>
+
+        public init(time: Float, value: SIMD3<Float>) {
+            self.time = time
+            self.value = value
+        }
+    }
+
+    public struct RotationKeyframe {
+        public var time: Float
+        public var value: SIMD4<Float>
+
+        public init(time: Float, value: SIMD4<Float>) {
+            self.time = time
+            self.value = TransformMath.normalizedQuaternion(value)
+        }
+    }
+
+    public struct ScaleKeyframe {
+        public var time: Float
+        public var value: SIMD3<Float>
+
+        public init(time: Float, value: SIMD3<Float>) {
+            self.time = time
+            self.value = value
+        }
+    }
+
+    public struct JointTrack {
+        public var jointIndex: Int
+        public var translations: [TranslationKeyframe]
+        public var rotations: [RotationKeyframe]
+        public var scales: [ScaleKeyframe]
+
+        public init(jointIndex: Int,
+                    translations: [TranslationKeyframe] = [],
+                    rotations: [RotationKeyframe] = [],
+                    scales: [ScaleKeyframe] = []) {
+            self.jointIndex = jointIndex
+            self.translations = translations.sorted { $0.time < $1.time }
+            self.rotations = rotations.sorted { $0.time < $1.time }
+            self.scales = scales.sorted { $0.time < $1.time }
+        }
+    }
+
+    public var handle: AnimationClipHandle
+    public var name: String
+    public var sourcePath: String
+    public var durationSeconds: Float
+    public var tracks: [JointTrack]
+
+    public init(handle: AnimationClipHandle,
+                name: String,
+                sourcePath: String,
+                durationSeconds: Float = 0.0,
+                tracks: [JointTrack] = []) {
+        self.handle = handle
+        self.name = name
+        self.sourcePath = sourcePath
+        self.durationSeconds = durationSeconds
+        self.tracks = tracks
+    }
+}
+
+public struct AudioAsset {
+    public var handle: AudioHandle
+    public var name: String
+    public var sourcePath: String
+    public var durationSeconds: Float
+
+    public init(handle: AudioHandle,
+                name: String,
+                sourcePath: String,
+                durationSeconds: Float = 0.0) {
+        self.handle = handle
+        self.name = name
+        self.sourcePath = sourcePath
+        self.durationSeconds = durationSeconds
+    }
 }
 
 public struct AssetMetadata: Codable {

@@ -37,6 +37,7 @@ public enum VertexBufferIndex {
     public static let sceneConstants = ShaderBindings.VertexBuffer.sceneConstants
     public static let modelConstants = ShaderBindings.VertexBuffer.modelConstants
     public static let instances = ShaderBindings.VertexBuffer.instances
+    public static let bonePalette = ShaderBindings.VertexBuffer.bonePalette
     public static let cubemapViewProjection = ShaderBindings.VertexBuffer.cubemapViewProjection
 }
 
@@ -112,6 +113,8 @@ public struct Vertex: sizeable {
     public var texCoord: SIMD2<Float>
     public var normal: SIMD3<Float>
     public var tangent: SIMD4<Float>
+    public var jointIndices: SIMD4<UInt16>
+    public var jointWeights: SIMD4<Float>
 }
 
 public struct SimpleVertex: sizeable {
@@ -132,7 +135,10 @@ public struct InstanceData: sizeable {
     public static let expectedMetalStride: Int = 96
     public var modelMatrix = matrix_identity_float4x4
     public var entityID: UInt32 = 0
-    public var padding = SIMD4<UInt32>(repeating: 0)
+    public var bonePaletteOffset: UInt32 = 0
+    public var bonePaletteCount: UInt32 = 0
+    public var skinningFlags: UInt32 = 0
+    public var padding = SIMD3<UInt32>(repeating: 0)
 }
 
 public struct SceneConstants: sizeable {

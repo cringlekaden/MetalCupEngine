@@ -1121,8 +1121,6 @@ final class GridOverlayPass: RenderGraphPass {
     ]
 
     func execute(frame: RenderGraphFrame) {
-        guard frame.frameContext.rendererSettings().gridEnabled != 0,
-              RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView) else { return }
         guard let grid = frame.resourceRegistry.texture(.gridColor) else { return }
         let frameIndex = frame.frameContext.currentFrameIndex()
         let pass = RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
@@ -1165,17 +1163,13 @@ final class DebugDrawPass: RenderGraphPass {
     ]
 
     func execute(frame: RenderGraphFrame) {
-        let allowDebugDraw = RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView)
-            || (frame.engineContext.physicsSettings.debugDrawInPlay && !frame.sceneView.isEditorView)
-        guard frame.engineContext.physicsSettings.debugDrawEnabled,
-              allowDebugDraw,
-              let snapshot = frame.sceneSnapshot,
+        guard let snapshot = frame.sceneSnapshot,
               let grid = frame.resourceRegistry.texture(.gridColor) else { return }
         let debugDraw = frame.engineContext.debugDraw
         let lines = debugDraw.lines()
         let polylines = debugDraw.polylines()
         if lines.isEmpty && polylines.isEmpty {
-            if frame.frameContext.rendererSettings().gridEnabled == 0 {
+            if !frame.renderPlan.gridEnabled {
                 let pass = RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
                 if let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) {
                     encoder.label = "Debug Draw Clear"
@@ -1339,7 +1333,7 @@ final class DebugDrawPass: RenderGraphPass {
                                                                  length: DebugLineVertex.stride(vertices.count),
                                                                  options: [.storageModeShared]) else { return }
         let size = RenderPassHelpers.textureSize(grid)
-        let pass = frame.frameContext.rendererSettings().gridEnabled != 0
+        let pass = frame.renderPlan.gridEnabled
             ? RenderPassBuilder.colorLoad(texture: grid)
             : RenderPassBuilder.color(texture: grid, clearColor: MTLClearColorMake(0, 0, 0, 0))
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
@@ -1608,7 +1602,7 @@ final class FinalCompositePass: RenderGraphPass {
         guard let encoder = frame.commandBuffer.makeRenderCommandEncoder(descriptor: RenderPassBuilder.color(texture: finalColor)) else { return }
         RenderPassHelpers.setViewport(encoder, RenderPassHelpers.textureSize(finalColor))
         frame.profiler.sampleGpuPassBegin(.finalComposite, encoder: encoder, frameIndex: frameIndex)
-        let showEditorOverlays = RenderPassHelpers.shouldRenderEditorOverlays(frame.frameContext, fallback: frame.sceneView)
+        let showEditorOverlays = frame.renderPlan.showEditorOverlays
         let pass = FullscreenPass(
             pipeline: .Final,
             label: "Final Composite",

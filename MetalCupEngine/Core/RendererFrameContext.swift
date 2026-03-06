@@ -175,8 +175,16 @@ public struct RendererFrameContext {
         storage.uploadInstanceData(data)
     }
 
+    public func uploadBonePaletteData(_ data: [matrix_float4x4]) -> MTLBuffer? {
+        storage.uploadBonePaletteData(data)
+    }
+
     public func instanceBuffer() -> MTLBuffer? {
         storage.instanceBuffer()
+    }
+
+    public func bonePaletteBuffer() -> MTLBuffer? {
+        storage.bonePaletteBuffer()
     }
 
     public func pickReadbackBuffer() -> MTLBuffer? {
@@ -366,6 +374,8 @@ public final class RendererFrameContextStorage {
 
     private var instanceBuffers: [MTLBuffer?] = []
     private var instanceBufferCapacities: [Int] = []
+    private var bonePaletteBuffers: [MTLBuffer?] = []
+    private var bonePaletteBufferCapacities: [Int] = []
     private var pickReadbackBuffers: [MTLBuffer?] = []
     private var sceneConstantsBuffers: [MTLBuffer?] = []
     private var sceneConstantsUploaded: [Bool] = []
@@ -464,8 +474,24 @@ public final class RendererFrameContextStorage {
         return buffer
     }
 
+    fileprivate func uploadBonePaletteData(_ data: [matrix_float4x4]) -> MTLBuffer? {
+        guard !data.isEmpty else { return nil }
+        let requiredBytes = MemoryLayout<matrix_float4x4>.stride * data.count
+        ensureBonePaletteBufferCapacity(requiredBytes)
+        guard let buffer = bonePaletteBuffers[frameIndex] else { return nil }
+        MC_ASSERT(requiredBytes <= buffer.length, "Bone palette buffer too small for upload.")
+        _ = data.withUnsafeBytes { bytes in
+            memcpy(buffer.contents(), bytes.baseAddress, bytes.count)
+        }
+        return buffer
+    }
+
     fileprivate func instanceBuffer() -> MTLBuffer? {
         instanceBuffers[frameIndex] ?? nil
+    }
+
+    fileprivate func bonePaletteBuffer() -> MTLBuffer? {
+        bonePaletteBuffers[frameIndex] ?? nil
     }
 
     fileprivate func pickReadbackBuffer() -> MTLBuffer? {
@@ -739,6 +765,10 @@ public final class RendererFrameContextStorage {
             instanceBuffers = Array(repeating: nil, count: maxFramesInFlight)
             instanceBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
         }
+        if bonePaletteBuffers.count < maxFramesInFlight {
+            bonePaletteBuffers = Array(repeating: nil, count: maxFramesInFlight)
+            bonePaletteBufferCapacities = Array(repeating: 0, count: maxFramesInFlight)
+        }
         if pickReadbackBuffers.count < maxFramesInFlight {
             pickReadbackBuffers = Array(repeating: nil, count: maxFramesInFlight)
         }
@@ -778,6 +808,18 @@ public final class RendererFrameContextStorage {
         instanceBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
         instanceBuffers[frameIndex]?.label = "InstanceBuffer.Frame\(frameIndex)"
         instanceBufferCapacities[frameIndex] = newCapacity
+    }
+
+    private func ensureBonePaletteBufferCapacity(_ requiredBytes: Int) {
+        ensureFrameStorage()
+        let currentCapacity = bonePaletteBufferCapacities[frameIndex]
+        if let _ = bonePaletteBuffers[frameIndex], currentCapacity >= requiredBytes {
+            return
+        }
+        let newCapacity = max(requiredBytes, max(currentCapacity, 1) * 2)
+        bonePaletteBuffers[frameIndex] = device.makeBuffer(length: newCapacity, options: [.storageModeShared])
+        bonePaletteBuffers[frameIndex]?.label = "BonePaletteBuffer.Frame\\(frameIndex)"
+        bonePaletteBufferCapacities[frameIndex] = newCapacity
     }
 
     private func ensurePickReadbackBuffer() {

@@ -207,6 +207,8 @@ public class MCMesh {
         (descriptor.attributes[2] as! MDLVertexAttribute).name = MDLVertexAttributeTextureCoordinate
         (descriptor.attributes[3] as! MDLVertexAttribute).name = MDLVertexAttributeNormal
         (descriptor.attributes[4] as! MDLVertexAttribute).name = MDLVertexAttributeTangent
+        (descriptor.attributes[5] as! MDLVertexAttribute).name = MDLVertexAttributeJointIndices
+        (descriptor.attributes[6] as! MDLVertexAttribute).name = MDLVertexAttributeJointWeights
         let bufferAllocator = MTKMeshBufferAllocator(device: device)
         let asset = MDLAsset(url: assetURL, vertexDescriptor: descriptor, bufferAllocator: bufferAllocator)
         var mdlMeshes: [MDLMesh] = []
@@ -402,8 +404,18 @@ public class MCMesh {
                    color: SIMD4<Float> = SIMD4<Float>(1, 0, 1, 1),
                    texCoord: SIMD2<Float> = SIMD2<Float>(0, 0),
                    normal: SIMD3<Float> = SIMD3<Float>(0, 1, 0),
-                   tangent: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 1)) {
-        _vertices.append(Vertex(position: position, color: color, texCoord: texCoord, normal: normal, tangent: tangent))
+                   tangent: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 1),
+                   jointIndices: SIMD4<UInt16> = SIMD4<UInt16>(repeating: 0),
+                   jointWeights: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 0)) {
+        _vertices.append(
+            Vertex(position: position,
+                   color: color,
+                   texCoord: texCoord,
+                   normal: normal,
+                   tangent: tangent,
+                   jointIndices: jointIndices,
+                   jointWeights: jointWeights)
+        )
     }
     
     func addSimpleVertex(position: SIMD3<Float>) {

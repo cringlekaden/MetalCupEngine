@@ -205,6 +205,9 @@ public protocol ScriptRuntime: AnyObject {
     func onEntityDestroyed(entityId: UUID)
     func onComponentAdded(entityId: UUID, type: SceneECSComponentType)
     func onComponentRemoved(entityId: UUID, type: SceneECSComponentType)
+    /// Execution groups currently supported by the runtime contract are `.update` and `.fixedPrePhysics`.
+    func onExecutionGroup(_ group: ScriptExecutionGroup, dt: Float)
+    func onEvents(_ events: [ScriptEventBus.Event], domain: ScriptEventBus.Domain)
     func onUpdate(dt: Float)
     func onFixedUpdate(dt: Float)
     func onPhysicsEvents(events: [PhysicsScriptEvent])
@@ -219,6 +222,8 @@ public final class NullScriptRuntime: ScriptRuntime {
     public func onEntityDestroyed(entityId: UUID) {}
     public func onComponentAdded(entityId: UUID, type: SceneECSComponentType) {}
     public func onComponentRemoved(entityId: UUID, type: SceneECSComponentType) {}
+    public func onExecutionGroup(_ group: ScriptExecutionGroup, dt: Float) {}
+    public func onEvents(_ events: [ScriptEventBus.Event], domain: ScriptEventBus.Domain) {}
     public func onUpdate(dt: Float) {}
     public func onFixedUpdate(dt: Float) {}
     public func onPhysicsEvents(events: [PhysicsScriptEvent]) {}
@@ -339,6 +344,30 @@ public final class LuaScriptRuntime: ScriptRuntime {
                                  phase: phase,
                                  other: event.entityA,
                                  errorBuffer: &errorBuffer)
+        }
+    }
+
+    public func onExecutionGroup(_ group: ScriptExecutionGroup, dt: Float) {
+        switch group {
+        case .update:
+            onUpdate(dt: dt)
+        case .fixedPrePhysics:
+            onFixedUpdate(dt: dt)
+        }
+    }
+
+    public func onEvents(_ events: [ScriptEventBus.Event], domain: ScriptEventBus.Domain) {
+        _ = domain
+        guard !events.isEmpty else { return }
+        var physicsEvents: [PhysicsScriptEvent] = []
+        physicsEvents.reserveCapacity(events.count)
+        for event in events {
+            if case let .physics(payload) = event.payload {
+                physicsEvents.append(payload)
+            }
+        }
+        if !physicsEvents.isEmpty {
+            onPhysicsEvents(events: physicsEvents)
         }
     }
 

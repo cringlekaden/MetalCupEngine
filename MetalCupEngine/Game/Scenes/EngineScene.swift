@@ -10,14 +10,20 @@ public enum TransformMutationSource: CustomStringConvertible {
     case script
     case editor
     case physics
-    case system
+    case characterController
+    case engineSystem
+    case serialization
+    case prefab
 
     public var description: String {
         switch self {
         case .script: return "script"
         case .editor: return "editor"
         case .physics: return "physics"
-        case .system: return "system"
+        case .characterController: return "characterController"
+        case .engineSystem: return "engineSystem"
+        case .serialization: return "serialization"
+        case .prefab: return "prefab"
         }
     }
 }
@@ -36,6 +42,27 @@ public struct FixedStepMode: OptionSet {
 }
 
 public class EngineScene {
+    public enum TransformAuthorityMode: CustomStringConvertible {
+        case edit
+        case play
+        case simulate
+
+        public var description: String {
+            switch self {
+            case .edit: return "Edit"
+            case .play: return "Play"
+            case .simulate: return "Simulate"
+            }
+        }
+    }
+
+    public enum SimulateAnimationPolicy {
+        /// Option A: simulate previews should keep animation advancing even when runtime scripts are disabled.
+        case animateWithoutScripts
+        /// Option B fallback: freeze animation unless scripts are enabled.
+        case requireScriptExecution
+    }
+
     public struct FixedStepDiagnostics {
         public var renderDeltaTime: Float
         public var fixedDeltaTime: Float
@@ -78,12 +105,15 @@ public class EngineScene {
     private lazy var scriptSystem = ScriptSystemAdapter(scene: self)
     private let sceneSerializationService = SceneSerializationService()
     private let updateScheduler = SceneUpdateScheduler()
+    private let animationSystem = AnimationSystem()
+    private let audioSceneSystem = AudioSceneSystem()
 
     private let characterSystem = CharacterControllerSystem()
     private var fixedStepDiagnostics = FixedStepDiagnostics()
     private var isExecutingFixedStep: Bool = false
     private var currentInputKeys: [Bool] = []
     private var previousInputKeys: [Bool] = []
+    public private(set) var transformAuthorityMode: TransformAuthorityMode = .edit
 
     public var environmentMapHandle: AssetHandle?
 
@@ -108,7 +138,8 @@ public class EngineScene {
         updateScene(frame: frame,
                     isPlaying: isPlaying,
                     isPaused: isPaused,
-                    runRuntimeScripts: isPlaying && !isPaused)
+                    runRuntimeScripts: isPlaying && !isPaused,
+                    animateInSimulateWhenScriptsDisabled: false)
     }
 
     public func updateEdit(frame: FrameContext) {
@@ -118,20 +149,30 @@ public class EngineScene {
         }
 #endif
         runtime.stop()
-        updateScene(frame: frame, isPlaying: false, isPaused: false, runRuntimeScripts: false)
+        transformAuthorityMode = .edit
+        updateScene(frame: frame,
+                    isPlaying: false,
+                    isPaused: false,
+                    runRuntimeScripts: false,
+                    animateInSimulateWhenScriptsDisabled: false)
     }
 
-    public func updateSimulate(frame: FrameContext, scriptsEnabled: Bool = false) {
+    public func updateSimulate(frame: FrameContext,
+                               scriptsEnabled: Bool = false,
+                               animationPolicy: SimulateAnimationPolicy = .animateWithoutScripts) {
 #if DEBUG
         if runtime.isPlaying {
             assertionFailure("updateSimulate should not run while runtime is playing.")
         }
 #endif
         runtime.stop()
+        transformAuthorityMode = .simulate
+        let animateWithoutScripts = (animationPolicy == .animateWithoutScripts)
         updateScene(frame: frame,
                     isPlaying: false,
                     isPaused: false,
-                    runRuntimeScripts: scriptsEnabled)
+                    runRuntimeScripts: scriptsEnabled,
+                    animateInSimulateWhenScriptsDisabled: animateWithoutScripts)
     }
 
     public func updatePlay(frame: FrameContext, isPaused: Bool) {
@@ -140,21 +181,25 @@ public class EngineScene {
             assertionFailure("updatePlay requires runtime to be in play mode.")
         }
 #endif
+        transformAuthorityMode = .play
         updateScene(frame: frame,
                     isPlaying: true,
                     isPaused: isPaused,
-                    runRuntimeScripts: !isPaused)
+                    runRuntimeScripts: !isPaused,
+                    animateInSimulateWhenScriptsDisabled: false)
     }
 
     private func updateScene(frame: FrameContext,
                              isPlaying: Bool,
                              isPaused: Bool,
-                             runRuntimeScripts: Bool) {
+                             runRuntimeScripts: Bool,
+                             animateInSimulateWhenScriptsDisabled: Bool) {
         let request = SceneUpdateScheduler.UpdateRequest(
             frame: frame,
             isPlaying: isPlaying,
             isPaused: isPaused,
-            runRuntimeScripts: runRuntimeScripts
+            runRuntimeScripts: runRuntimeScripts,
+            animateInSimulateWhenScriptsDisabled: animateInSimulateWhenScriptsDisabled
         )
         let pipeline = SceneUpdateScheduler.UpdatePipeline(
             beginDebugFrame: {
@@ -164,7 +209,7 @@ public class EngineScene {
             },
             endDebugFrame: {
 #if DEBUG
-                self.transformAuthority.endDebugBypassDetectionFrame()
+                self.transformAuthority.assertNoExternalTransformWrites()
 #endif
             },
             updateInputSnapshot: { frame in
@@ -190,6 +235,14 @@ public class EngineScene {
             },
             scriptUpdate: { dt, runRuntimeScripts in
                 self.scriptSystem.update(dt: dt, runRuntimeScripts: runRuntimeScripts)
+            },
+            animationUpdate: { dt, isPlaying, runRuntimeScripts, animateInSimulateWhenScriptsDisabled in
+                let shouldAnimate = isPlaying || runRuntimeScripts || animateInSimulateWhenScriptsDisabled
+                guard shouldAnimate else { return }
+                self.animationSystem.update(scene: self, dt: dt)
+            },
+            audioUpdate: { frame in
+                self.audioSceneSystem.update(scene: self, frame: frame)
             },
             runtimeUpdate: { isPlaying, isPaused, totalTime in
                 guard isPlaying, !isPaused else { return }
@@ -398,6 +451,7 @@ public class EngineScene {
     }
 
     public func makeRenderFrameSnapshot(frameToken: UInt64, layerFilterMask: LayerMask) -> RenderFrameSnapshot {
+        let animationPreparation = animationSystem.prepareSnapshot(scene: self, layerFilterMask: layerFilterMask)
         let entries = ecs.viewTransformMeshRendererArray()
         var renderables: [RenderFrameSnapshot.Renderable] = []
         renderables.reserveCapacity(entries.count)
@@ -425,6 +479,7 @@ public class EngineScene {
         hasher.combine(renderables.count)
         hasher.combine(directionalLights.count)
         hasher.combine(localLights.count)
+        hasher.combine(animationPreparation.skinnedEntityCount)
         hasher.combine(activeSkyLight != nil)
         hasher.combine(_sceneConstants.cameraPositionAndIBL.x.bitPattern)
         hasher.combine(_sceneConstants.cameraPositionAndIBL.y.bitPattern)
@@ -439,6 +494,7 @@ public class EngineScene {
             directionalLights: directionalLights,
             localLights: localLights,
             directionalShadowLightDirection: shadowLightDirection,
+            animationPayload: animationPreparation.payload,
             renderables: renderables
         )
     }
@@ -516,8 +572,8 @@ public class EngineScene {
         let request = SceneUpdateScheduler.FixedRequest(mode: mode, fixedDelta: fixedDelta)
         let pipeline = SceneUpdateScheduler.FixedPipeline(
             profiler: engineContext?.renderer?.profiler,
-            scriptFixed: { executeScripts, fixedDelta in
-                self.scriptSystem.fixedUpdate(dt: executeScripts ? fixedDelta : 0.0)
+            scriptFixedPrePhysics: { executeScripts, fixedDelta in
+                self.scriptSystem.fixedPrePhysics(dt: fixedDelta, executeScripts: executeScripts)
             },
             characterFixed: { fixedDelta in
                 self.characterSystem.fixedStep(scene: self, fixedDelta: fixedDelta)
@@ -529,8 +585,11 @@ public class EngineScene {
                 guard dispatchEvents else { return nil }
                 return self.physicsSystem?.drainEvents()
             },
-            dispatchScriptPhysicsEvents: { events in
-                self.scriptSystem.dispatchPhysicsEvents(events)
+            scriptFixedPostPhysics: { executeScripts, dispatchEvents, fixedDelta, events in
+                self.scriptSystem.enqueuePhysicsEvents(events)
+                self.scriptSystem.fixedPostPhysics(dt: fixedDelta,
+                                                   executeScripts: executeScripts,
+                                                   dispatchEvents: dispatchEvents)
             }
         )
         isExecutingFixedStep = true
@@ -610,7 +669,7 @@ public class EngineScene {
         let entity = ecs.createEntity(name: "Editor Camera")
         _ = transformAuthority.setLocalTransform(entity: entity,
                                                  transform: TransformComponent(position: SIMD3<Float>(0, 3, 10)),
-                                                 source: .system)
+                                                 source: .engineSystem)
         ecs.add(CameraComponent(isPrimary: true, isEditor: true), to: entity)
     }
 
@@ -620,7 +679,7 @@ public class EngineScene {
             _editorCameraController.update(transform: &active.transform, frame: frame)
             _ = transformAuthority.setLocalTransform(entity: active.entity,
                                                      transform: active.transform,
-                                                     source: .system)
+                                                     source: .engineSystem)
         }
         let worldTransform = renderWorldTransform(for: active.entity)
         let viewportSize = frame.input.viewportSize
@@ -716,7 +775,7 @@ public class EngineScene {
                         transform.rotation = TransformMath.rotationForDirectionalLight(direction: simd_normalize(lightRayDirection))
                         _ = transformAuthority.setLocalTransform(entity: entity,
                                                                  transform: transform,
-                                                                 source: .system)
+                                                                 source: .engineSystem)
                     }
                 }
                 return
@@ -730,7 +789,7 @@ public class EngineScene {
             )
             _ = transformAuthority.setLocalTransform(entity: entity,
                                                      transform: transform,
-                                                     source: .system)
+                                                     source: .engineSystem)
 
             if orbit.affectsDirection,
                let light = ecs.get(LightComponent.self, for: entity),
@@ -740,7 +799,7 @@ public class EngineScene {
                     transform.rotation = TransformMath.rotationForDirectionalLight(direction: simd_normalize(direction))
                     _ = transformAuthority.setLocalTransform(entity: entity,
                                                              transform: transform,
-                                                             source: .system)
+                                                             source: .engineSystem)
                 }
             }
         }

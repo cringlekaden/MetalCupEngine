@@ -96,7 +96,7 @@ public enum SkySystem {
         transform.rotation = TransformMath.rotationForDirectionalLight(direction: lightRayDirection)
         _ = scene.transformAuthority.setLocalTransform(entity: sunEntity,
                                                        transform: transform,
-                                                       source: .system)
+                                                       source: .engineSystem)
         if ecs.get(NameComponent.self, for: sunEntity) == nil {
             ecs.add(NameComponent(name: "Sun"), to: sunEntity)
         }

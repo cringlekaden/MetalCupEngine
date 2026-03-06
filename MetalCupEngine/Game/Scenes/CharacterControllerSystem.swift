@@ -436,7 +436,7 @@ public final class CharacterControllerSystem {
                                                        scale: worldTransform.scale)
             _ = scene.transformAuthority.setWorldTransform(entity: entity,
                                                            transform: resolvedTransform,
-                                                           source: .physics)
+                                                           source: .characterController)
 
             let postGroundState = groundProvider.resolveGround(scene: scene,
                                                                physicsSystem: physicsSystem,
@@ -493,7 +493,7 @@ public final class CharacterControllerSystem {
                 pivotTransform.rotation = pitchQuat.vector
                 _ = scene.transformAuthority.setLocalTransform(entity: pivotEntity,
                                                                transform: pivotTransform,
-                                                               source: .physics)
+                                                               source: .characterController)
             }
 
             scene.ecs.add(controller, to: entity)

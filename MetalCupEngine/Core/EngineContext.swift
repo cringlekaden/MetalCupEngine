@@ -56,6 +56,7 @@ public final class EngineContext {
     public let debugDraw: DebugDraw
     public let pickingSystem: PickingSystem
     public var scriptRuntime: ScriptRuntime
+    public let audioEngineService: AudioEngineService
     public var rendererSettings: RendererSettings = RendererSettings()
     public let rendererDiagnostics = RendererDiagnosticsService()
     public var forwardPlusStats: ForwardPlusStats = ForwardPlusStats()
@@ -79,7 +80,8 @@ public final class EngineContext {
                 preferences: Preferences? = nil,
                 debugDraw: DebugDraw? = nil,
                 pickingSystem: PickingSystem? = nil,
-                scriptRuntime: ScriptRuntime? = nil) {
+                scriptRuntime: ScriptRuntime? = nil,
+                audioEngineService: AudioEngineService? = nil) {
         self.device = device
         self.commandQueue = commandQueue
         self.defaultLibrary = defaultLibrary
@@ -96,6 +98,7 @@ public final class EngineContext {
         self.debugDraw = debugDraw ?? DebugDraw()
         self.pickingSystem = pickingSystem ?? PickingSystem()
         self.scriptRuntime = scriptRuntime ?? NullScriptRuntime()
+        self.audioEngineService = audioEngineService ?? NullAudioEngineService()
         EngineLoggerContext.install(log)
 #if DEBUG
         TransformMath.runTransformSanityOnce()

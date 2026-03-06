@@ -51,6 +51,7 @@ public final class RenderPipelineStateLibrary: Library<RenderPipelineStateType, 
         //  - [[buffer(0)]] Vertex (pos/color/uv/normal/tangent.xyz + tangent.w handedness)
         //  - [[buffer(1)]] SceneConstants (SceneConstants)
         //  - [[buffer(3)]] InstanceData (InstanceData) for all mesh draws
+        //  - [[buffer(4)]] Bone palette matrices (float4x4[]) when skinning is enabled
         // Fragment buffers:
         //  - [[buffer(1)]] Material (MetalCupMaterial)
         //  - [[buffer(2)]] RendererSettings (RendererSettings)

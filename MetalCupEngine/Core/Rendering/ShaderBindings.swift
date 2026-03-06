@@ -9,6 +9,7 @@ enum ShaderBindings {
         static let sceneConstants = 1
         static let modelConstants = 2
         static let instances = 3
+        static let bonePalette = 4
         static let cubemapViewProjection = 1
     }
 

@@ -28,9 +28,13 @@ public final class AssetManager {
     private var textureFailureLoggedPaths: Set<String> = []
     private var meshCache: [AssetHandle: MCMesh] = [:]
     private var materialCache: [AssetHandle: MaterialAsset] = [:]
+    private var skeletonCache: [AssetHandle: SkeletonAsset] = [:]
+    private var animationClipCache: [AssetHandle: AnimationClipAsset] = [:]
     private var materialCacheModified: [AssetHandle: TimeInterval] = [:]
     private var runtimeTextureHandles = Set<AssetHandle>()
     private var runtimeMeshHandles = Set<AssetHandle>()
+    private var runtimeSkeletonHandles = Set<AssetHandle>()
+    private var runtimeAnimationClipHandles = Set<AssetHandle>()
     private var cacheRevision: UInt64 = 0
     private let cacheLock = NSLock()
 
@@ -232,6 +236,20 @@ public final class AssetManager {
         return nil
     }
 
+    public func skeleton(handle: AssetHandle) -> SkeletonAsset? {
+        cacheLock.lock()
+        let cached = skeletonCache[handle]
+        cacheLock.unlock()
+        return cached
+    }
+
+    public func animationClip(handle: AssetHandle) -> AnimationClipAsset? {
+        cacheLock.lock()
+        let cached = animationClipCache[handle]
+        cacheLock.unlock()
+        return cached
+    }
+
     public func registerRuntimeTexture(handle: AssetHandle, texture: MTLTexture) {
         cacheLock.lock()
         textureCache[handle] = texture
@@ -244,6 +262,22 @@ public final class AssetManager {
         cacheLock.lock()
         meshCache[handle] = mesh
         runtimeMeshHandles.insert(handle)
+        cacheRevision &+= 1
+        cacheLock.unlock()
+    }
+
+    public func registerRuntimeSkeleton(handle: AssetHandle, skeleton: SkeletonAsset) {
+        cacheLock.lock()
+        skeletonCache[handle] = skeleton
+        runtimeSkeletonHandles.insert(handle)
+        cacheRevision &+= 1
+        cacheLock.unlock()
+    }
+
+    public func registerRuntimeAnimationClip(handle: AssetHandle, clip: AnimationClipAsset) {
+        cacheLock.lock()
+        animationClipCache[handle] = clip
+        runtimeAnimationClipHandles.insert(handle)
         cacheRevision &+= 1
         cacheLock.unlock()
     }
@@ -269,6 +303,8 @@ public final class AssetManager {
         textureFailureCacheByPath.removeAll()
         textureFailureLoggedPaths.removeAll()
         meshCache = meshCache.filter { runtimeMeshHandles.contains($0.key) }
+        skeletonCache = skeletonCache.filter { runtimeSkeletonHandles.contains($0.key) }
+        animationClipCache = animationClipCache.filter { runtimeAnimationClipHandles.contains($0.key) }
         materialCache.removeAll()
         materialCacheModified.removeAll()
         cacheRevision &+= 1

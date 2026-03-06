@@ -50,6 +50,12 @@ struct DefaultVertexDescriptor: VertexDescriptor {
         vertexDescriptor.attributes[4].format = .float4
         vertexDescriptor.attributes[4].bufferIndex = 0
         vertexDescriptor.attributes[4].offset = MemoryLayout<Vertex>.offset(of: \Vertex.tangent) ?? 0
+        vertexDescriptor.attributes[5].format = .ushort4
+        vertexDescriptor.attributes[5].bufferIndex = 0
+        vertexDescriptor.attributes[5].offset = MemoryLayout<Vertex>.offset(of: \Vertex.jointIndices) ?? 0
+        vertexDescriptor.attributes[6].format = .float4
+        vertexDescriptor.attributes[6].bufferIndex = 0
+        vertexDescriptor.attributes[6].offset = MemoryLayout<Vertex>.offset(of: \Vertex.jointWeights) ?? 0
         vertexDescriptor.layouts[0].stride = Vertex.stride
     }
 }

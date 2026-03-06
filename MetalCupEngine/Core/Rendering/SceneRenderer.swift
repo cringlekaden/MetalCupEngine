@@ -23,6 +23,7 @@ public struct RenderFrameSnapshot {
     let directionalLights: [LightData]
     let localLights: [LightData]
     let directionalShadowLightDirection: SIMD3<Float>?
+    let animationPayload: AnimationSnapshotPayload?
     let renderables: [Renderable]
 }
 
@@ -95,6 +96,8 @@ public enum SceneRenderer {
             encoder.popDebugGroup()
             return
         }
+        // Reserved seam for future skinning data consumption.
+        _ = snapshot.animationPayload
         prepareLightingInputs(snapshot: snapshot, frameContext: frameContext)
         syncIBLTextures(snapshot: snapshot, frameContext: frameContext)
         let sceneConstantsBuffer = resolvedSceneConstantsBuffer(snapshot: snapshot, frameContext: frameContext)
@@ -216,6 +219,14 @@ public enum SceneRenderer {
                                      shadowCullVolume: ShadowCullVolume? = nil) {
         let batchResult = currentBatchResult(snapshot: snapshot, frameContext: frameContext)
         guard let instanceBuffer = batchResult.instanceBuffer else { return }
+        if let bonePaletteBuffer = batchResult.bonePaletteBuffer {
+            encoder.setVertexBuffer(bonePaletteBuffer, offset: 0, index: VertexBufferIndex.bonePalette)
+        } else {
+            var identityPalette = matrix_identity_float4x4
+            encoder.setVertexBytes(&identityPalette,
+                                   length: MemoryLayout<matrix_float4x4>.stride,
+                                   index: VertexBufferIndex.bonePalette)
+        }
         bindSceneConstants(encoder, snapshot: snapshot, frameContext: frameContext, overrideBuffer: sceneConstantsBuffer)
         let instanceStride = InstanceData.stride
         for batch in batchResult.batches {
@@ -689,6 +700,7 @@ public enum SceneRenderer {
         let meshHandle: AssetHandle
         let mesh: MCMesh
         let transform: TransformComponent
+        let bonePaletteRange: AnimationSnapshotPayload.BonePaletteRange?
         let bindings: MaterialBindings
         let bounds: InstanceBounds
     }
@@ -727,6 +739,7 @@ public enum SceneRenderer {
         let instanceBounds: [InstanceBounds]
         let batches: [RenderBatch]
         let instanceBuffer: MTLBuffer?
+        let bonePaletteBuffer: MTLBuffer?
     }
 
     struct ShadowCullVolume {
@@ -869,6 +882,11 @@ public enum SceneRenderer {
                                          engineContext: EngineContext) -> [RenderItem] {
         var renderItems: [RenderItem] = []
         renderItems.reserveCapacity(snapshot.renderables.count)
+        let skinnedEntries: [AnimationSnapshotPayload.SkinnedEntry] = snapshot.animationPayload?.skinnedEntries ?? []
+        let paletteRangesByEntity: [Entity: AnimationSnapshotPayload.BonePaletteRange] = Dictionary(uniqueKeysWithValues: skinnedEntries.compactMap { entry in
+            guard let range = entry.bonePaletteRange else { return nil }
+            return (entry.entity, range)
+        })
 
         for renderable in snapshot.renderables {
             guard let meshHandle = renderable.meshHandle,
@@ -881,6 +899,7 @@ public enum SceneRenderer {
                 meshHandle: meshHandle,
                 mesh: mesh,
                 transform: transform,
+                bonePaletteRange: paletteRangesByEntity[renderable.entity],
                 bindings: bindings,
                 bounds: worldBounds
             ))
@@ -916,6 +935,11 @@ public enum SceneRenderer {
             var instance = InstanceData()
             instance.modelMatrix = modelMatrix(for: item.transform)
             instance.entityID = pickId
+            if let range = item.bonePaletteRange, range.count > 0 {
+                instance.bonePaletteOffset = UInt32(range.startIndex)
+                instance.bonePaletteCount = UInt32(range.count)
+                instance.skinningFlags = 1
+            }
             builder.instances.append(instance)
             builder.bounds.append(item.bounds)
             builders[key] = builder
@@ -940,6 +964,7 @@ public enum SceneRenderer {
         }
 
         let instanceBuffer = frameContext.uploadInstanceData(instances)
+        let bonePaletteBuffer = frameContext.uploadBonePaletteData(snapshot.animationPayload?.bonePaletteMatrices ?? [])
 
 #if DEBUG
         if !didInstanceSanityCheck, let instanceBuffer, let first = instances.first {
@@ -974,7 +999,11 @@ public enum SceneRenderer {
         if let profiler {
             profiler.record(.renderBatches, seconds: CACurrentMediaTime() - buildStart)
         }
-        return RenderBatchResult(instances: instances, instanceBounds: instanceBounds, batches: batches, instanceBuffer: instanceBuffer)
+        return RenderBatchResult(instances: instances,
+                                 instanceBounds: instanceBounds,
+                                 batches: batches,
+                                 instanceBuffer: instanceBuffer,
+                                 bonePaletteBuffer: bonePaletteBuffer)
     }
 
     private static func resolveMaterialBindings(renderable: RenderFrameSnapshot.Renderable,

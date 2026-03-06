@@ -564,6 +564,10 @@ public enum PrefabOverrideType: String, Codable, CaseIterable {
     case skyLight
     case skyLightTag
     case skySunTag
+    case skinnedMesh
+    case animator
+    case audioSource
+    case audioListener
 }
 
 public struct PrefabOverrideComponent {
@@ -630,6 +634,93 @@ public struct MeshRendererComponent {
         self.ormMapHandle = ormMapHandle
         self.aoMapHandle = aoMapHandle
         self.emissiveMapHandle = emissiveMapHandle
+    }
+}
+
+public struct SkinnedMeshComponent {
+    public var skeletonHandle: AssetHandle?
+    public var rootBoneName: String
+
+    public init(skeletonHandle: AssetHandle? = nil, rootBoneName: String = "") {
+        self.skeletonHandle = skeletonHandle
+        self.rootBoneName = rootBoneName
+    }
+}
+
+public struct AnimationPoseRuntimeState {
+    public var sampleTime: Float
+    public var localPose: [TransformComponent]
+    public var globalPose: [TransformComponent]
+
+    public init(sampleTime: Float = 0.0,
+                localPose: [TransformComponent] = [],
+                globalPose: [TransformComponent] = []) {
+        self.sampleTime = sampleTime
+        self.localPose = localPose
+        self.globalPose = globalPose
+    }
+}
+
+public struct AnimatorComponent {
+    public var clipHandle: AssetHandle?
+    public var playbackTime: Float
+    public var isPlaying: Bool
+    public var isLooping: Bool
+    public var poseRuntimeState: AnimationPoseRuntimeState?
+
+    public init(clipHandle: AssetHandle? = nil,
+                playbackTime: Float = 0.0,
+                isPlaying: Bool = true,
+                isLooping: Bool = true,
+                poseRuntimeState: AnimationPoseRuntimeState? = nil) {
+        self.clipHandle = clipHandle
+        self.playbackTime = playbackTime
+        self.isPlaying = isPlaying
+        self.isLooping = isLooping
+        self.poseRuntimeState = poseRuntimeState
+    }
+}
+
+public struct AudioSourceComponent {
+    public var isEnabled: Bool
+    public var audioAssetHandle: AssetHandle?
+    public var volume: Float
+    public var pitch: Float
+    public var isLooping: Bool
+    public var playOnAwake: Bool
+    public var isSpatialized: Bool
+    public var maxDistance: Float
+    public var isPlaying: Bool
+
+    public init(isEnabled: Bool = true,
+                audioAssetHandle: AssetHandle? = nil,
+                volume: Float = 1.0,
+                pitch: Float = 1.0,
+                isLooping: Bool = false,
+                playOnAwake: Bool = false,
+                isSpatialized: Bool = true,
+                maxDistance: Float = 25.0,
+                isPlaying: Bool = false) {
+        self.isEnabled = isEnabled
+        self.audioAssetHandle = audioAssetHandle
+        self.volume = volume
+        self.pitch = pitch
+        self.isLooping = isLooping
+        self.playOnAwake = playOnAwake
+        self.isSpatialized = isSpatialized
+        self.maxDistance = maxDistance
+        self.isPlaying = isPlaying
+    }
+}
+
+public struct AudioListenerComponent {
+    public var isEnabled: Bool
+    public var isPrimary: Bool
+
+    public init(isEnabled: Bool = true,
+                isPrimary: Bool = true) {
+        self.isEnabled = isEnabled
+        self.isPrimary = isPrimary
     }
 }
 

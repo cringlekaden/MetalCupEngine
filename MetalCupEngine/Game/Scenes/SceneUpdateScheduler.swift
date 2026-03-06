@@ -6,6 +6,7 @@ struct SceneUpdateScheduler {
         let isPlaying: Bool
         let isPaused: Bool
         let runRuntimeScripts: Bool
+        let animateInSimulateWhenScriptsDisabled: Bool
     }
 
     struct UpdatePipeline {
@@ -18,6 +19,8 @@ struct SceneUpdateScheduler {
         let updateSky: () -> Void
         let handleRuntimeCursorToggle: (_ isPlaying: Bool) -> Void
         let scriptUpdate: (_ dt: Float, _ runRuntimeScripts: Bool) -> Void
+        let animationUpdate: (_ dt: Float, _ isPlaying: Bool, _ runRuntimeScripts: Bool, _ animateInSimulateWhenScriptsDisabled: Bool) -> Void
+        let audioUpdate: (_ frame: FrameContext) -> Void
         let runtimeUpdate: (_ isPlaying: Bool, _ isPaused: Bool, _ totalTime: Float) -> Void
         let syncLights: () -> Void
     }
@@ -29,11 +32,11 @@ struct SceneUpdateScheduler {
 
     struct FixedPipeline {
         let profiler: RendererProfiler?
-        let scriptFixed: (_ executeScripts: Bool, _ fixedDelta: Float) -> Void
+        let scriptFixedPrePhysics: (_ executeScripts: Bool, _ fixedDelta: Float) -> Void
         let characterFixed: (_ fixedDelta: Float) -> Void
         let physicsStep: (_ fixedDelta: Float) -> Void
         let drainPhysicsEvents: (_ dispatchEvents: Bool) -> [PhysicsScriptEvent]?
-        let dispatchScriptPhysicsEvents: (_ events: [PhysicsScriptEvent]) -> Void
+        let scriptFixedPostPhysics: (_ executeScripts: Bool, _ dispatchEvents: Bool, _ fixedDelta: Float, _ events: [PhysicsScriptEvent]) -> Void
     }
 
     func runUpdate(request: UpdateRequest, pipeline: UpdatePipeline) {
@@ -46,6 +49,11 @@ struct SceneUpdateScheduler {
         pipeline.updateSky()
         pipeline.handleRuntimeCursorToggle(request.isPlaying)
         pipeline.scriptUpdate(request.frame.time.deltaTime, request.runRuntimeScripts)
+        pipeline.animationUpdate(request.frame.time.deltaTime,
+                                 request.isPlaying,
+                                 request.runRuntimeScripts,
+                                 request.animateInSimulateWhenScriptsDisabled)
+        pipeline.audioUpdate(request.frame)
         pipeline.runtimeUpdate(request.isPlaying, request.isPaused, request.frame.time.totalTime)
         pipeline.syncLights()
     }
@@ -66,7 +74,7 @@ struct SceneUpdateScheduler {
         }
 
         recordScope(.scriptFixed, profiler: pipeline.profiler) {
-            pipeline.scriptFixed(request.mode.contains(.executeScripts), request.fixedDelta)
+            pipeline.scriptFixedPrePhysics(request.mode.contains(.executeScripts), request.fixedDelta)
         }
         recordScope(.characterFixed, profiler: pipeline.profiler) {
             pipeline.characterFixed(request.fixedDelta)
@@ -79,15 +87,13 @@ struct SceneUpdateScheduler {
         recordScope(.physicsEvents, profiler: pipeline.profiler) {
             drainedEvents = pipeline.drainPhysicsEvents(request.mode.contains(.dispatchScriptEvents))
         }
-        if let events = drainedEvents, !events.isEmpty {
-            recordScope(.scriptPhysicsDispatch, profiler: pipeline.profiler) {
-                pipeline.dispatchScriptPhysicsEvents(events)
-            }
+        let fixedEvents = drainedEvents ?? []
+        recordScope(.scriptPhysicsDispatch, profiler: pipeline.profiler) {
+            pipeline.scriptFixedPostPhysics(request.mode.contains(.executeScripts),
+                                            request.mode.contains(.dispatchScriptEvents),
+                                            request.fixedDelta,
+                                            fixedEvents)
         }
         return request.fixedDelta
-    }
-
-    func runLateUpdate(dt: Float, stage: (_ dt: Float) -> Void) {
-        stage(dt)
     }
 }
