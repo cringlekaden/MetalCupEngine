@@ -290,17 +290,29 @@ public struct AnimatorComponentDTO: Codable {
     public var schemaVersion: Int
     public var clipHandle: AssetHandle?
     public var playbackTime: Float
+    public var playbackSpeed: Float
     public var isPlaying: Bool
     public var isLooping: Bool
+    
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case clipHandle
+        case playbackTime
+        case playbackSpeed
+        case isPlaying
+        case isLooping
+    }
 
     public init(schemaVersion: Int = 1,
                 clipHandle: AssetHandle?,
                 playbackTime: Float,
+                playbackSpeed: Float = 1.0,
                 isPlaying: Bool,
                 isLooping: Bool) {
         self.schemaVersion = schemaVersion
         self.clipHandle = clipHandle
         self.playbackTime = playbackTime
+        self.playbackSpeed = playbackSpeed
         self.isPlaying = isPlaying
         self.isLooping = isLooping
     }
@@ -309,6 +321,7 @@ public struct AnimatorComponentDTO: Codable {
         self.schemaVersion = 1
         self.clipHandle = component.clipHandle
         self.playbackTime = component.playbackTime
+        self.playbackSpeed = component.playbackSpeed
         self.isPlaying = component.isPlaying
         self.isLooping = component.isLooping
     }
@@ -316,8 +329,19 @@ public struct AnimatorComponentDTO: Codable {
     public func toComponent() -> AnimatorComponent {
         AnimatorComponent(clipHandle: clipHandle,
                           playbackTime: playbackTime,
+                          playbackSpeed: playbackSpeed,
                           isPlaying: isPlaying,
                           isLooping: isLooping)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        self.clipHandle = try container.decodeIfPresent(AssetHandle.self, forKey: .clipHandle)
+        self.playbackTime = try container.decodeIfPresent(Float.self, forKey: .playbackTime) ?? 0.0
+        self.playbackSpeed = try container.decodeIfPresent(Float.self, forKey: .playbackSpeed) ?? 1.0
+        self.isPlaying = try container.decodeIfPresent(Bool.self, forKey: .isPlaying) ?? true
+        self.isLooping = try container.decodeIfPresent(Bool.self, forKey: .isLooping) ?? true
     }
 }
 

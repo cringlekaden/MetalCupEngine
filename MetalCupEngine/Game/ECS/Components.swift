@@ -664,17 +664,20 @@ public struct AnimationPoseRuntimeState {
 public struct AnimatorComponent {
     public var clipHandle: AssetHandle?
     public var playbackTime: Float
+    public var playbackSpeed: Float
     public var isPlaying: Bool
     public var isLooping: Bool
     public var poseRuntimeState: AnimationPoseRuntimeState?
 
     public init(clipHandle: AssetHandle? = nil,
                 playbackTime: Float = 0.0,
+                playbackSpeed: Float = 1.0,
                 isPlaying: Bool = true,
                 isLooping: Bool = true,
                 poseRuntimeState: AnimationPoseRuntimeState? = nil) {
         self.clipHandle = clipHandle
         self.playbackTime = playbackTime
+        self.playbackSpeed = playbackSpeed
         self.isPlaying = isPlaying
         self.isLooping = isLooping
         self.poseRuntimeState = poseRuntimeState

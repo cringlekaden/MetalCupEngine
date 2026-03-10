@@ -61,6 +61,8 @@ public enum SceneRenderer {
 
     #if DEBUG
     private static var didInstanceSanityCheck = false
+    private static var invalidSkinningLogKeys: Set<String> = []
+    private static var validSkinningLogKeys: Set<String> = []
     #endif
     @discardableResult
     public static func render(scene: EngineScene, view: SceneView, context: RenderContext, frameContext: RendererFrameContext) -> RenderOutputs {
@@ -701,6 +703,7 @@ public enum SceneRenderer {
         let mesh: MCMesh
         let transform: TransformComponent
         let bonePaletteRange: AnimationSnapshotPayload.BonePaletteRange?
+        let skinnedEntry: AnimationSnapshotPayload.SkinnedEntry?
         let bindings: MaterialBindings
         let bounds: InstanceBounds
     }
@@ -887,6 +890,9 @@ public enum SceneRenderer {
             guard let range = entry.bonePaletteRange else { return nil }
             return (entry.entity, range)
         })
+        let skinnedEntriesByEntity: [Entity: AnimationSnapshotPayload.SkinnedEntry] = Dictionary(
+            uniqueKeysWithValues: skinnedEntries.map { ($0.entity, $0) }
+        )
 
         for renderable in snapshot.renderables {
             guard let meshHandle = renderable.meshHandle,
@@ -900,6 +906,7 @@ public enum SceneRenderer {
                 mesh: mesh,
                 transform: transform,
                 bonePaletteRange: paletteRangesByEntity[renderable.entity],
+                skinnedEntry: skinnedEntriesByEntity[renderable.entity],
                 bindings: bindings,
                 bounds: worldBounds
             ))
@@ -935,10 +942,22 @@ public enum SceneRenderer {
             var instance = InstanceData()
             instance.modelMatrix = modelMatrix(for: item.transform)
             instance.entityID = pickId
-            if let range = item.bonePaletteRange, range.count > 0 {
-                instance.bonePaletteOffset = UInt32(range.startIndex)
-                instance.bonePaletteCount = UInt32(range.count)
-                instance.skinningFlags = 1
+            if let range = validatedSkinningRange(item: item,
+                                                  snapshot: snapshot,
+                                                  engineContext: engineContext) {
+                let maxUInt32AsInt = Int(UInt32.max)
+                if range.startIndex >= 0,
+                   range.count > 0,
+                   range.startIndex <= maxUInt32AsInt,
+                   range.count <= maxUInt32AsInt {
+                    instance.bonePaletteOffset = UInt32(range.startIndex)
+                    instance.bonePaletteCount = UInt32(range.count)
+                    instance.skinningFlags = 1
+                } else {
+#if DEBUG
+                    MC_ASSERT(false, "Bone palette range exceeds UInt32 limits; skinning disabled for this draw instance.")
+#endif
+                }
             }
             builder.instances.append(instance)
             builder.bounds.append(item.bounds)
@@ -1109,6 +1128,82 @@ public enum SceneRenderer {
             cullMode: cullMode,
             passKey: passKey
         )
+    }
+
+    private static func validatedSkinningRange(item: RenderItem,
+                                               snapshot: RenderFrameSnapshot,
+                                               engineContext: EngineContext) -> AnimationSnapshotPayload.BonePaletteRange? {
+        guard let entry = item.skinnedEntry else { return nil }
+        guard item.mesh.hasValidSkinningVertexStreams() else {
+            logInvalidSkinningSetupOnce(
+                entity: item.entity,
+                reason: "missing joint index/weight vertex streams (\(item.mesh.skinningStreamDebugState()))"
+            )
+            return nil
+        }
+        guard let skeletonHandle = entry.skeletonHandle,
+              let skeleton = engineContext.assets.skeleton(handle: skeletonHandle),
+              !skeleton.joints.isEmpty else {
+            logInvalidSkinningSetupOnce(entity: item.entity, reason: "missing or invalid skeleton asset")
+            return nil
+        }
+        guard entry.evaluatedJointCount > 0 else {
+            logInvalidSkinningSetupOnce(entity: item.entity, reason: "no evaluated joints in animation pose")
+            return nil
+        }
+        guard let range = item.bonePaletteRange,
+              range.startIndex >= 0,
+              range.count > 0 else {
+            logInvalidSkinningSetupOnce(entity: item.entity, reason: "missing or empty bone palette range")
+            return nil
+        }
+        guard range.count <= entry.evaluatedJointCount,
+              range.count <= skeleton.joints.count else {
+            logInvalidSkinningSetupOnce(entity: item.entity, reason: "bone palette count exceeds evaluated pose/skeleton")
+            return nil
+        }
+        let totalPaletteCount = snapshot.animationPayload?.bonePaletteMatrices.count ?? 0
+        guard range.startIndex <= totalPaletteCount,
+              range.count <= (totalPaletteCount - range.startIndex) else {
+            logInvalidSkinningSetupOnce(entity: item.entity, reason: "bone palette range out of snapshot bounds")
+            return nil
+        }
+        logValidSkinningSetupOnce(
+            entity: item.entity,
+            range: range,
+            skeletonJointCount: skeleton.joints.count,
+            evaluatedJointCount: entry.evaluatedJointCount
+        )
+        return range
+    }
+
+    private static func logInvalidSkinningSetupOnce(entity: Entity, reason: String) {
+#if DEBUG
+        let key = "\(entity.id.uuidString)|\(reason)"
+        guard !invalidSkinningLogKeys.contains(key) else { return }
+        invalidSkinningLogKeys.insert(key)
+        EngineLoggerContext.log(
+            "Skinned mesh validation failed for entity \(entity.id.uuidString): \(reason). Falling back to non-skinned draw.",
+            level: .warning,
+            category: .renderer
+        )
+#endif
+    }
+
+    private static func logValidSkinningSetupOnce(entity: Entity,
+                                                  range: AnimationSnapshotPayload.BonePaletteRange,
+                                                  skeletonJointCount: Int,
+                                                  evaluatedJointCount: Int) {
+#if DEBUG
+        let key = "\(entity.id.uuidString)|\(range.startIndex)|\(range.count)"
+        guard !validSkinningLogKeys.contains(key) else { return }
+        validSkinningLogKeys.insert(key)
+        EngineLoggerContext.log(
+            "Skinned mesh validation summary entity=\(entity.id.uuidString)\nbonePaletteStart=\(range.startIndex)\nbonePaletteCount=\(range.count)\nskeletonJointCount=\(skeletonJointCount)\nevaluatedJointCount=\(evaluatedJointCount)",
+            level: .debug,
+            category: .renderer
+        )
+#endif
     }
 
     private static func makeMaterialKey(bindings: MaterialBindings) -> MaterialBatchKey {

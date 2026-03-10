@@ -60,17 +60,20 @@ public struct SkeletonAsset {
         public var bindLocalPosition: SIMD3<Float>
         public var bindLocalRotation: SIMD4<Float>
         public var bindLocalScale: SIMD3<Float>
+        public var inverseBindGlobalMatrix: simd_float4x4?
 
         public init(name: String,
                     parentIndex: Int,
                     bindLocalPosition: SIMD3<Float> = .zero,
                     bindLocalRotation: SIMD4<Float> = TransformMath.identityQuaternion,
-                    bindLocalScale: SIMD3<Float> = SIMD3<Float>(repeating: 1.0)) {
+                    bindLocalScale: SIMD3<Float> = SIMD3<Float>(repeating: 1.0),
+                    inverseBindGlobalMatrix: simd_float4x4? = nil) {
             self.name = name
             self.parentIndex = parentIndex
             self.bindLocalPosition = bindLocalPosition
             self.bindLocalRotation = TransformMath.normalizedQuaternion(bindLocalRotation)
             self.bindLocalScale = bindLocalScale
+            self.inverseBindGlobalMatrix = inverseBindGlobalMatrix
         }
     }
 

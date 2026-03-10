@@ -6,6 +6,29 @@ import MetalKit
 import Foundation
 import ModelIO
 
+private struct BakedMeshVertexDocument: Codable {
+    let position: [Float]
+    let normal: [Float]?
+    let tangent: [Float]?
+    let texCoord0: [Float]?
+    let jointIndices: [UInt16]?
+    let jointWeights: [Float]?
+}
+
+private struct BakedMeshSubmeshDocument: Codable {
+    let name: String
+    let materialIndex: Int
+    let indices: [UInt32]
+}
+
+private struct BakedMeshDocument: Codable {
+    let schemaVersion: Int
+    let name: String
+    let hasSkinning: Bool
+    let vertices: [BakedMeshVertexDocument]
+    let submeshes: [BakedMeshSubmeshDocument]
+}
+
 private let textureMapFlags: MetalCupMaterialFlags = [
     .hasBaseColorMap,
     .hasNormalMap,
@@ -165,6 +188,8 @@ public class MCMesh {
     private var _simpleVertexBuffer: MTLBuffer! = nil
     private var _instanceCount: Int = 1
     private var _submeshes: [Submesh] = []
+    private var hasJointIndexStream: Bool = false
+    private var hasJointWeightStream: Bool = false
     private var localBoundsCenter = SIMD3<Float>(repeating: 0)
     private var localBoundsRadius: Float = 1_000.0
 
@@ -172,6 +197,7 @@ public class MCMesh {
     var boundsRadius: Float { localBoundsRadius }
     public var editorBoundsCenter: SIMD3<Float> { localBoundsCenter }
     public var editorBoundsRadius: Float { localBoundsRadius }
+    public var vertexCount: Int { _vertexCount }
 
     init(device: MTLDevice, graphics: Graphics, assetManager: AssetManager? = nil) {
         self.device = device
@@ -193,14 +219,22 @@ public class MCMesh {
     private func createBuffer() {
         if(_vertices.count > 0){
             _vertexBuffer = device.makeBuffer(bytes: _vertices, length: Vertex.stride(_vertices.count), options: [])
+            hasJointIndexStream = true
+            hasJointWeightStream = true
             updateBoundsFromVertices()
         } else if(_simpleVertices.count > 0) {
             _simpleVertexBuffer = device.makeBuffer(bytes: _simpleVertices, length: SimpleVertex.stride(_simpleVertices.count), options: [])
+            hasJointIndexStream = false
+            hasJointWeightStream = false
             updateBoundsFromSimpleVertices()
         }
     }
     
     private func createMeshFromURL(_ assetURL: URL, name: String) {
+        if assetURL.pathExtension.lowercased() == "mcmesh" {
+            createMeshFromBakedURL(assetURL, name: name)
+            return
+        }
         let descriptor = MTKModelIOVertexDescriptorFromMetal(graphics.vertexDescriptors[.Default])
         (descriptor.attributes[0] as! MDLVertexAttribute).name = MDLVertexAttributePosition
         (descriptor.attributes[1] as! MDLVertexAttribute).name = MDLVertexAttributeColor
@@ -285,6 +319,15 @@ public class MCMesh {
         }
         self._vertexBuffer = mtkMesh.vertexBuffers[0].buffer
         self._vertexCount = mtkMesh.vertexCount
+        hasJointIndexStream = hasVertexAttribute(mdlMesh, name: MDLVertexAttributeJointIndices)
+        hasJointWeightStream = hasVertexAttribute(mdlMesh, name: MDLVertexAttributeJointWeights)
+#if DEBUG
+        EngineLoggerContext.log(
+            "Mesh runtime load path=\(assetURL.path)\nvertexCount=\(_vertexCount)\nhasJointIndices=\(hasJointIndexStream)\nhasJointWeights=\(hasJointWeightStream)",
+            level: .debug,
+            category: .assets
+        )
+#endif
         updateBoundsFromModelMesh(mdlMesh)
         for i in 0..<mtkMesh.submeshes.count {
             let mtkSubmesh = mtkMesh.submeshes[i]
@@ -316,6 +359,91 @@ public class MCMesh {
     private func hasVertexAttribute(_ mesh: MDLMesh, name: String) -> Bool {
         guard let data = mesh.vertexAttributeData(forAttributeNamed: name) else { return false }
         return data.stride > 0
+    }
+
+    private func createMeshFromBakedURL(_ assetURL: URL, name: String) {
+        do {
+            let data = try Data(contentsOf: assetURL)
+            let document = try JSONDecoder().decode(BakedMeshDocument.self, from: data)
+            guard !document.vertices.isEmpty else {
+                EngineLoggerContext.log(
+                    "Mesh load failed \(name): baked mesh has no vertices.",
+                    level: .error,
+                    category: .assets
+                )
+                return
+            }
+
+            _vertices.removeAll(keepingCapacity: true)
+            _simpleVertices.removeAll(keepingCapacity: true)
+            _submeshes.removeAll(keepingCapacity: true)
+            _vertices.reserveCapacity(document.vertices.count)
+
+            for sourceVertex in document.vertices {
+                guard sourceVertex.position.count >= 3 else { continue }
+                let position = SIMD3<Float>(sourceVertex.position[0], sourceVertex.position[1], sourceVertex.position[2])
+                let normal = sourceVertex.normal.flatMap { value -> SIMD3<Float>? in
+                    guard value.count >= 3 else { return nil }
+                    return SIMD3<Float>(value[0], value[1], value[2])
+                } ?? SIMD3<Float>(0, 1, 0)
+                let tangent = sourceVertex.tangent.flatMap { value -> SIMD4<Float>? in
+                    guard value.count >= 4 else { return nil }
+                    return SIMD4<Float>(value[0], value[1], value[2], value[3])
+                } ?? SIMD4<Float>(1, 0, 0, 1)
+                let texCoord = sourceVertex.texCoord0.flatMap { value -> SIMD2<Float>? in
+                    guard value.count >= 2 else { return nil }
+                    return SIMD2<Float>(value[0], value[1])
+                } ?? SIMD2<Float>(0, 0)
+                let jointIndices = sourceVertex.jointIndices.flatMap { value -> SIMD4<UInt16>? in
+                    guard value.count >= 4 else { return nil }
+                    return SIMD4<UInt16>(value[0], value[1], value[2], value[3])
+                } ?? SIMD4<UInt16>(0, 0, 0, 0)
+                let jointWeights = sourceVertex.jointWeights.flatMap { value -> SIMD4<Float>? in
+                    guard value.count >= 4 else { return nil }
+                    return SIMD4<Float>(value[0], value[1], value[2], value[3])
+                } ?? SIMD4<Float>(1, 0, 0, 0)
+
+                addVertex(
+                    position: position,
+                    color: SIMD4<Float>(1, 1, 1, 1),
+                    texCoord: texCoord,
+                    normal: normal,
+                    tangent: tangent,
+                    jointIndices: jointIndices,
+                    jointWeights: jointWeights
+                )
+            }
+
+            _vertexCount = _vertices.count
+            createBuffer()
+
+            for submesh in document.submeshes where !submesh.indices.isEmpty {
+                addSubmesh(
+                    Submesh(
+                        indices: submesh.indices,
+                        device: device,
+                        graphics: graphics,
+                        assetManager: assetManager
+                    )
+                )
+            }
+
+            hasJointIndexStream = document.hasSkinning
+            hasJointWeightStream = document.hasSkinning
+#if DEBUG
+            EngineLoggerContext.log(
+                "Baked mesh runtime load path=\(assetURL.path)\nvertexCount=\(_vertexCount)\nsubmeshes=\(_submeshes.count)\nhasJointIndices=\(hasJointIndexStream)\nhasJointWeights=\(hasJointWeightStream)",
+                level: .debug,
+                category: .assets
+            )
+#endif
+        } catch {
+            EngineLoggerContext.log(
+                "Mesh load failed \(name): unable to decode baked mesh (\(error.localizedDescription)).",
+                level: .error,
+                category: .assets
+            )
+        }
     }
 
     private func updateBoundsFromVertices() {
@@ -420,6 +548,21 @@ public class MCMesh {
     
     func addSimpleVertex(position: SIMD3<Float>) {
         _simpleVertices.append(SimpleVertex(position: position))
+    }
+
+    func hasValidSkinningVertexStreams() -> Bool {
+        guard _vertexBuffer != nil, _vertexCount > 0 else { return false }
+        return hasJointIndexStream && hasJointWeightStream
+    }
+
+    func skinningStreamDebugState() -> String {
+        "vertexBuffer=\(_vertexBuffer != nil) vertexCount=\(_vertexCount) jointIndices=\(hasJointIndexStream) jointWeights=\(hasJointWeightStream)"
+    }
+
+    func totalIndexCount() -> Int {
+        _submeshes.reduce(into: 0) { count, submesh in
+            count += submesh.indexCount
+        }
     }
     
     func drawPrimitives(_ renderCommandEncoder: MTLRenderCommandEncoder,

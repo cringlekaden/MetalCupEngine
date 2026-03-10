@@ -26,6 +26,9 @@ public final class AssetManager {
     private var textureCache: [AssetHandle: MTLTexture] = [:]
     private var textureFailureCacheByPath: [String: TextureFailureRecord] = [:]
     private var textureFailureLoggedPaths: Set<String> = []
+    private var meshRequestLoggedHandles: Set<AssetHandle> = []
+    private var meshCacheHitLoggedHandles: Set<AssetHandle> = []
+    private var meshUnresolvedLoggedHandles: Set<AssetHandle> = []
     private var meshCache: [AssetHandle: MCMesh] = [:]
     private var materialCache: [AssetHandle: MaterialAsset] = [:]
     private var skeletonCache: [AssetHandle: SkeletonAsset] = [:]
@@ -196,9 +199,59 @@ public final class AssetManager {
     public func mesh(handle: AssetHandle) -> MCMesh? {
         cacheLock.lock()
         let cached = meshCache[handle]
+        let shouldLogCacheHit = cached != nil && !meshCacheHitLoggedHandles.contains(handle)
+        if shouldLogCacheHit {
+            meshCacheHitLoggedHandles.insert(handle)
+        }
         cacheLock.unlock()
-        if let cached { return cached }
-        guard let url = assetDatabase?.assetURL(for: handle) else { return nil }
+        if let cached {
+#if DEBUG
+            if shouldLogCacheHit {
+                EngineLoggerContext.log(
+                    "Mesh cache hit handle=\(handle.rawValue.uuidString)",
+                    level: .debug,
+                    category: .assets
+                )
+            }
+#endif
+            return cached
+        }
+        guard let database = assetDatabase else { return nil }
+        let metadata = database.metadata(for: handle)
+        guard let url = database.assetURL(for: handle) else {
+#if DEBUG
+            cacheLock.lock()
+            let shouldLogUnresolved = !meshUnresolvedLoggedHandles.contains(handle)
+            if shouldLogUnresolved {
+                meshUnresolvedLoggedHandles.insert(handle)
+            }
+            cacheLock.unlock()
+            if shouldLogUnresolved {
+                EngineLoggerContext.log(
+                    "Mesh resolve failed: no asset URL for handle=\(handle.rawValue.uuidString).",
+                    level: .warning,
+                    category: .assets
+                )
+            }
+#endif
+            return nil
+        }
+#if DEBUG
+        cacheLock.lock()
+        let shouldLogRequest = !meshRequestLoggedHandles.contains(handle)
+        if shouldLogRequest {
+            meshRequestLoggedHandles.insert(handle)
+        }
+        cacheLock.unlock()
+        if shouldLogRequest {
+            let sourcePath = metadata?.sourcePath ?? "<missing>"
+            EngineLoggerContext.log(
+                "Mesh cache miss handle=\(handle.rawValue.uuidString)\nsourcePath=\(sourcePath)\nresolvedURL=\(url.path)",
+                level: .debug,
+                category: .assets
+            )
+        }
+#endif
         let mesh = MCMesh(assetURL: url, device: device, graphics: graphics, assetManager: self)
         cacheLock.lock()
         meshCache[handle] = mesh
@@ -240,14 +293,28 @@ public final class AssetManager {
         cacheLock.lock()
         let cached = skeletonCache[handle]
         cacheLock.unlock()
-        return cached
+        if let cached { return cached }
+        guard let database = assetDatabase,
+              let url = database.assetURL(for: handle) else { return nil }
+        guard let skeleton = SkeletonAssetSerializer.load(from: url, fallbackHandle: handle) else { return nil }
+        cacheLock.lock()
+        skeletonCache[handle] = skeleton
+        cacheLock.unlock()
+        return skeleton
     }
 
     public func animationClip(handle: AssetHandle) -> AnimationClipAsset? {
         cacheLock.lock()
         let cached = animationClipCache[handle]
         cacheLock.unlock()
-        return cached
+        if let cached { return cached }
+        guard let database = assetDatabase,
+              let url = database.assetURL(for: handle) else { return nil }
+        guard let clip = AnimationClipAssetSerializer.load(from: url, fallbackHandle: handle) else { return nil }
+        cacheLock.lock()
+        animationClipCache[handle] = clip
+        cacheLock.unlock()
+        return clip
     }
 
     public func registerRuntimeTexture(handle: AssetHandle, texture: MTLTexture) {
@@ -288,9 +355,16 @@ public final class AssetManager {
             case .texture, .environment:
                 _ = texture(handle: metadata.handle)
             case .model:
+                if metadata.sourcePath.lowercased().hasSuffix(".fbx") {
+                    continue
+                }
                 _ = mesh(handle: metadata.handle)
             case .material:
                 _ = material(handle: metadata.handle)
+            case .skeleton:
+                _ = skeleton(handle: metadata.handle)
+            case .animationClip:
+                _ = animationClip(handle: metadata.handle)
             default:
                 break
             }
@@ -303,6 +377,9 @@ public final class AssetManager {
         textureFailureCacheByPath.removeAll()
         textureFailureLoggedPaths.removeAll()
         meshCache = meshCache.filter { runtimeMeshHandles.contains($0.key) }
+        meshRequestLoggedHandles.removeAll()
+        meshCacheHitLoggedHandles.removeAll()
+        meshUnresolvedLoggedHandles.removeAll()
         skeletonCache = skeletonCache.filter { runtimeSkeletonHandles.contains($0.key) }
         animationClipCache = animationClipCache.filter { runtimeAnimationClipHandles.contains($0.key) }
         materialCache.removeAll()

@@ -42,7 +42,7 @@ public struct FixedStepMode: OptionSet {
 }
 
 public class EngineScene {
-    public enum TransformAuthorityMode: CustomStringConvertible {
+    public enum TransformAuthorityMode: Hashable, CustomStringConvertible {
         case edit
         case play
         case simulate
@@ -107,6 +107,7 @@ public class EngineScene {
     private let updateScheduler = SceneUpdateScheduler()
     private let animationSystem = AnimationSystem()
     private let audioSceneSystem = AudioSceneSystem()
+    private var loggedAnimationEvaluationModes: Set<TransformAuthorityMode> = []
 
     private let characterSystem = CharacterControllerSystem()
     private var fixedStepDiagnostics = FixedStepDiagnostics()
@@ -194,6 +195,7 @@ public class EngineScene {
                              isPaused: Bool,
                              runRuntimeScripts: Bool,
                              animateInSimulateWhenScriptsDisabled: Bool) {
+        logAnimationEvaluationPolicyIfNeeded()
         let request = SceneUpdateScheduler.UpdateRequest(
             frame: frame,
             isPlaying: isPlaying,
@@ -236,9 +238,7 @@ public class EngineScene {
             scriptUpdate: { dt, runRuntimeScripts in
                 self.scriptSystem.update(dt: dt, runRuntimeScripts: runRuntimeScripts)
             },
-            animationUpdate: { dt, isPlaying, runRuntimeScripts, animateInSimulateWhenScriptsDisabled in
-                let shouldAnimate = isPlaying || runRuntimeScripts || animateInSimulateWhenScriptsDisabled
-                guard shouldAnimate else { return }
+            animationUpdate: { dt, _, _, _ in
                 self.animationSystem.update(scene: self, dt: dt)
             },
             audioUpdate: { frame in
@@ -254,6 +254,15 @@ public class EngineScene {
             }
         )
         updateScheduler.runUpdate(request: request, pipeline: pipeline)
+    }
+
+    private func logAnimationEvaluationPolicyIfNeeded() {
+        guard loggedAnimationEvaluationModes.insert(transformAuthorityMode).inserted else { return }
+        let previewActive = transformAuthorityMode != .play
+        engineContext?.log.logInfo(
+            "Animation evaluation enabled for mode=\(transformAuthorityMode.description) previewActive=\(previewActive)",
+            category: .scene
+        )
     }
 
     func runtimeUpdate(isPlaying: Bool, isPaused: Bool, frame: FrameContext) {
