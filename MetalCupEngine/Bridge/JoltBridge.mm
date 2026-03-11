@@ -1241,6 +1241,61 @@ extern "C" uint32_t MCECharacter_Update(void *worldPtr,
     return 1;
 }
 
+extern "C" uint32_t MCECharacter_UpdateDisplacement(void *worldPtr,
+                                                    uint64_t handle,
+                                                    float dt,
+                                                    float desiredDeltaX,
+                                                    float desiredDeltaY,
+                                                    float desiredDeltaZ,
+                                                    uint32_t jumpRequested) {
+    if (!worldPtr || handle == 0 || dt <= 0.0f) { return 0; }
+    JoltWorld *world = static_cast<JoltWorld *>(worldPtr);
+    auto it = world->characters.find(handle);
+    if (it == world->characters.end()) { return 0; }
+    JoltWorld::CharacterRecord &record = it->second;
+    record.character->UpdateGroundVelocity();
+    const auto currentGroundState = record.character->GetGroundState();
+    const bool onGround = currentGroundState == CharacterBase::EGroundState::OnGround;
+    const Vec3 currentVelocity = record.character->GetLinearVelocity();
+    Vec3 desiredDisplacement(desiredDeltaX, desiredDeltaY, desiredDeltaZ);
+    const float desiredVerticalDisplacement = desiredDisplacement.Dot(record.up);
+    const Vec3 desiredPlanarDisplacement = desiredDisplacement - record.up * desiredVerticalDisplacement;
+    const Vec3 desiredPlanarVelocity = desiredPlanarDisplacement / dt;
+
+    const Vec3 currentVerticalVelocity = currentVelocity.Dot(record.up) * record.up;
+    const Vec3 groundVelocity = record.character->GetGroundVelocity();
+    const bool movingTowardsGround =
+        (currentVerticalVelocity - groundVelocity).Dot(record.up) < 0.1f;
+
+    Vec3 velocity = onGround && movingTowardsGround
+        ? groundVelocity
+        : currentVerticalVelocity;
+
+    if (jumpRequested != 0 && onGround && movingTowardsGround) {
+        velocity += record.up * record.jumpSpeed;
+    }
+
+    velocity += record.up * (record.gravity * dt);
+    velocity += desiredPlanarVelocity;
+    record.character->SetLinearVelocity(velocity);
+    const auto &broadPhaseLayerFilter = world->physicsSystem.GetDefaultBroadPhaseLayerFilter(record.objectLayer);
+    const auto &objectLayerFilter = world->physicsSystem.GetDefaultLayerFilter(record.objectLayer);
+    IgnoreSingleBodyFilter ignoreBodyFilter(record.hasIgnoreBodyID ? record.ignoreBodyID : BodyID());
+    BodyFilter bodyFilter;
+    const BodyFilter &resolvedBodyFilter = record.hasIgnoreBodyID ? static_cast<const BodyFilter &>(ignoreBodyFilter) : bodyFilter;
+    ShapeFilter shapeFilter;
+    TempAllocatorMalloc allocator;
+    record.character->ExtendedUpdate(dt,
+                                     record.up * record.gravity,
+                                     record.updateSettings,
+                                     broadPhaseLayerFilter,
+                                     objectLayerFilter,
+                                     resolvedBodyFilter,
+                                     shapeFilter,
+                                     allocator);
+    return 1;
+}
+
 extern "C" uint32_t MCECharacter_GetPosition(void *worldPtr, uint64_t handle, float *positionOut) {
     if (!worldPtr || handle == 0 || !positionOut) { return 0; }
     JoltWorld *world = static_cast<JoltWorld *>(worldPtr);

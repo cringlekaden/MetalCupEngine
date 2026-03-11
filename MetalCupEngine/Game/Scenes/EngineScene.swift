@@ -108,6 +108,14 @@ public class EngineScene {
     private let animationSystem = AnimationSystem()
     private let audioSceneSystem = AudioSceneSystem()
     private var loggedAnimationEvaluationModes: Set<TransformAuthorityMode> = []
+    private var loggedAnimatorParameterSignatures: Set<String> = []
+    private var animationGraphDebugLoggingEnabled: Bool {
+#if DEBUG
+        ProcessInfo.processInfo.environment["MCE_ANIM_GRAPH_DEBUG"] == "1"
+#else
+        false
+#endif
+    }
 
     private let characterSystem = CharacterControllerSystem()
     private var fixedStepDiagnostics = FixedStepDiagnostics()
@@ -279,6 +287,25 @@ public class EngineScene {
         }
     }
 
+    @discardableResult
+    private func mutateAnimatorGraphRuntime(entityId: UUID,
+                                            mutation: (_ runtimeState: inout AnimationGraphRuntimeInstanceState,
+                                                       _ compiledGraph: CompiledAnimationGraph) -> Bool) -> Bool {
+        guard let entity = ecs.entity(with: entityId),
+              var animator = ecs.get(AnimatorComponent.self, for: entity),
+              animator.evaluationMode == .graph,
+              let graphHandle = animator.graphHandle,
+              let compiledGraph = engineContext?.assets.compiledAnimationGraph(handle: graphHandle) else { return false }
+        var runtimeState = animator.graphRuntimeState ?? AnimationGraphRuntimeInstanceState()
+        if runtimeState.graphHandle != graphHandle || !runtimeState.hasParameterStorage(count: compiledGraph.parameters.count) {
+            runtimeState.resetDefaults(from: compiledGraph, graphHandle: graphHandle)
+        }
+        guard mutation(&runtimeState, compiledGraph) else { return false }
+        animator.graphRuntimeState = runtimeState
+        ecs.add(animator, to: entity)
+        return true
+    }
+
     func runtimeFixedUpdate() {
         onFixedUpdate()
     }
@@ -412,6 +439,194 @@ public class EngineScene {
 
     public func requestCharacterJump(entityId: UUID) {
         characterSystem.enqueueJump(entityId: entityId)
+    }
+
+    public func animatorGraphOwnerEntityID(for sourceEntityId: UUID) -> UUID? {
+        guard let sourceEntity = ecs.entity(with: sourceEntityId) else { return nil }
+        if hasGraphAnimator(entity: sourceEntity) {
+            return sourceEntity.id
+        }
+
+        guard var controller = ecs.get(CharacterControllerComponent.self, for: sourceEntity) else { return nil }
+
+        var resolvedEntity: Entity?
+        if let visualID = controller.visualEntityId,
+           let visualEntity = ecs.entity(with: visualID) {
+            if hasGraphAnimator(entity: visualEntity) {
+                resolvedEntity = visualEntity
+            } else {
+                resolvedEntity = firstGraphAnimatorEntity(inSubtreeRootedAt: visualEntity)
+            }
+        }
+
+        if resolvedEntity == nil {
+            resolvedEntity = firstGraphAnimatorEntity(inSubtreeRootedAt: sourceEntity)
+        }
+
+        guard let resolvedEntity else { return nil }
+        if controller.visualEntityId != resolvedEntity.id {
+            controller.visualEntityId = resolvedEntity.id
+            ecs.add(controller, to: sourceEntity)
+        }
+        return resolvedEntity.id
+    }
+
+    private func hasGraphAnimator(entity: Entity) -> Bool {
+        guard let animator = ecs.get(AnimatorComponent.self, for: entity) else { return false }
+        return animator.evaluationMode == .graph && animator.graphHandle != nil
+    }
+
+    private func firstGraphAnimatorEntity(inSubtreeRootedAt root: Entity) -> Entity? {
+        var queue: [Entity] = [root]
+        var cursor = 0
+        while cursor < queue.count {
+            let current = queue[cursor]
+            cursor += 1
+            if hasGraphAnimator(entity: current) {
+                return current
+            }
+            let children = ecs.getChildren(current)
+            if !children.isEmpty {
+                queue.append(contentsOf: children)
+            }
+        }
+        return nil
+    }
+
+    @discardableResult
+    public func setAnimatorGraphFloat(entityId: UUID, parameterName: String, value: Float) -> Bool {
+        guard let parameterIndex = animatorGraphParameterIndex(entityId: entityId, parameterName: parameterName) else {
+            logAnimatorParameterMissing(entityId: entityId, parameterName: parameterName)
+            return false
+        }
+        return setAnimatorGraphFloat(entityId: entityId, parameterIndex: parameterIndex, value: value)
+    }
+
+    @discardableResult
+    public func setAnimatorGraphFloat(entityId: UUID, parameterIndex: Int, value: Float) -> Bool {
+        mutateAnimatorGraphRuntime(entityId: entityId) { runtimeState, compiledGraph in
+            guard parameterIndex >= 0, parameterIndex < compiledGraph.parameters.count else { return false }
+            runtimeState.setFloat(index: parameterIndex, value: value)
+            return true
+        }
+    }
+
+    @discardableResult
+    public func setAnimatorGraphBool(entityId: UUID, parameterName: String, value: Bool) -> Bool {
+        guard let parameterIndex = animatorGraphParameterIndex(entityId: entityId, parameterName: parameterName) else {
+            logAnimatorParameterMissing(entityId: entityId, parameterName: parameterName)
+            return false
+        }
+        return setAnimatorGraphBool(entityId: entityId, parameterIndex: parameterIndex, value: value)
+    }
+
+    @discardableResult
+    public func setAnimatorGraphBool(entityId: UUID, parameterIndex: Int, value: Bool) -> Bool {
+        mutateAnimatorGraphRuntime(entityId: entityId) { runtimeState, compiledGraph in
+            guard parameterIndex >= 0, parameterIndex < compiledGraph.parameters.count else { return false }
+            runtimeState.setBool(index: parameterIndex, value: value)
+            return true
+        }
+    }
+
+    @discardableResult
+    public func setAnimatorGraphInt(entityId: UUID, parameterName: String, value: Int) -> Bool {
+        guard let parameterIndex = animatorGraphParameterIndex(entityId: entityId, parameterName: parameterName) else {
+            logAnimatorParameterMissing(entityId: entityId, parameterName: parameterName)
+            return false
+        }
+        return setAnimatorGraphInt(entityId: entityId, parameterIndex: parameterIndex, value: value)
+    }
+
+    @discardableResult
+    public func setAnimatorGraphInt(entityId: UUID, parameterIndex: Int, value: Int) -> Bool {
+        mutateAnimatorGraphRuntime(entityId: entityId) { runtimeState, compiledGraph in
+            guard parameterIndex >= 0, parameterIndex < compiledGraph.parameters.count else { return false }
+            runtimeState.setInt(index: parameterIndex, value: value)
+            return true
+        }
+    }
+
+    @discardableResult
+    public func setAnimatorGraphTrigger(entityId: UUID, parameterName: String) -> Bool {
+        guard let parameterIndex = animatorGraphParameterIndex(entityId: entityId, parameterName: parameterName) else {
+            logAnimatorParameterMissing(entityId: entityId, parameterName: parameterName)
+            return false
+        }
+        return setAnimatorGraphTrigger(entityId: entityId, parameterIndex: parameterIndex)
+    }
+
+    @discardableResult
+    public func setAnimatorGraphTrigger(entityId: UUID, parameterIndex: Int) -> Bool {
+        mutateAnimatorGraphRuntime(entityId: entityId) { runtimeState, compiledGraph in
+            guard parameterIndex >= 0, parameterIndex < compiledGraph.parameters.count else { return false }
+            runtimeState.setTrigger(index: parameterIndex)
+            if animationGraphDebugLoggingEnabled {
+                logAnimatorParameterMutation(entityId: entityId,
+                                             parameterName: compiledGraph.parameters[parameterIndex].name,
+                                             valueText: "triggered",
+                                             runtimeState: runtimeState,
+                                             compiledGraph: compiledGraph)
+            }
+            return true
+        }
+    }
+
+    public func animatorGraphParameterIndex(entityId: UUID, parameterName: String) -> Int? {
+        guard let entity = ecs.entity(with: entityId),
+              let animator = ecs.get(AnimatorComponent.self, for: entity),
+              animator.evaluationMode == .graph,
+              let graphHandle = animator.graphHandle,
+              let compiledGraph = engineContext?.assets.compiledAnimationGraph(handle: graphHandle) else { return nil }
+        let trimmed = parameterName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return compiledGraph.parameters.firstIndex(where: { $0.name == trimmed })
+    }
+
+    private func logAnimatorParameterMutation(entityId: UUID,
+                                              parameterName: String,
+                                              valueText: String,
+                                              runtimeState: AnimationGraphRuntimeInstanceState,
+                                              compiledGraph: CompiledAnimationGraph) {
+        guard animationGraphDebugLoggingEnabled, let engineContext else { return }
+        let stateSummary = animatorStateSummary(runtimeState: runtimeState, compiledGraph: compiledGraph)
+        let signature = "\(entityId.uuidString)|\(parameterName)|\(valueText)|\(stateSummary)"
+        guard loggedAnimatorParameterSignatures.insert(signature).inserted else { return }
+        engineContext.log.logDebug(
+            "Animator graph parameter changed entity=\(entityId.uuidString) parameter=\(parameterName) value=\(valueText) \(stateSummary)",
+            category: .scene
+        )
+    }
+
+    private func logAnimatorParameterMissing(entityId: UUID, parameterName: String) {
+        guard let engineContext else { return }
+        let signature = "missing|\(entityId.uuidString)|\(parameterName)"
+        guard loggedAnimatorParameterSignatures.insert(signature).inserted else { return }
+        engineContext.log.logWarning(
+            "Animator graph parameter missing entity=\(entityId.uuidString) parameter=\(parameterName)",
+            category: .scene
+        )
+    }
+
+    private func animatorStateSummary(runtimeState: AnimationGraphRuntimeInstanceState,
+                                      compiledGraph: CompiledAnimationGraph) -> String {
+        var stateNameByID: [UUID: String] = [:]
+        for node in compiledGraph.nodes {
+            guard let machine = node.stateMachine else { continue }
+            for state in machine.states {
+                stateNameByID[state.id] = state.name
+            }
+        }
+        let sortedCurrent = runtimeState.stateMachineCurrentStateByNodeID.sorted { $0.key.uuidString < $1.key.uuidString }
+        if let first = sortedCurrent.first {
+            let currentName = stateNameByID[first.value] ?? first.value.uuidString
+            if let nextID = runtimeState.stateMachineNextStateByNodeID[first.key] {
+                let nextName = stateNameByID[nextID] ?? nextID.uuidString
+                return "currentState=\(currentName) nextState=\(nextName)"
+            }
+            return "currentState=\(currentName) nextState=<none>"
+        }
+        return "currentState=<unset> nextState=<none>"
     }
 
     public func setCharacterGroundProvider(_ provider: CharacterGroundProvider?) {

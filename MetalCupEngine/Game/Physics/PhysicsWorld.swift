@@ -195,6 +195,13 @@ private func MCECharacter_Update(_ world: UnsafeMutableRawPointer?,
                                  _ desiredVelX: Float, _ desiredVelY: Float, _ desiredVelZ: Float,
                                  _ jumpRequested: UInt32) -> UInt32
 
+@_silgen_name("MCECharacter_UpdateDisplacement")
+private func MCECharacter_UpdateDisplacement(_ world: UnsafeMutableRawPointer?,
+                                             _ handle: UInt64,
+                                             _ dt: Float,
+                                             _ desiredDeltaX: Float, _ desiredDeltaY: Float, _ desiredDeltaZ: Float,
+                                             _ jumpRequested: UInt32) -> UInt32
+
 @_silgen_name("MCECharacter_GetPosition")
 private func MCECharacter_GetPosition(_ world: UnsafeMutableRawPointer?,
                                       _ handle: UInt64,
@@ -728,6 +735,19 @@ public final class PhysicsWorld {
                                    dt,
                                    desiredVelocity.x, desiredVelocity.y, desiredVelocity.z,
                                    jumpRequested ? 1 : 0) != 0
+    }
+
+    @discardableResult
+    func updateCharacterDisplacement(handle characterHandle: UInt64,
+                                     dt: Float,
+                                     desiredDisplacement: SIMD3<Float>,
+                                     jumpRequested: Bool) -> Bool {
+        guard let handle, characterHandle != 0, dt > 0.0 else { return false }
+        return MCECharacter_UpdateDisplacement(handle,
+                                               characterHandle,
+                                               dt,
+                                               desiredDisplacement.x, desiredDisplacement.y, desiredDisplacement.z,
+                                               jumpRequested ? 1 : 0) != 0
     }
 
     func characterPosition(handle characterHandle: UInt64) -> SIMD3<Float>? {

@@ -647,39 +647,208 @@ public struct SkinnedMeshComponent {
     }
 }
 
+public struct RootMotionDelta {
+    public var deltaPos: SIMD3<Float>
+    public var deltaRot: SIMD4<Float>
+
+    public init(deltaPos: SIMD3<Float> = .zero,
+                deltaRot: SIMD4<Float> = TransformMath.identityQuaternion) {
+        self.deltaPos = deltaPos
+        self.deltaRot = TransformMath.normalizedQuaternion(deltaRot)
+    }
+
+    public static let zero = RootMotionDelta()
+}
+
 public struct AnimationPoseRuntimeState {
     public var sampleTime: Float
     public var localPose: [TransformComponent]
     public var globalPose: [TransformComponent]
+    public var rootMotionDelta: RootMotionDelta
+    public var usesRootMotion: Bool
+    public var currentStateName: String
+    public var rootMotionBoneName: String
+    public var rootMotionJointIndex: Int
+    public var rootMotionTrackConsumed: Bool
 
     public init(sampleTime: Float = 0.0,
                 localPose: [TransformComponent] = [],
-                globalPose: [TransformComponent] = []) {
+                globalPose: [TransformComponent] = [],
+                rootMotionDelta: RootMotionDelta = .zero,
+                usesRootMotion: Bool = false,
+                currentStateName: String = "",
+                rootMotionBoneName: String = "",
+                rootMotionJointIndex: Int = -1,
+                rootMotionTrackConsumed: Bool = false) {
         self.sampleTime = sampleTime
         self.localPose = localPose
         self.globalPose = globalPose
+        self.rootMotionDelta = rootMotionDelta
+        self.usesRootMotion = usesRootMotion
+        self.currentStateName = currentStateName
+        self.rootMotionBoneName = rootMotionBoneName
+        self.rootMotionJointIndex = rootMotionJointIndex
+        self.rootMotionTrackConsumed = rootMotionTrackConsumed
+    }
+}
+
+public enum AnimatorEvaluationMode: UInt32, Codable {
+    case clip = 0
+    case graph = 1
+}
+
+public struct AnimationGraphRuntimeInstanceState {
+    public var graphHandle: AnimationGraphHandle?
+    public var floatParameterValues: [Float]
+    public var boolParameterValues: [Bool]
+    public var intParameterValues: [Int]
+    public var triggerParameterValues: [Bool]
+    public var currentStateNodeID: UUID?
+    public var nextStateNodeID: UUID?
+    public var transitionElapsedSeconds: Float
+    public var transitionDurationSeconds: Float
+    public var nodeLocalTimes: [UUID: Float]
+    public var triggerLatchedParameterIndices: Set<Int>
+    public var stateMachineCurrentStateByNodeID: [UUID: UUID]
+    public var stateMachineNextStateByNodeID: [UUID: UUID]
+    public var stateMachineTransitionElapsedByNodeID: [UUID: Float]
+    public var stateMachineTransitionDurationByNodeID: [UUID: Float]
+    public var stateMachineStateElapsedByNodeID: [UUID: Float]
+
+    public init(graphHandle: AnimationGraphHandle? = nil,
+                floatParameterValues: [Float] = [],
+                boolParameterValues: [Bool] = [],
+                intParameterValues: [Int] = [],
+                triggerParameterValues: [Bool] = [],
+                currentStateNodeID: UUID? = nil,
+                nextStateNodeID: UUID? = nil,
+                transitionElapsedSeconds: Float = 0.0,
+                transitionDurationSeconds: Float = 0.0,
+                nodeLocalTimes: [UUID: Float] = [:],
+                triggerLatchedParameterIndices: Set<Int> = [],
+                stateMachineCurrentStateByNodeID: [UUID: UUID] = [:],
+                stateMachineNextStateByNodeID: [UUID: UUID] = [:],
+                stateMachineTransitionElapsedByNodeID: [UUID: Float] = [:],
+                stateMachineTransitionDurationByNodeID: [UUID: Float] = [:],
+                stateMachineStateElapsedByNodeID: [UUID: Float] = [:]) {
+        self.graphHandle = graphHandle
+        self.floatParameterValues = floatParameterValues
+        self.boolParameterValues = boolParameterValues
+        self.intParameterValues = intParameterValues
+        self.triggerParameterValues = triggerParameterValues
+        self.currentStateNodeID = currentStateNodeID
+        self.nextStateNodeID = nextStateNodeID
+        self.transitionElapsedSeconds = transitionElapsedSeconds
+        self.transitionDurationSeconds = transitionDurationSeconds
+        self.nodeLocalTimes = nodeLocalTimes
+        self.triggerLatchedParameterIndices = triggerLatchedParameterIndices
+        self.stateMachineCurrentStateByNodeID = stateMachineCurrentStateByNodeID
+        self.stateMachineNextStateByNodeID = stateMachineNextStateByNodeID
+        self.stateMachineTransitionElapsedByNodeID = stateMachineTransitionElapsedByNodeID
+        self.stateMachineTransitionDurationByNodeID = stateMachineTransitionDurationByNodeID
+        self.stateMachineStateElapsedByNodeID = stateMachineStateElapsedByNodeID
+    }
+
+    public mutating func resetDefaults(from compiledGraph: CompiledAnimationGraph, graphHandle: AnimationGraphHandle) {
+        self.graphHandle = graphHandle
+        let count = compiledGraph.parameters.count
+        self.floatParameterValues = Array(repeating: 0.0, count: count)
+        self.boolParameterValues = Array(repeating: false, count: count)
+        self.intParameterValues = Array(repeating: 0, count: count)
+        self.triggerParameterValues = Array(repeating: false, count: count)
+        for parameter in compiledGraph.parameters {
+            let index = parameter.index
+            guard index >= 0, index < count else { continue }
+            switch parameter.type {
+            case .float:
+                self.floatParameterValues[index] = parameter.defaultFloat
+            case .bool:
+                self.boolParameterValues[index] = parameter.defaultBool
+            case .int:
+                self.intParameterValues[index] = parameter.defaultInt
+            case .trigger:
+                self.triggerParameterValues[index] = false
+            }
+        }
+        self.currentStateNodeID = nil
+        self.nextStateNodeID = nil
+        self.transitionElapsedSeconds = 0.0
+        self.transitionDurationSeconds = 0.0
+        self.nodeLocalTimes = [:]
+        self.triggerLatchedParameterIndices = []
+        self.stateMachineCurrentStateByNodeID = [:]
+        self.stateMachineNextStateByNodeID = [:]
+        self.stateMachineTransitionElapsedByNodeID = [:]
+        self.stateMachineTransitionDurationByNodeID = [:]
+        self.stateMachineStateElapsedByNodeID = [:]
+    }
+
+    public func hasParameterStorage(count: Int) -> Bool {
+        return floatParameterValues.count == count &&
+            boolParameterValues.count == count &&
+            intParameterValues.count == count &&
+            triggerParameterValues.count == count
+    }
+
+    public mutating func setFloat(index: Int, value: Float) {
+        guard index >= 0, index < floatParameterValues.count else { return }
+        floatParameterValues[index] = value
+    }
+
+    public mutating func setBool(index: Int, value: Bool) {
+        guard index >= 0, index < boolParameterValues.count else { return }
+        boolParameterValues[index] = value
+    }
+
+    public mutating func setInt(index: Int, value: Int) {
+        guard index >= 0, index < intParameterValues.count else { return }
+        intParameterValues[index] = value
+    }
+
+    public mutating func setTrigger(index: Int) {
+        guard index >= 0, index < triggerParameterValues.count else { return }
+        triggerParameterValues[index] = true
+        triggerLatchedParameterIndices.insert(index)
+    }
+
+    public mutating func clearTrigger(index: Int) {
+        guard index >= 0, index < triggerParameterValues.count else { return }
+        triggerParameterValues[index] = false
+        triggerLatchedParameterIndices.remove(index)
     }
 }
 
 public struct AnimatorComponent {
+    public var evaluationMode: AnimatorEvaluationMode
     public var clipHandle: AssetHandle?
+    public var graphHandle: AnimationGraphHandle?
     public var playbackTime: Float
     public var playbackSpeed: Float
     public var isPlaying: Bool
     public var isLooping: Bool
+    public var enableRootMotion: Bool
+    public var graphRuntimeState: AnimationGraphRuntimeInstanceState?
     public var poseRuntimeState: AnimationPoseRuntimeState?
 
-    public init(clipHandle: AssetHandle? = nil,
+    public init(evaluationMode: AnimatorEvaluationMode = .clip,
+                clipHandle: AssetHandle? = nil,
+                graphHandle: AnimationGraphHandle? = nil,
                 playbackTime: Float = 0.0,
                 playbackSpeed: Float = 1.0,
                 isPlaying: Bool = true,
                 isLooping: Bool = true,
+                enableRootMotion: Bool = true,
+                graphRuntimeState: AnimationGraphRuntimeInstanceState? = nil,
                 poseRuntimeState: AnimationPoseRuntimeState? = nil) {
+        self.evaluationMode = evaluationMode
         self.clipHandle = clipHandle
+        self.graphHandle = graphHandle
         self.playbackTime = playbackTime
         self.playbackSpeed = playbackSpeed
         self.isPlaying = isPlaying
         self.isLooping = isLooping
+        self.enableRootMotion = enableRootMotion
+        self.graphRuntimeState = graphRuntimeState
         self.poseRuntimeState = poseRuntimeState
     }
 }

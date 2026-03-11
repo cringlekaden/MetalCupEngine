@@ -570,6 +570,17 @@ public final class PhysicsSystem {
         world.updateCharacter(handle: handle, dt: dt, desiredVelocity: desiredVelocity, jumpRequested: jumpRequested)
     }
 
+    @discardableResult
+    func updateCharacterDisplacement(handle: UInt64,
+                                     dt: Float,
+                                     desiredDisplacement: SIMD3<Float>,
+                                     jumpRequested: Bool) -> Bool {
+        world.updateCharacterDisplacement(handle: handle,
+                                          dt: dt,
+                                          desiredDisplacement: desiredDisplacement,
+                                          jumpRequested: jumpRequested)
+    }
+
     func characterPosition(handle: UInt64) -> SIMD3<Float>? {
         world.characterPosition(handle: handle)
     }

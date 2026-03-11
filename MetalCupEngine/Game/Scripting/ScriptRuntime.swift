@@ -20,6 +20,10 @@ private typealias LuaEntitySetSprintCallback = @convention(c) (UnsafeMutableRawP
 private typealias LuaEntityJumpCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Void
 private typealias LuaEntityIsGroundedCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> UInt32
 private typealias LuaEntityGetVelocityCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutablePointer<Float>?) -> UInt32
+private typealias LuaEntityResolveAnimatorEntityCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafeMutablePointer<CChar>?, Int32) -> UInt32
+private typealias LuaEntitySetAnimatorFloatCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Float) -> UInt32
+private typealias LuaEntitySetAnimatorBoolCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt32) -> UInt32
+private typealias LuaEntitySetAnimatorTriggerCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> UInt32
 private typealias LuaInputIsKeyDownCallback = @convention(c) (UnsafeMutableRawPointer?, UInt16) -> UInt32
 private typealias LuaInputWasKeyPressedCallback = @convention(c) (UnsafeMutableRawPointer?, UInt16) -> UInt32
 private typealias LuaInputGetMouseDeltaCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutablePointer<Float>?) -> UInt32
@@ -122,6 +126,10 @@ private func MCELuaRuntimeCreate(_ hostContext: UnsafeMutableRawPointer?,
                                  _ jumpCallback: LuaEntityJumpCallback?,
                                  _ isGroundedCallback: LuaEntityIsGroundedCallback?,
                                  _ getVelocityCallback: LuaEntityGetVelocityCallback?,
+                                 _ resolveAnimatorEntityCallback: LuaEntityResolveAnimatorEntityCallback?,
+                                 _ setAnimatorFloatCallback: LuaEntitySetAnimatorFloatCallback?,
+                                 _ setAnimatorBoolCallback: LuaEntitySetAnimatorBoolCallback?,
+                                 _ setAnimatorTriggerCallback: LuaEntitySetAnimatorTriggerCallback?,
                                  _ inputIsKeyDownCallback: LuaInputIsKeyDownCallback?,
                                  _ inputWasKeyPressedCallback: LuaInputWasKeyPressedCallback?,
                                  _ inputGetMouseDeltaCallback: LuaInputGetMouseDeltaCallback?,
@@ -397,6 +405,10 @@ public final class LuaScriptRuntime: ScriptRuntime {
                                             MCELuaHostEntityJump,
                                             MCELuaHostEntityIsGrounded,
                                             MCELuaHostEntityGetVelocity,
+                                            MCELuaHostEntityResolveAnimatorEntity,
+                                            MCELuaHostEntitySetAnimatorFloat,
+                                            MCELuaHostEntitySetAnimatorBool,
+                                            MCELuaHostEntitySetAnimatorTrigger,
                                             MCELuaHostInputIsKeyDown,
                                             MCELuaHostInputWasKeyPressed,
                                             MCELuaHostInputGetMouseDelta,
@@ -962,6 +974,60 @@ func MCELuaHostEntityGetVelocity(_ hostContext: UnsafeMutableRawPointer?,
     velocityOut[1] = velocity.y
     velocityOut[2] = velocity.z
     return 1
+}
+
+@_cdecl("MCELuaHostEntityResolveAnimatorEntity")
+func MCELuaHostEntityResolveAnimatorEntity(_ hostContext: UnsafeMutableRawPointer?,
+                                           _ entityId: UnsafePointer<CChar>?,
+                                           _ buffer: UnsafeMutablePointer<CChar>?,
+                                           _ bufferSize: Int32) -> UInt32 {
+    guard let hostContext,
+          let buffer,
+          bufferSize > 0 else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId),
+          let targetID = resolved.scene.animatorGraphOwnerEntityID(for: resolved.entity.id) else { return 0 }
+    return writeCString(targetID.uuidString, to: buffer, max: bufferSize) > 0 ? 1 : 0
+}
+
+@_cdecl("MCELuaHostEntitySetAnimatorFloat")
+func MCELuaHostEntitySetAnimatorFloat(_ hostContext: UnsafeMutableRawPointer?,
+                                      _ entityId: UnsafePointer<CChar>?,
+                                      _ parameterName: UnsafePointer<CChar>?,
+                                      _ value: Float) -> UInt32 {
+    guard let hostContext, let parameterName else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return 0 }
+    let targetEntityId = resolved.scene.animatorGraphOwnerEntityID(for: resolved.entity.id) ?? resolved.entity.id
+    return resolved.scene.setAnimatorGraphFloat(entityId: targetEntityId,
+                                                parameterName: String(cString: parameterName),
+                                                value: value) ? 1 : 0
+}
+
+@_cdecl("MCELuaHostEntitySetAnimatorBool")
+func MCELuaHostEntitySetAnimatorBool(_ hostContext: UnsafeMutableRawPointer?,
+                                     _ entityId: UnsafePointer<CChar>?,
+                                     _ parameterName: UnsafePointer<CChar>?,
+                                     _ value: UInt32) -> UInt32 {
+    guard let hostContext, let parameterName else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return 0 }
+    let targetEntityId = resolved.scene.animatorGraphOwnerEntityID(for: resolved.entity.id) ?? resolved.entity.id
+    return resolved.scene.setAnimatorGraphBool(entityId: targetEntityId,
+                                               parameterName: String(cString: parameterName),
+                                               value: value != 0) ? 1 : 0
+}
+
+@_cdecl("MCELuaHostEntitySetAnimatorTrigger")
+func MCELuaHostEntitySetAnimatorTrigger(_ hostContext: UnsafeMutableRawPointer?,
+                                        _ entityId: UnsafePointer<CChar>?,
+                                        _ parameterName: UnsafePointer<CChar>?) -> UInt32 {
+    guard let hostContext, let parameterName else { return 0 }
+    let runtime = Unmanaged<LuaScriptRuntime>.fromOpaque(hostContext).takeUnretainedValue()
+    guard let resolved = runtime.callbackEntity(entityId) else { return 0 }
+    let targetEntityId = resolved.scene.animatorGraphOwnerEntityID(for: resolved.entity.id) ?? resolved.entity.id
+    return resolved.scene.setAnimatorGraphTrigger(entityId: targetEntityId,
+                                                  parameterName: String(cString: parameterName)) ? 1 : 0
 }
 
 @_cdecl("MCELuaHostInputIsKeyDown")

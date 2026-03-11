@@ -288,60 +288,84 @@ public struct SkinnedMeshComponentDTO: Codable {
 
 public struct AnimatorComponentDTO: Codable {
     public var schemaVersion: Int
+    public var evaluationMode: AnimatorEvaluationMode
     public var clipHandle: AssetHandle?
+    public var graphHandle: AssetHandle?
     public var playbackTime: Float
     public var playbackSpeed: Float
     public var isPlaying: Bool
     public var isLooping: Bool
+    public var enableRootMotion: Bool
     
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
+        case evaluationMode
         case clipHandle
+        case graphHandle
         case playbackTime
         case playbackSpeed
         case isPlaying
         case isLooping
+        case enableRootMotion
     }
 
-    public init(schemaVersion: Int = 1,
+    public init(schemaVersion: Int = 2,
+                evaluationMode: AnimatorEvaluationMode = .clip,
                 clipHandle: AssetHandle?,
+                graphHandle: AssetHandle? = nil,
                 playbackTime: Float,
                 playbackSpeed: Float = 1.0,
                 isPlaying: Bool,
-                isLooping: Bool) {
+                isLooping: Bool,
+                enableRootMotion: Bool = true) {
         self.schemaVersion = schemaVersion
+        self.evaluationMode = evaluationMode
         self.clipHandle = clipHandle
+        self.graphHandle = graphHandle
         self.playbackTime = playbackTime
         self.playbackSpeed = playbackSpeed
         self.isPlaying = isPlaying
         self.isLooping = isLooping
+        self.enableRootMotion = enableRootMotion
     }
 
     public init(component: AnimatorComponent) {
-        self.schemaVersion = 1
+        self.schemaVersion = 2
+        self.evaluationMode = component.evaluationMode
         self.clipHandle = component.clipHandle
+        self.graphHandle = component.graphHandle
         self.playbackTime = component.playbackTime
         self.playbackSpeed = component.playbackSpeed
         self.isPlaying = component.isPlaying
         self.isLooping = component.isLooping
+        self.enableRootMotion = component.enableRootMotion
     }
 
     public func toComponent() -> AnimatorComponent {
-        AnimatorComponent(clipHandle: clipHandle,
+        AnimatorComponent(evaluationMode: graphHandle != nil ? evaluationMode : .clip,
+                          clipHandle: clipHandle,
+                          graphHandle: graphHandle,
                           playbackTime: playbackTime,
                           playbackSpeed: playbackSpeed,
                           isPlaying: isPlaying,
-                          isLooping: isLooping)
+                          isLooping: isLooping,
+                          enableRootMotion: enableRootMotion)
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        self.evaluationMode = try container.decodeIfPresent(AnimatorEvaluationMode.self, forKey: .evaluationMode) ?? .clip
         self.clipHandle = try container.decodeIfPresent(AssetHandle.self, forKey: .clipHandle)
+        self.graphHandle = try container.decodeIfPresent(AssetHandle.self, forKey: .graphHandle)
         self.playbackTime = try container.decodeIfPresent(Float.self, forKey: .playbackTime) ?? 0.0
         self.playbackSpeed = try container.decodeIfPresent(Float.self, forKey: .playbackSpeed) ?? 1.0
         self.isPlaying = try container.decodeIfPresent(Bool.self, forKey: .isPlaying) ?? true
         self.isLooping = try container.decodeIfPresent(Bool.self, forKey: .isLooping) ?? true
+        self.enableRootMotion = try container.decodeIfPresent(Bool.self, forKey: .enableRootMotion) ?? true
+        if graphHandle != nil, schemaVersion < 2 {
+            self.evaluationMode = .graph
+        }
     }
 }
 

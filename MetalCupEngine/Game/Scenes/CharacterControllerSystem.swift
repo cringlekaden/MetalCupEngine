@@ -48,17 +48,29 @@ public struct CharacterLocomotionOutput {
     public var grounded: Bool
     public var groundNormal: SIMD3<Float>
     public var groundBodyId: UInt64
+    public var rootMotionDeltaMagnitude: Float
+    public var rootMotionEnabled: Bool
+    public var rootMotionActive: Bool
+    public var rootMotionStateName: String
 
     public init(desiredVelocity: SIMD3<Float> = .zero,
                 actualVelocity: SIMD3<Float> = .zero,
                 grounded: Bool = false,
                 groundNormal: SIMD3<Float> = SIMD3<Float>(0.0, 1.0, 0.0),
-                groundBodyId: UInt64 = 0) {
+                groundBodyId: UInt64 = 0,
+                rootMotionDeltaMagnitude: Float = 0.0,
+                rootMotionEnabled: Bool = false,
+                rootMotionActive: Bool = false,
+                rootMotionStateName: String = "") {
         self.desiredVelocity = desiredVelocity
         self.actualVelocity = actualVelocity
         self.grounded = grounded
         self.groundNormal = groundNormal
         self.groundBodyId = groundBodyId
+        self.rootMotionDeltaMagnitude = rootMotionDeltaMagnitude
+        self.rootMotionEnabled = rootMotionEnabled
+        self.rootMotionActive = rootMotionActive
+        self.rootMotionStateName = rootMotionStateName
     }
 }
 
@@ -262,6 +274,19 @@ public final class CharacterControllerSystem {
             controller.lookInput = lookInput
             controller.wantsSprint = sprinting
 
+            var rootMotionDelta = RootMotionDelta()
+            var rootMotionDeltaMagnitude: Float = 0.0
+            var rootMotionEnabled = false
+            var rootMotionActive = false
+            var rootMotionStateName = ""
+            if let rootMotion = resolveRootMotionForController(scene: scene, entity: entity, controller: controller) {
+                rootMotionEnabled = rootMotion.enableRootMotion
+                rootMotionActive = rootMotion.enableRootMotion && rootMotion.usesRootMotion
+                rootMotionStateName = rootMotion.currentStateName
+                rootMotionDelta = sanitizeRootMotionDelta(rootMotion.delta)
+                rootMotionDeltaMagnitude = simd_length(rootMotionDelta.deltaPos)
+            }
+
             let characterForwardAxis = TransformMath.localForward
             if !controller.lookInitialized {
                 let currentRotation = simd_quatf(vector: transform.rotation)
@@ -272,7 +297,7 @@ public final class CharacterControllerSystem {
             }
 
             let lookSensitivity = max(0.0, controller.lookSensitivity)
-            let yawDelta = -lookInput.x * lookSensitivity
+            let yawDelta = rootMotionActive ? 0.0 : (-lookInput.x * lookSensitivity)
             controller.yawRadians += yawDelta
             let minPitch = controller.minPitchDegrees * (.pi / 180.0)
             let maxPitch = controller.maxPitchDegrees * (.pi / 180.0)
@@ -282,13 +307,24 @@ public final class CharacterControllerSystem {
             controller.lookInput = .zero
 
             let upAxis = SIMD3<Float>(0.0, 1.0, 0.0)
-            let yawQuat = simd_quatf(angle: controller.yawRadians, axis: upAxis)
-            let yawRotation = yawQuat.vector
+            var yawQuat = simd_quatf(angle: controller.yawRadians, axis: upAxis)
+            if rootMotionActive {
+                yawQuat = simd_normalize(simd_quatf(vector: rootMotionDelta.deltaRot) * yawQuat)
+                var rootedForward = yawQuat.act(characterForwardAxis)
+                rootedForward.y = 0.0
+                if simd_length_squared(rootedForward) > 1.0e-6 {
+                    rootedForward = simd_normalize(rootedForward)
+                    controller.yawRadians = atan2(rootedForward.x, rootedForward.z)
+                }
+            }
+            let yawRotation = TransformMath.normalizedQuaternion(yawQuat.vector)
+
+            let effectiveMoveInput = rootMotionActive ? SIMD2<Float>.zero : moveInput
 
             let normalizedInput: SIMD2<Float> = {
-                let len = simd_length(moveInput)
+                let len = simd_length(effectiveMoveInput)
                 guard len > 1e-5 else { return .zero }
-                return moveInput / min(1.0, len)
+                return effectiveMoveInput / min(1.0, len)
             }()
 
             var forward = yawQuat.act(characterForwardAxis)
@@ -312,6 +348,8 @@ public final class CharacterControllerSystem {
             let speedMultiplier = sprinting ? max(1.0, controller.sprintMultiplier) : 1.0
             let horizontalVelocity = desiredHorizontal * max(0.0, controller.moveSpeed) * speedMultiplier
             let desiredHorizontalVelocity = SIMD3<Float>(horizontalVelocity.x, 0.0, horizontalVelocity.z)
+            let worldRootDelta = yawQuat.act(rootMotionDelta.deltaPos)
+            let rootHorizontalDisplacement = SIMD3<Float>(worldRootDelta.x, 0.0, worldRootDelta.z)
 
             let worldTransform = scene.ecs.worldTransform(for: entity)
             let createdCharacterThisTick: Bool
@@ -394,7 +432,7 @@ public final class CharacterControllerSystem {
             }
 
             var desiredVelocity = desiredHorizontalVelocity
-            if !wasGrounded {
+            if !rootMotionActive, !wasGrounded {
                 let airControl = simd_clamp(controller.airControl, 0.0, 1.0)
                 if airControl < 0.999 {
                     let currentHorizontal = SIMD3<Float>(controller.velocity.x, 0.0, controller.velocity.z)
@@ -403,10 +441,15 @@ public final class CharacterControllerSystem {
             }
 
             let startPosition = worldTransform.position
-            var updated = physicsSystem.updateCharacter(handle: controller.characterHandle,
-                                                        dt: fixedDelta,
-                                                        desiredVelocity: desiredVelocity,
-                                                        jumpRequested: jumpRequested)
+            var updated = rootMotionActive
+                ? physicsSystem.updateCharacterDisplacement(handle: controller.characterHandle,
+                                                            dt: fixedDelta,
+                                                            desiredDisplacement: rootHorizontalDisplacement,
+                                                            jumpRequested: jumpRequested)
+                : physicsSystem.updateCharacter(handle: controller.characterHandle,
+                                               dt: fixedDelta,
+                                               desiredVelocity: desiredVelocity,
+                                               jumpRequested: jumpRequested)
             if !updated {
                 physicsSystem.destroyCharacter(handle: controller.characterHandle)
                 let desc = PhysicsCharacterCreation(radius: controller.radius,
@@ -419,10 +462,15 @@ public final class CharacterControllerSystem {
                 characterHandlesByEntity[entity.id] = controller.characterHandle
                 if controller.characterHandle != 0 {
                     controller.runtimeConfigApplied = false
-                    updated = physicsSystem.updateCharacter(handle: controller.characterHandle,
-                                                            dt: fixedDelta,
-                                                            desiredVelocity: desiredVelocity,
-                                                            jumpRequested: jumpRequested)
+                    updated = rootMotionActive
+                        ? physicsSystem.updateCharacterDisplacement(handle: controller.characterHandle,
+                                                                    dt: fixedDelta,
+                                                                    desiredDisplacement: rootHorizontalDisplacement,
+                                                                    jumpRequested: jumpRequested)
+                        : physicsSystem.updateCharacter(handle: controller.characterHandle,
+                                                       dt: fixedDelta,
+                                                       desiredVelocity: desiredVelocity,
+                                                       jumpRequested: jumpRequested)
                 }
             }
             guard updated,
@@ -455,12 +503,20 @@ public final class CharacterControllerSystem {
                                                                                           groundNormal: postGroundState.groundNormal,
                                                                                           basisForward: forward,
                                                                                           basisRight: right)
-            let locomotionOutput = CharacterLocomotionOutput(desiredVelocity: desiredVelocity,
+            let debugDesiredVelocity = rootMotionActive && fixedDelta > 1.0e-6
+                ? (rootHorizontalDisplacement / fixedDelta)
+                : desiredVelocity
+            let locomotionOutput = CharacterLocomotionOutput(desiredVelocity: debugDesiredVelocity,
                                                              actualVelocity: actualVelocity,
                                                              grounded: postGroundState.isGrounded,
                                                              groundNormal: postGroundState.groundNormal,
-                                                             groundBodyId: postGroundState.groundBodyId)
+                                                             groundBodyId: postGroundState.groundBodyId,
+                                                             rootMotionDeltaMagnitude: rootMotionDeltaMagnitude,
+                                                             rootMotionEnabled: rootMotionEnabled,
+                                                             rootMotionActive: rootMotionActive,
+                                                             rootMotionStateName: rootMotionStateName)
             locomotionOutputsByEntity[entity.id] = locomotionOutput
+
             stepHook?.postStep(.init(scene: scene,
                                      entity: entity,
                                      fixedDelta: fixedDelta,
@@ -624,6 +680,78 @@ public final class CharacterControllerSystem {
                 queue.append((child, childRender))
             }
         }
+    }
+
+    private func sanitizeRootMotionDelta(_ delta: RootMotionDelta) -> RootMotionDelta {
+        let position = simd3IsFinite(delta.deltaPos) ? delta.deltaPos : .zero
+        let rotation: SIMD4<Float>
+        if simd4IsFinite(delta.deltaRot), simd_length_squared(delta.deltaRot) > 1.0e-8 {
+            rotation = TransformMath.normalizedQuaternion(delta.deltaRot)
+        } else {
+            rotation = TransformMath.identityQuaternion
+        }
+        return RootMotionDelta(deltaPos: position, deltaRot: rotation)
+    }
+
+    private func simd3IsFinite(_ value: SIMD3<Float>) -> Bool {
+        value.x.isFinite && value.y.isFinite && value.z.isFinite
+    }
+
+    private func simd4IsFinite(_ value: SIMD4<Float>) -> Bool {
+        value.x.isFinite && value.y.isFinite && value.z.isFinite && value.w.isFinite
+    }
+
+    private struct ResolvedRootMotion {
+        let delta: RootMotionDelta
+        let usesRootMotion: Bool
+        let enableRootMotion: Bool
+        let currentStateName: String
+    }
+
+    private func resolveRootMotionForController(scene: EngineScene,
+                                                entity: Entity,
+                                                controller: CharacterControllerComponent) -> ResolvedRootMotion? {
+        func readRootMotion(from target: Entity) -> ResolvedRootMotion? {
+            guard let animator = scene.ecs.get(AnimatorComponent.self, for: target),
+                  let poseState = animator.poseRuntimeState else { return nil }
+            return ResolvedRootMotion(delta: poseState.rootMotionDelta,
+                                      usesRootMotion: poseState.usesRootMotion,
+                                      enableRootMotion: animator.enableRootMotion,
+                                      currentStateName: poseState.currentStateName)
+        }
+        func firstRootMotionInSubtree(root: Entity) -> ResolvedRootMotion? {
+            var queue: [Entity] = [root]
+            var cursor = 0
+            while cursor < queue.count {
+                let current = queue[cursor]
+                cursor += 1
+                if let motion = readRootMotion(from: current) {
+                    return motion
+                }
+                let children = scene.ecs.getChildren(current)
+                if !children.isEmpty {
+                    queue.append(contentsOf: children)
+                }
+            }
+            return nil
+        }
+
+        if let direct = readRootMotion(from: entity) {
+            return direct
+        }
+        if let visualID = controller.visualEntityId,
+           let visualEntity = scene.ecs.entity(with: visualID) {
+            if let visual = readRootMotion(from: visualEntity) {
+                return visual
+            }
+            if let nestedVisual = firstRootMotionInSubtree(root: visualEntity) {
+                return nestedVisual
+            }
+        }
+        if let nested = firstRootMotionInSubtree(root: entity) {
+            return nested
+        }
+        return nil
     }
 }
 private struct DefaultCharacterGroundProvider: CharacterGroundProvider {

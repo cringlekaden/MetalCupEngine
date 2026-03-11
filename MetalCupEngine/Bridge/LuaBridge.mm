@@ -33,6 +33,10 @@ namespace {
     using LuaEntityJumpCallback = void (*)(void *hostContext, const char *entityId);
     using LuaEntityIsGroundedCallback = uint32_t (*)(void *hostContext, const char *entityId);
     using LuaEntityGetVelocityCallback = uint32_t (*)(void *hostContext, const char *entityId, float *velocityOut);
+    using LuaEntityResolveAnimatorEntityCallback = uint32_t (*)(void *hostContext, const char *entityId, char *buffer, int32_t bufferSize);
+    using LuaEntitySetAnimatorFloatCallback = uint32_t (*)(void *hostContext, const char *entityId, const char *parameterName, float value);
+    using LuaEntitySetAnimatorBoolCallback = uint32_t (*)(void *hostContext, const char *entityId, const char *parameterName, uint32_t value);
+    using LuaEntitySetAnimatorTriggerCallback = uint32_t (*)(void *hostContext, const char *entityId, const char *parameterName);
     using LuaInputIsKeyDownCallback = uint32_t (*)(void *hostContext, uint16_t keyCode);
     using LuaInputWasKeyPressedCallback = uint32_t (*)(void *hostContext, uint16_t keyCode);
     using LuaInputGetMouseDeltaCallback = uint32_t (*)(void *hostContext, float *deltaOut);
@@ -44,6 +48,7 @@ namespace {
     static constexpr int kEntityIdBufferSize = 64;
 
     struct LuaScriptHost;
+    static void PushEntityRef(lua_State *L, LuaScriptHost *host, const char *entityId, bool includeControllerAPI);
 
     struct LuaScriptInstance {
         std::string scriptPath;
@@ -71,6 +76,10 @@ namespace {
         LuaEntityJumpCallback entityJumpCallback = nullptr;
         LuaEntityIsGroundedCallback entityIsGroundedCallback = nullptr;
         LuaEntityGetVelocityCallback entityGetVelocityCallback = nullptr;
+        LuaEntityResolveAnimatorEntityCallback entityResolveAnimatorEntityCallback = nullptr;
+        LuaEntitySetAnimatorFloatCallback entitySetAnimatorFloatCallback = nullptr;
+        LuaEntitySetAnimatorBoolCallback entitySetAnimatorBoolCallback = nullptr;
+        LuaEntitySetAnimatorTriggerCallback entitySetAnimatorTriggerCallback = nullptr;
         LuaInputIsKeyDownCallback inputIsKeyDownCallback = nullptr;
         LuaInputWasKeyPressedCallback inputWasKeyPressedCallback = nullptr;
         LuaInputGetMouseDeltaCallback inputGetMouseDeltaCallback = nullptr;
@@ -418,6 +427,74 @@ namespace {
         return 1;
     }
 
+    static int LuaEntitySetAnimatorFloat(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entitySetAnimatorFloatCallback) { return 0; }
+        int first = lua_istable(L, 1) ? 2 : 1;
+        const char *parameterName = luaL_optstring(L, first, "");
+        if (!parameterName || parameterName[0] == 0) { return 0; }
+        const float value = static_cast<float>(luaL_optnumber(L, first + 1, 0.0));
+        const uint32_t ok = host->entitySetAnimatorFloatCallback(host->hostContext, BoundEntityId(L), parameterName, value);
+        lua_pushboolean(L, ok != 0 ? 1 : 0);
+        return 1;
+    }
+
+    static int LuaEntitySetAnimatorBool(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entitySetAnimatorBoolCallback) { return 0; }
+        int first = lua_istable(L, 1) ? 2 : 1;
+        const char *parameterName = luaL_optstring(L, first, "");
+        if (!parameterName || parameterName[0] == 0) { return 0; }
+        const uint32_t value = lua_toboolean(L, first + 1) ? 1u : 0u;
+        const uint32_t ok = host->entitySetAnimatorBoolCallback(host->hostContext, BoundEntityId(L), parameterName, value);
+        lua_pushboolean(L, ok != 0 ? 1 : 0);
+        return 1;
+    }
+
+    static int LuaEntitySetAnimatorTrigger(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entitySetAnimatorTriggerCallback) { return 0; }
+        int first = lua_istable(L, 1) ? 2 : 1;
+        const char *parameterName = luaL_optstring(L, first, "");
+        if (!parameterName || parameterName[0] == 0) { return 0; }
+        const uint32_t ok = host->entitySetAnimatorTriggerCallback(host->hostContext, BoundEntityId(L), parameterName);
+        lua_pushboolean(L, ok != 0 ? 1 : 0);
+        return 1;
+    }
+
+    static int LuaEntityGetAnimator(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host) {
+            lua_pushnil(L);
+            return 1;
+        }
+        const char *entityId = BoundEntityId(L);
+        lua_createtable(L, 0, 3);
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetAnimatorFloat, 2); lua_setfield(L, -2, "SetFloat");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetAnimatorBool, 2); lua_setfield(L, -2, "SetBool");
+        lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetAnimatorTrigger, 2); lua_setfield(L, -2, "SetTrigger");
+        return 1;
+    }
+
+    static int LuaEntityGetAnimatorEntity(lua_State *L) {
+        LuaScriptHost *host = BoundHostOrNil(L);
+        if (!host || !host->entityResolveAnimatorEntityCallback) {
+            lua_pushnil(L);
+            return 1;
+        }
+        char resolvedEntityId[kEntityIdBufferSize] = {0};
+        const uint32_t ok = host->entityResolveAnimatorEntityCallback(host->hostContext,
+                                                                       BoundEntityId(L),
+                                                                       resolvedEntityId,
+                                                                       static_cast<int32_t>(sizeof(resolvedEntityId)));
+        if (ok == 0 || resolvedEntityId[0] == 0) {
+            lua_pushnil(L);
+            return 1;
+        }
+        PushEntityRef(L, host, resolvedEntityId, true);
+        return 1;
+    }
+
     static int LuaInputIsKeyDown(lua_State *L) {
         LuaScriptHost *host = static_cast<LuaScriptHost *>(lua_touserdata(L, lua_upvalueindex(1)));
         if (!host || !host->inputIsKeyDownCallback) {
@@ -583,7 +660,7 @@ namespace {
     }
 
     static void PushEntityRef(lua_State *L, LuaScriptHost *host, const char *entityId, bool includeControllerAPI) {
-        lua_createtable(L, 0, includeControllerAPI ? 16 : 12);
+        lua_createtable(L, 0, includeControllerAPI ? 17 : 12);
         lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityRefIsValid, 2); lua_setfield(L, -2, "IsValid");
         lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityRefGetUUID, 2); lua_setfield(L, -2, "GetUUID");
         lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityGetName, 2); lua_setfield(L, -2, "GetName");
@@ -599,6 +676,8 @@ namespace {
         lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetScale, 2); lua_setfield(L, -2, "SetScale");
         if (includeControllerAPI) {
             lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityGetCharacterController, 2); lua_setfield(L, -2, "GetCharacterController");
+            lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityGetAnimator, 2); lua_setfield(L, -2, "GetAnimator");
+            lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityGetAnimatorEntity, 2); lua_setfield(L, -2, "GetAnimatorEntity");
             lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityMove, 2); lua_setfield(L, -2, "Move");
             lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntitySetLookInput, 2); lua_setfield(L, -2, "SetLookInput");
             lua_pushlightuserdata(L, host); lua_pushstring(L, entityId); lua_pushcclosure(L, LuaEntityJump, 2); lua_setfield(L, -2, "Jump");
@@ -1145,6 +1224,10 @@ extern "C" void *MCELuaRuntimeCreate(void *hostContext,
                                      LuaEntityJumpCallback entityJumpCallback,
                                      LuaEntityIsGroundedCallback entityIsGroundedCallback,
                                      LuaEntityGetVelocityCallback entityGetVelocityCallback,
+                                     LuaEntityResolveAnimatorEntityCallback entityResolveAnimatorEntityCallback,
+                                     LuaEntitySetAnimatorFloatCallback entitySetAnimatorFloatCallback,
+                                     LuaEntitySetAnimatorBoolCallback entitySetAnimatorBoolCallback,
+                                     LuaEntitySetAnimatorTriggerCallback entitySetAnimatorTriggerCallback,
                                      LuaInputIsKeyDownCallback inputIsKeyDownCallback,
                                      LuaInputWasKeyPressedCallback inputWasKeyPressedCallback,
                                      LuaInputGetMouseDeltaCallback inputGetMouseDeltaCallback,
@@ -1166,6 +1249,10 @@ extern "C" void *MCELuaRuntimeCreate(void *hostContext,
     host->entityJumpCallback = entityJumpCallback;
     host->entityIsGroundedCallback = entityIsGroundedCallback;
     host->entityGetVelocityCallback = entityGetVelocityCallback;
+    host->entityResolveAnimatorEntityCallback = entityResolveAnimatorEntityCallback;
+    host->entitySetAnimatorFloatCallback = entitySetAnimatorFloatCallback;
+    host->entitySetAnimatorBoolCallback = entitySetAnimatorBoolCallback;
+    host->entitySetAnimatorTriggerCallback = entitySetAnimatorTriggerCallback;
     host->inputIsKeyDownCallback = inputIsKeyDownCallback;
     host->inputWasKeyPressedCallback = inputWasKeyPressedCallback;
     host->inputGetMouseDeltaCallback = inputGetMouseDeltaCallback;

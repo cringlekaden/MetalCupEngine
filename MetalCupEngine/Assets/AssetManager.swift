@@ -33,11 +33,16 @@ public final class AssetManager {
     private var materialCache: [AssetHandle: MaterialAsset] = [:]
     private var skeletonCache: [AssetHandle: SkeletonAsset] = [:]
     private var animationClipCache: [AssetHandle: AnimationClipAsset] = [:]
+    private var animationGraphCache: [AssetHandle: AnimationGraphAsset] = [:]
+    private var compiledAnimationGraphCache: [AssetHandle: CompiledAnimationGraph] = [:]
+    private var loggedInvalidAnimationGraphHandles: Set<AssetHandle> = []
+    private var failedAnimationGraphHandles: Set<AssetHandle> = []
     private var materialCacheModified: [AssetHandle: TimeInterval] = [:]
     private var runtimeTextureHandles = Set<AssetHandle>()
     private var runtimeMeshHandles = Set<AssetHandle>()
     private var runtimeSkeletonHandles = Set<AssetHandle>()
     private var runtimeAnimationClipHandles = Set<AssetHandle>()
+    private var runtimeAnimationGraphHandles = Set<AssetHandle>()
     private var cacheRevision: UInt64 = 0
     private let cacheLock = NSLock()
 
@@ -317,6 +322,70 @@ public final class AssetManager {
         return clip
     }
 
+    public func animationGraph(handle: AssetHandle) -> AnimationGraphAsset? {
+        cacheLock.lock()
+        let cached = animationGraphCache[handle]
+        let failedPreviously = failedAnimationGraphHandles.contains(handle)
+        cacheLock.unlock()
+        if let cached { return cached }
+        if failedPreviously { return nil }
+        guard let database = assetDatabase,
+              let url = database.assetURL(for: handle) else { return nil }
+        guard let graph = AnimationGraphAssetSerializer.load(from: url, fallbackHandle: handle) else {
+            cacheLock.lock()
+            failedAnimationGraphHandles.insert(handle)
+            cacheLock.unlock()
+            return nil
+        }
+        cacheLock.lock()
+        animationGraphCache[handle] = graph
+        failedAnimationGraphHandles.remove(handle)
+        cacheLock.unlock()
+        return graph
+    }
+
+    public func compiledAnimationGraph(handle: AssetHandle) -> CompiledAnimationGraph? {
+        cacheLock.lock()
+        let cached = compiledAnimationGraphCache[handle]
+        let failedPreviously = loggedInvalidAnimationGraphHandles.contains(handle)
+        cacheLock.unlock()
+        if let cached { return cached }
+        if failedPreviously { return nil }
+        guard let graph = animationGraph(handle: handle) else { return nil }
+        let compileResult = AnimationGraphCompiler.compile(asset: graph) { [weak self] (clipHandle: AssetHandle) in
+            guard let self else { return false }
+            return self.animationClip(handle: clipHandle) != nil
+        }
+        switch compileResult {
+        case let .success(compiled):
+            cacheLock.lock()
+            compiledAnimationGraphCache[handle] = compiled
+            cacheLock.unlock()
+            return compiled
+        case let .failure(error):
+            cacheLock.lock()
+            let shouldLog = !loggedInvalidAnimationGraphHandles.contains(handle)
+            if shouldLog {
+                loggedInvalidAnimationGraphHandles.insert(handle)
+            }
+            cacheLock.unlock()
+            if shouldLog {
+                let diagnostics: [String]
+                switch error {
+                case let .invalidGraph(messages):
+                    diagnostics = messages
+                }
+                let details = diagnostics.isEmpty ? "unknown compile failure" : diagnostics.joined(separator: " | ")
+                EngineLoggerContext.log(
+                    "Animation graph compile failed handle=\(handle.rawValue.uuidString) diagnostics=\(details)",
+                    level: .warning,
+                    category: .assets
+                )
+            }
+            return nil
+        }
+    }
+
     public func registerRuntimeTexture(handle: AssetHandle, texture: MTLTexture) {
         cacheLock.lock()
         textureCache[handle] = texture
@@ -349,6 +418,17 @@ public final class AssetManager {
         cacheLock.unlock()
     }
 
+    public func registerRuntimeAnimationGraph(handle: AssetHandle, graph: AnimationGraphAsset, compiled: CompiledAnimationGraph?) {
+        cacheLock.lock()
+        animationGraphCache[handle] = graph
+        if let compiled {
+            compiledAnimationGraphCache[handle] = compiled
+        }
+        runtimeAnimationGraphHandles.insert(handle)
+        cacheRevision &+= 1
+        cacheLock.unlock()
+    }
+
     public func preload(from database: AssetDatabase) {
         for metadata in database.allMetadata() {
             switch metadata.type {
@@ -365,6 +445,8 @@ public final class AssetManager {
                 _ = skeleton(handle: metadata.handle)
             case .animationClip:
                 _ = animationClip(handle: metadata.handle)
+            case .animationGraph:
+                _ = compiledAnimationGraph(handle: metadata.handle)
             default:
                 break
             }
@@ -382,6 +464,10 @@ public final class AssetManager {
         meshUnresolvedLoggedHandles.removeAll()
         skeletonCache = skeletonCache.filter { runtimeSkeletonHandles.contains($0.key) }
         animationClipCache = animationClipCache.filter { runtimeAnimationClipHandles.contains($0.key) }
+        animationGraphCache = animationGraphCache.filter { runtimeAnimationGraphHandles.contains($0.key) }
+        compiledAnimationGraphCache = compiledAnimationGraphCache.filter { runtimeAnimationGraphHandles.contains($0.key) }
+        loggedInvalidAnimationGraphHandles.removeAll()
+        failedAnimationGraphHandles.removeAll()
         materialCache.removeAll()
         materialCacheModified.removeAll()
         cacheRevision &+= 1
