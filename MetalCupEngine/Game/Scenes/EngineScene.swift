@@ -109,6 +109,7 @@ public class EngineScene {
     private let audioSceneSystem = AudioSceneSystem()
     private var loggedAnimationEvaluationModes: Set<TransformAuthorityMode> = []
     private var loggedAnimatorParameterSignatures: Set<String> = []
+    private var loggedAnimatorResolutionEntities: Set<UUID> = []
     private var animationGraphDebugLoggingEnabled: Bool {
 #if DEBUG
         ProcessInfo.processInfo.environment["MCE_ANIM_GRAPH_DEBUG"] == "1"
@@ -443,46 +444,81 @@ public class EngineScene {
 
     public func animatorGraphOwnerEntityID(for sourceEntityId: UUID) -> UUID? {
         guard let sourceEntity = ecs.entity(with: sourceEntityId) else { return nil }
-        if hasGraphAnimator(entity: sourceEntity) {
+        if hasAnimatorComponent(entity: sourceEntity) {
+            logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
+                                     resolvedEntityId: sourceEntity.id,
+                                     source: "explicit")
             return sourceEntity.id
         }
 
-        guard var controller = ecs.get(CharacterControllerComponent.self, for: sourceEntity) else { return nil }
+        var controller = ecs.get(CharacterControllerComponent.self, for: sourceEntity)
+        if let visualID = controller?.visualEntityId,
+           let visualEntity = ecs.entity(with: visualID),
+           hasAnimatorComponent(entity: visualEntity) {
+            logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
+                                     resolvedEntityId: visualEntity.id,
+                                     source: "explicit")
+            return visualEntity.id
+        }
 
-        var resolvedEntity: Entity?
-        if let visualID = controller.visualEntityId,
-           let visualEntity = ecs.entity(with: visualID) {
-            if hasGraphAnimator(entity: visualEntity) {
-                resolvedEntity = visualEntity
-            } else {
-                resolvedEntity = firstGraphAnimatorEntity(inSubtreeRootedAt: visualEntity)
+        if let directChild = firstAnimatorChild(of: sourceEntity) {
+            controller?.visualEntityId = directChild.id
+            if let controller {
+                ecs.add(controller, to: sourceEntity)
+            }
+            logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
+                                     resolvedEntityId: directChild.id,
+                                     source: "child")
+            return directChild.id
+        }
+
+        if let visualID = controller?.visualEntityId,
+           let visualEntity = ecs.entity(with: visualID),
+           let nestedVisual = firstAnimatorEntity(inSubtreeRootedAt: visualEntity) {
+            controller?.visualEntityId = nestedVisual.id
+            if let controller {
+                ecs.add(controller, to: sourceEntity)
+            }
+            logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
+                                     resolvedEntityId: nestedVisual.id,
+                                     source: "subtreeSearch")
+            return nestedVisual.id
+        }
+
+        if let nested = firstAnimatorEntity(inSubtreeRootedAt: sourceEntity) {
+            controller?.visualEntityId = nested.id
+            if let controller {
+                ecs.add(controller, to: sourceEntity)
+            }
+            logAnimatorResolutionOnce(sourceEntityId: sourceEntity.id,
+                                     resolvedEntityId: nested.id,
+                                     source: "subtreeSearch")
+            return nested.id
+        }
+
+        return nil
+    }
+
+    private func hasAnimatorComponent(entity: Entity) -> Bool {
+        ecs.get(AnimatorComponent.self, for: entity) != nil
+    }
+
+    private func firstAnimatorChild(of root: Entity) -> Entity? {
+        for child in ecs.getChildren(root) {
+            if hasAnimatorComponent(entity: child) {
+                return child
             }
         }
-
-        if resolvedEntity == nil {
-            resolvedEntity = firstGraphAnimatorEntity(inSubtreeRootedAt: sourceEntity)
-        }
-
-        guard let resolvedEntity else { return nil }
-        if controller.visualEntityId != resolvedEntity.id {
-            controller.visualEntityId = resolvedEntity.id
-            ecs.add(controller, to: sourceEntity)
-        }
-        return resolvedEntity.id
+        return nil
     }
 
-    private func hasGraphAnimator(entity: Entity) -> Bool {
-        guard let animator = ecs.get(AnimatorComponent.self, for: entity) else { return false }
-        return animator.evaluationMode == .graph && animator.graphHandle != nil
-    }
-
-    private func firstGraphAnimatorEntity(inSubtreeRootedAt root: Entity) -> Entity? {
+    private func firstAnimatorEntity(inSubtreeRootedAt root: Entity) -> Entity? {
         var queue: [Entity] = [root]
         var cursor = 0
         while cursor < queue.count {
             let current = queue[cursor]
             cursor += 1
-            if hasGraphAnimator(entity: current) {
+            if hasAnimatorComponent(entity: current) {
                 return current
             }
             let children = ecs.getChildren(current)
@@ -491,6 +527,17 @@ public class EngineScene {
             }
         }
         return nil
+    }
+
+    private func logAnimatorResolutionOnce(sourceEntityId: UUID,
+                                           resolvedEntityId: UUID,
+                                           source: String) {
+        guard let engineContext else { return }
+        guard loggedAnimatorResolutionEntities.insert(sourceEntityId).inserted else { return }
+        engineContext.log.logInfo(
+            "Animator entity resolved sourceEntity=\(sourceEntityId.uuidString) animatorEntity=\(resolvedEntityId.uuidString) resolutionSource=\(source)",
+            category: .scene
+        )
     }
 
     @discardableResult

@@ -129,12 +129,23 @@ public struct AnimationGraphAssetDocument: Codable {
     }
 
     public struct StateDocument: Codable {
+        public struct RootMotionSettingsDocument: Codable {
+            public var translationSourceJointName: String?
+            public var rotationSourceJointName: String?
+            public var consumeJointName: String?
+            public var applyTranslation: Bool?
+            public var applyRotation: Bool?
+            public var consumeTranslation: Bool?
+            public var consumeRotation: Bool?
+        }
+
         public var id: String
         public var name: String
         public var clipHandle: String?
         public var nodeID: String?
         public var isOneShot: Bool?
         public var usesRootMotion: Bool?
+        public var rootMotion: RootMotionSettingsDocument?
     }
 
     public struct StateMachineDocument: Codable {
@@ -400,12 +411,24 @@ public enum AnimationGraphAssetSerializer {
                             return AssetHandle(rawValue: uuid)
                         }
                         let stateNodeID = state.nodeID.flatMap(UUID.init(uuidString:))
+                        let rootMotionSettings = state.rootMotion.map { rootMotion in
+                            AnimationGraphStateDefinition.RootMotionSettings(
+                                translationSourceJointName: rootMotion.translationSourceJointName,
+                                rotationSourceJointName: rootMotion.rotationSourceJointName,
+                                consumeJointName: rootMotion.consumeJointName,
+                                applyTranslation: rootMotion.applyTranslation,
+                                applyRotation: rootMotion.applyRotation,
+                                consumeTranslation: rootMotion.consumeTranslation,
+                                consumeRotation: rootMotion.consumeRotation
+                            )
+                        }
                         return AnimationGraphStateDefinition(id: stateID,
                                                              name: state.name,
                                                              clipHandle: stateClipHandle,
                                                              nodeID: stateNodeID,
                                                              isOneShot: state.isOneShot ?? false,
-                                                             usesRootMotion: state.usesRootMotion ?? inferredRootMotionUsage(for: state.name))
+                                                             usesRootMotion: state.usesRootMotion ?? inferredRootMotionUsage(for: state.name),
+                                                             rootMotion: rootMotionSettings)
                     }
                     let transitions = machine.transitions.compactMap { transition -> AnimationGraphTransitionDefinition? in
                         guard let transitionID = UUID(uuidString: transition.id),
@@ -528,7 +551,18 @@ public enum AnimationGraphAssetSerializer {
                                 clipHandle: state.clipHandle?.rawValue.uuidString,
                                 nodeID: state.nodeID?.uuidString,
                                 isOneShot: state.isOneShot,
-                                usesRootMotion: state.usesRootMotion
+                                usesRootMotion: state.usesRootMotion,
+                                rootMotion: state.rootMotion.map { rootMotion in
+                                    AnimationGraphAssetDocument.StateDocument.RootMotionSettingsDocument(
+                                        translationSourceJointName: rootMotion.translationSourceJointName,
+                                        rotationSourceJointName: rootMotion.rotationSourceJointName,
+                                        consumeJointName: rootMotion.consumeJointName,
+                                        applyTranslation: rootMotion.applyTranslation,
+                                        applyRotation: rootMotion.applyRotation,
+                                        consumeTranslation: rootMotion.consumeTranslation,
+                                        consumeRotation: rootMotion.consumeRotation
+                                    )
+                                }
                             )
                         },
                         transitions: machine.transitions.map { transition in

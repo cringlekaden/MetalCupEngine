@@ -670,6 +670,12 @@ public struct AnimationPoseRuntimeState {
     public var rootMotionBoneName: String
     public var rootMotionJointIndex: Int
     public var rootMotionTrackConsumed: Bool
+    public var rootMotionTranslationBoneName: String
+    public var rootMotionTranslationJointIndex: Int
+    public var rootMotionRotationBoneName: String
+    public var rootMotionRotationJointIndex: Int
+    public var rootMotionConsumeBoneName: String
+    public var rootMotionConsumeJointIndex: Int
 
     public init(sampleTime: Float = 0.0,
                 localPose: [TransformComponent] = [],
@@ -679,7 +685,13 @@ public struct AnimationPoseRuntimeState {
                 currentStateName: String = "",
                 rootMotionBoneName: String = "",
                 rootMotionJointIndex: Int = -1,
-                rootMotionTrackConsumed: Bool = false) {
+                rootMotionTrackConsumed: Bool = false,
+                rootMotionTranslationBoneName: String = "",
+                rootMotionTranslationJointIndex: Int = -1,
+                rootMotionRotationBoneName: String = "",
+                rootMotionRotationJointIndex: Int = -1,
+                rootMotionConsumeBoneName: String = "",
+                rootMotionConsumeJointIndex: Int = -1) {
         self.sampleTime = sampleTime
         self.localPose = localPose
         self.globalPose = globalPose
@@ -689,6 +701,12 @@ public struct AnimationPoseRuntimeState {
         self.rootMotionBoneName = rootMotionBoneName
         self.rootMotionJointIndex = rootMotionJointIndex
         self.rootMotionTrackConsumed = rootMotionTrackConsumed
+        self.rootMotionTranslationBoneName = rootMotionTranslationBoneName
+        self.rootMotionTranslationJointIndex = rootMotionTranslationJointIndex
+        self.rootMotionRotationBoneName = rootMotionRotationBoneName
+        self.rootMotionRotationJointIndex = rootMotionRotationJointIndex
+        self.rootMotionConsumeBoneName = rootMotionConsumeBoneName
+        self.rootMotionConsumeJointIndex = rootMotionConsumeJointIndex
     }
 }
 

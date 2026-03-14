@@ -121,6 +121,17 @@ public protocol CharacterControllerStepHook {
 }
 
 public final class CharacterControllerSystem {
+    private struct LocalMovementIntent {
+        let raw: SIMD2<Float>
+        let direction: SIMD2<Float>
+        let magnitude: Float
+    }
+
+    private struct PlanarMovementBasis {
+        let forward: SIMD3<Float>
+        let right: SIMD3<Float>
+    }
+
     private struct CharacterInterpolationState {
         var prevPosition: SIMD3<Float>
         var currPosition: SIMD3<Float>
@@ -139,6 +150,22 @@ public final class CharacterControllerSystem {
     private var renderWorldTransformCache: [UUID: TransformComponent] = [:]
     private var locomotionOutputsByEntity: [UUID: CharacterLocomotionOutput] = [:]
     private var debugVisualizationByEntity: [UUID: CharacterControllerDebugVisualization] = [:]
+    private struct RuntimeAnimationDiagnosticsState {
+        var currentState: String
+        var nextState: String
+        var rootMotionActive: Bool
+        var grounded: Bool
+        var jumpTriggerLatched: Bool
+        var translationSourceJointIndex: Int
+        var rotationSourceJointIndex: Int
+        var consumeJointIndex: Int
+    }
+    private var runtimeDiagnosticsByEntity: [UUID: RuntimeAnimationDiagnosticsState] = [:]
+    private var loggedRootMotionFailureKeys: Set<String> = []
+    private var timelineSecondsByEntity: [UUID: Float] = [:]
+    private var jumpStartEntryTimeByEntity: [UUID: Float] = [:]
+    private var jumpImpulseTimeByEntity: [UUID: Float] = [:]
+    private var lastCardinalIntentKeyByEntity: [UUID: String] = [:]
     private var groundProvider: CharacterGroundProvider = DefaultCharacterGroundProvider()
     private var stepHook: CharacterControllerStepHook?
 
@@ -267,24 +294,61 @@ public final class CharacterControllerSystem {
                 return
             }
 
-            let moveInput = characterMoveRequests[entity.id] ?? controller.moveInput
+            let timelineSeconds = (timelineSecondsByEntity[entity.id] ?? 0.0) + fixedDelta
+            timelineSecondsByEntity[entity.id] = timelineSeconds
+
+            let requestedInput = characterMoveRequests[entity.id] ?? controller.moveInput
             let lookInput = characterLookRequests[entity.id] ?? controller.lookInput
             let sprinting = characterSprintRequests[entity.id] ?? controller.wantsSprint
-            controller.moveInput = moveInput
+            let movementIntent = makeLocalMovementIntent(from: requestedInput)
+            let rawInputIntent = movementIntent.raw
+            let movementMagnitude = movementIntent.magnitude
+            let movementDirectionLocal = movementIntent.direction
+            let movementIntentLocal = movementIntent.raw
+            controller.moveInput = movementIntentLocal
             controller.lookInput = lookInput
             controller.wantsSprint = sprinting
 
             var rootMotionDelta = RootMotionDelta()
             var rootMotionDeltaMagnitude: Float = 0.0
+            var rootMotionDeltaRotationMagnitude: Float = 0.0
             var rootMotionEnabled = false
+            var rootMotionUsesCurrentState = false
             var rootMotionActive = false
             var rootMotionStateName = ""
+            var nextStateName = ""
+            var jumpTriggerLatched = false
+            var jumpStateSampleTime: Float = 0.0
+            var jumpStateNormalizedTime: Float = 0.0
+            var rootMotionTranslationSourceJointName = ""
+            var rootMotionTranslationSourceJointIndex = -1
+            var rootMotionRotationSourceJointName = ""
+            var rootMotionRotationSourceJointIndex = -1
+            var rootMotionConsumeJointName = ""
+            var rootMotionConsumeJointIndex = -1
+            var rootMotionSourceEntityID: UUID? = nil
+            var rootMotionSourceWorldScale: Float = 1.0
             if let rootMotion = resolveRootMotionForController(scene: scene, entity: entity, controller: controller) {
                 rootMotionEnabled = rootMotion.enableRootMotion
+                rootMotionUsesCurrentState = rootMotion.usesRootMotion
                 rootMotionActive = rootMotion.enableRootMotion && rootMotion.usesRootMotion
                 rootMotionStateName = rootMotion.currentStateName
+                nextStateName = rootMotion.nextStateName
+                jumpTriggerLatched = rootMotion.jumpTriggerLatched
+                jumpStateSampleTime = rootMotion.sampleTime
+                jumpStateNormalizedTime = runtimeStatePlaybackNormalized(sampleTime: rootMotion.sampleTime,
+                                                                        duration: rootMotion.sampleDuration)
                 rootMotionDelta = sanitizeRootMotionDelta(rootMotion.delta)
                 rootMotionDeltaMagnitude = simd_length(rootMotionDelta.deltaPos)
+                rootMotionDeltaRotationMagnitude = rootMotionRotationMagnitudeRadians(rootMotionDelta)
+                rootMotionTranslationSourceJointName = rootMotion.translationSourceJointName
+                rootMotionTranslationSourceJointIndex = rootMotion.translationSourceJointIndex
+                rootMotionRotationSourceJointName = rootMotion.rotationSourceJointName
+                rootMotionRotationSourceJointIndex = rootMotion.rotationSourceJointIndex
+                rootMotionConsumeJointName = rootMotion.consumeJointName
+                rootMotionConsumeJointIndex = rootMotion.consumeJointIndex
+                rootMotionSourceEntityID = rootMotion.sourceEntityID
+                rootMotionSourceWorldScale = rootMotion.sourceWorldScale
             }
 
             let characterForwardAxis = TransformMath.localForward
@@ -297,7 +361,7 @@ public final class CharacterControllerSystem {
             }
 
             let lookSensitivity = max(0.0, controller.lookSensitivity)
-            let yawDelta = rootMotionActive ? 0.0 : (-lookInput.x * lookSensitivity)
+            let yawDelta = -lookInput.x * lookSensitivity
             controller.yawRadians += yawDelta
             let minPitch = controller.minPitchDegrees * (.pi / 180.0)
             let maxPitch = controller.maxPitchDegrees * (.pi / 180.0)
@@ -307,51 +371,68 @@ public final class CharacterControllerSystem {
             controller.lookInput = .zero
 
             let upAxis = SIMD3<Float>(0.0, 1.0, 0.0)
-            var yawQuat = simd_quatf(angle: controller.yawRadians, axis: upAxis)
-            if rootMotionActive {
-                yawQuat = simd_normalize(simd_quatf(vector: rootMotionDelta.deltaRot) * yawQuat)
-                var rootedForward = yawQuat.act(characterForwardAxis)
+            let cameraYawQuat = simd_quatf(angle: controller.yawRadians, axis: upAxis)
+            var characterYawQuat = cameraYawQuat
+            if rootMotionActive, rootMotionDeltaRotationMagnitude > 1.0e-5 {
+                characterYawQuat = simd_normalize(simd_quatf(vector: rootMotionDelta.deltaRot) * characterYawQuat)
+                var rootedForward = characterYawQuat.act(characterForwardAxis)
                 rootedForward.y = 0.0
                 if simd_length_squared(rootedForward) > 1.0e-6 {
                     rootedForward = simd_normalize(rootedForward)
                     controller.yawRadians = atan2(rootedForward.x, rootedForward.z)
                 }
             }
-            let yawRotation = TransformMath.normalizedQuaternion(yawQuat.vector)
+            let yawRotation = TransformMath.normalizedQuaternion(characterYawQuat.vector)
 
-            let effectiveMoveInput = rootMotionActive ? SIMD2<Float>.zero : moveInput
+            let normalizedInput = movementDirectionLocal
 
-            let normalizedInput: SIMD2<Float> = {
-                let len = simd_length(effectiveMoveInput)
-                guard len > 1e-5 else { return .zero }
-                return effectiveMoveInput / min(1.0, len)
-            }()
+            let basis = makePlanarMovementBasis(cameraYawQuat: cameraYawQuat, fallbackForward: characterForwardAxis)
+            let forward = basis.forward
+            let right = basis.right
 
-            var forward = yawQuat.act(characterForwardAxis)
-            forward.y = 0.0
-            if simd_length_squared(forward) > 1.0e-6 {
-                forward = simd_normalize(forward)
-            } else {
-                forward = characterForwardAxis
-            }
-            var right = simd_cross(upAxis, forward)
-            if simd_length_squared(right) > 1.0e-6 {
-                right = simd_normalize(right)
-            } else {
-                right = SIMD3<Float>(1.0, 0.0, 0.0)
-            }
-
-            var desiredHorizontal = right * (-normalizedInput.x) + forward * normalizedInput.y
-            if simd_length_squared(desiredHorizontal) > 1e-6 {
+            var desiredHorizontal = projectLocalIntentDirectionToWorld(normalizedInput, basis: basis)
+            if simd_length_squared(desiredHorizontal) > 1.0e-6 {
                 desiredHorizontal = simd_normalize(desiredHorizontal)
             }
             let speedMultiplier = sprinting ? max(1.0, controller.sprintMultiplier) : 1.0
             let horizontalVelocity = desiredHorizontal * max(0.0, controller.moveSpeed) * speedMultiplier
             let desiredHorizontalVelocity = SIMD3<Float>(horizontalVelocity.x, 0.0, horizontalVelocity.z)
-            let worldRootDelta = yawQuat.act(rootMotionDelta.deltaPos)
-            let rootHorizontalDisplacement = SIMD3<Float>(worldRootDelta.x, 0.0, worldRootDelta.z)
-
             let worldTransform = scene.ecs.worldTransform(for: entity)
+            let controllerScale = worldTransform.scale.x
+            let animatorVisualScale = rootMotionSourceWorldScale
+            let rawLocalRootDelta = SIMD3<Float>(rootMotionDelta.deltaPos.x, 0.0, rootMotionDelta.deltaPos.z)
+            let locomotionStateActive = rootMotionStateName.caseInsensitiveCompare("Locomotion") == .orderedSame
+            let rootPlanarMagnitude = simd_length(SIMD2<Float>(rawLocalRootDelta.x, rawLocalRootDelta.z))
+            let localRootDelta: SIMD3<Float>
+            if locomotionStateActive {
+                let localIntent = SIMD2<Float>(normalizedInput.x, normalizedInput.y)
+                if simd_length_squared(localIntent) > 1.0e-10, rootPlanarMagnitude > 1.0e-10 {
+                    let intentDirection = simd_normalize(localIntent)
+                    let correctedX = -intentDirection.x
+                    localRootDelta = SIMD3<Float>(correctedX * rootPlanarMagnitude,
+                                                  0.0,
+                                                  intentDirection.y * rootPlanarMagnitude)
+                } else {
+                    localRootDelta = .zero
+                }
+            } else {
+                localRootDelta = rawLocalRootDelta
+            }
+            let scaledRootDelta = localRootDelta * animatorVisualScale
+            let worldRootDelta = projectLocalRootDeltaToWorld(scaledRootDelta, basis: basis)
+            var rootHorizontalDisplacement = SIMD3<Float>(worldRootDelta.x, 0.0, worldRootDelta.z)
+            var usedRootMotionFallbackDisplacement = false
+            if rootMotionActive && simd_length_squared(rootHorizontalDisplacement) <= 1.0e-10 {
+                if simd_length_squared(movementDirectionLocal) > 1.0e-10 {
+                    var fallbackDirection = projectLocalIntentDirectionToWorld(movementDirectionLocal, basis: basis)
+                    if simd_length_squared(fallbackDirection) > 1.0e-6 {
+                        fallbackDirection = simd_normalize(fallbackDirection)
+                    }
+                    let fallbackVelocity = fallbackDirection * max(0.0, controller.moveSpeed) * speedMultiplier
+                    rootHorizontalDisplacement = fallbackVelocity * fixedDelta
+                    usedRootMotionFallbackDisplacement = true
+                }
+            }
             let createdCharacterThisTick: Bool
             if controller.characterHandle == 0 {
                 let desc = PhysicsCharacterCreation(radius: controller.radius,
@@ -419,16 +500,41 @@ public final class CharacterControllerSystem {
             if !wasGrounded {
                 controller.jumpConsumedOnGroundContact = false
             }
+            let movingJumpLeadTime: Float = 0.08
+            let standingJumpLeadTime: Float = 0.18
+            let jumpBufferWindow: Float = 0.12
+            let movementIntentMagnitude = simd_length(movementIntentLocal)
+            let jumpStartLeadTime = movementIntentMagnitude < 0.2 ? standingJumpLeadTime : movingJumpLeadTime
             controller.jumpBufferTimer = max(0.0, controller.jumpBufferTimer - fixedDelta)
             if characterJumpRequests.contains(entity.id) {
-                controller.jumpBufferTimer = 0.12
+                controller.jumpBufferTimer = jumpBufferWindow + jumpStartLeadTime
+                EngineLoggerContext.log(
+                    "AnimCC jump input entity=\(entity.id.uuidString) jumpType=\(movementIntentMagnitude < 0.2 ? "standing" : "moving") currentState=\(rootMotionStateName.isEmpty ? "<none>" : rootMotionStateName) nextState=\(nextStateName.isEmpty ? "<none>" : nextStateName) grounded=\(wasGrounded) jumpTriggerLatched=\(jumpTriggerLatched) jumpLeadTime=\(jumpStartLeadTime)",
+                    level: .debug,
+                    category: .scene
+                )
             }
+            let jumpImpulseReady = controller.jumpBufferTimer > 0.0 && controller.jumpBufferTimer <= jumpBufferWindow
+            let standingJump = movementIntentMagnitude < 0.2
+            let inJumpStartState = rootMotionStateName.caseInsensitiveCompare("JumpStart") == .orderedSame
+            let jumpStartReadyForImpulse = !standingJump
+                || ((inJumpStartState && (jumpStateNormalizedTime >= 0.08 || jumpStateSampleTime >= 0.10))
+                    || controller.jumpBufferTimer <= 0.01)
             let jumpRequested = wasGrounded
                 && !controller.jumpConsumedOnGroundContact
-                && controller.jumpBufferTimer > 0.0
+                && jumpImpulseReady
+                && jumpStartReadyForImpulse
+            var jumpTriggerConsumedThisFrame = false
             if jumpRequested {
                 controller.jumpConsumedOnGroundContact = true
                 controller.jumpBufferTimer = 0.0
+                jumpTriggerConsumedThisFrame = true
+                jumpImpulseTimeByEntity[entity.id] = timelineSeconds
+                EngineLoggerContext.log(
+                    "AnimCC jump impulse entity=\(entity.id.uuidString) state=\(rootMotionStateName.isEmpty ? "<none>" : rootMotionStateName) grounded=\(wasGrounded) impulseTime=\(timelineSeconds)",
+                    level: .debug,
+                    category: .scene
+                )
             }
 
             var desiredVelocity = desiredHorizontalVelocity
@@ -496,6 +602,8 @@ public final class CharacterControllerSystem {
             let actualVelocity = fixedDelta > 1.0e-6
                 ? (finalPosition - startPosition) / fixedDelta
                 : .zero
+            let appliedDisplacement = finalPosition - startPosition
+            let appliedDisplacementMagnitude = simd_length(appliedDisplacement)
             controller.velocity = actualVelocity
             controller.lookInput = .zero
             let debugEnabled = isDebugDrawEnabled(entityId: entity.id)
@@ -516,6 +624,146 @@ public final class CharacterControllerSystem {
                                                              rootMotionActive: rootMotionActive,
                                                              rootMotionStateName: rootMotionStateName)
             locomotionOutputsByEntity[entity.id] = locomotionOutput
+
+            let currentDiagnostics = RuntimeAnimationDiagnosticsState(currentState: rootMotionStateName,
+                                                                     nextState: nextStateName,
+                                                                     rootMotionActive: rootMotionActive,
+                                                                     grounded: postGroundState.isGrounded,
+                                                                     jumpTriggerLatched: jumpTriggerLatched,
+                                                                     translationSourceJointIndex: rootMotionTranslationSourceJointIndex,
+                                                                     rotationSourceJointIndex: rootMotionRotationSourceJointIndex,
+                                                                     consumeJointIndex: rootMotionConsumeJointIndex)
+            let previousDiagnostics = runtimeDiagnosticsByEntity[entity.id]
+            let didStateChange = previousDiagnostics?.currentState != currentDiagnostics.currentState
+                || previousDiagnostics?.nextState != currentDiagnostics.nextState
+            let didRootMotionToggle = previousDiagnostics?.rootMotionActive != currentDiagnostics.rootMotionActive
+            let didRootMotionChannelChange = previousDiagnostics?.translationSourceJointIndex != currentDiagnostics.translationSourceJointIndex
+                || previousDiagnostics?.rotationSourceJointIndex != currentDiagnostics.rotationSourceJointIndex
+                || previousDiagnostics?.consumeJointIndex != currentDiagnostics.consumeJointIndex
+            if didStateChange || didRootMotionToggle || didRootMotionChannelChange {
+                let playbackSummary: String
+                if ["JumpStart", "Airborne", "Land"].contains(rootMotionStateName) {
+                    playbackSummary = " playbackTime=\(jumpStateSampleTime) normalized=\(jumpStateNormalizedTime)"
+                } else {
+                    playbackSummary = ""
+                }
+                EngineLoggerContext.log(
+                    "AnimCC state entity=\(entity.id.uuidString) currentState=\(rootMotionStateName.isEmpty ? "<none>" : rootMotionStateName) nextState=\(nextStateName.isEmpty ? "<none>" : nextStateName) usesRootMotion=\(rootMotionUsesCurrentState) rootMotionActive=\(rootMotionActive) translationSourceJoint=\(rootMotionTranslationSourceJointName.isEmpty ? "<none>" : rootMotionTranslationSourceJointName)#\(rootMotionTranslationSourceJointIndex) rotationSourceJoint=\(rootMotionRotationSourceJointName.isEmpty ? "<none>" : rootMotionRotationSourceJointName)#\(rootMotionRotationSourceJointIndex) consumeJoint=\(rootMotionConsumeJointName.isEmpty ? "<none>" : rootMotionConsumeJointName)#\(rootMotionConsumeJointIndex) controllerScale=\(controllerScale) animatorVisualScale=\(animatorVisualScale) animatorSourceEntity=\(rootMotionSourceEntityID?.uuidString ?? "<none>") localRootDelta=\(localRootDelta) scaledRootDelta=\(scaledRootDelta) worldRootDelta=\(worldRootDelta) rootDeltaTranslationMag=\(rootMotionDeltaMagnitude) appliedWorldDelta=\(rootHorizontalDisplacement) rawInputDirection=\(rawInputIntent) normalizedDirection=\(normalizedInput) movementMagnitude=\(movementMagnitude) movementDirection=\(desiredHorizontal) forward=\(forward) right=\(right) cameraYaw=\(controller.yawRadians) rootDeltaRotationMag=\(rootMotionDeltaRotationMagnitude) appliedDisplacementMag=\(appliedDisplacementMagnitude) fallbackDisplacement=\(usedRootMotionFallbackDisplacement) grounded=\(postGroundState.isGrounded) jumpTriggerLatched=\(jumpTriggerLatched) jumpTriggerConsumed=\(jumpTriggerConsumedThisFrame)\(playbackSummary)",
+                    level: .debug,
+                    category: .scene
+                )
+            }
+            runtimeDiagnosticsByEntity[entity.id] = currentDiagnostics
+
+            let intentMagnitude = simd_length(normalizedInput)
+            let cardinalIntentKey: String = {
+                guard intentMagnitude >= 0.2 else { return "Idle" }
+                let horizontal = normalizedInput.x >= 0.5 ? "D" : (normalizedInput.x <= -0.5 ? "A" : "")
+                let vertical = normalizedInput.y >= 0.5 ? "W" : (normalizedInput.y <= -0.5 ? "S" : "")
+                let key = vertical + horizontal
+                return key.isEmpty ? "Analog" : key
+            }()
+            let previousCardinalIntent = lastCardinalIntentKeyByEntity[entity.id]
+            let keyboardCardinals: Set<String> = ["W", "A", "S", "D", "WA", "WD", "SA", "SD"]
+            if rootMotionStateName.caseInsensitiveCompare("Locomotion") == .orderedSame,
+               keyboardCardinals.contains(cardinalIntentKey),
+               previousCardinalIntent != cardinalIntentKey {
+                lastCardinalIntentKeyByEntity[entity.id] = cardinalIntentKey
+                let dotForward = simd_dot(rootHorizontalDisplacement, forward)
+                let dotRight = simd_dot(rootHorizontalDisplacement, right)
+                let validation = validateMovementConvention(intentKey: cardinalIntentKey,
+                                                            rawInput: rawInputIntent,
+                                                            normalizedDirection: normalizedInput,
+                                                            localRootDelta: localRootDelta,
+                                                            forward: forward,
+                                                            right: right,
+                                                            worldDelta: rootHorizontalDisplacement,
+                                                            usedFallbackDisplacement: usedRootMotionFallbackDisplacement)
+                EngineLoggerContext.log(
+                    "AnimCC direction validation entity=\(entity.id.uuidString) intent=\(cardinalIntentKey) rawInput=\(rawInputIntent) localIntentBeforeNormalization=\(movementIntentLocal) normalizedLocalDirection=\(normalizedInput) movementMagnitude=\(movementMagnitude) localRootDelta=\(localRootDelta) forward=\(forward) right=\(right) worldDelta=\(rootHorizontalDisplacement) dotWorldForward=\(dotForward) dotWorldRight=\(dotRight) fallbackDisplacement=\(usedRootMotionFallbackDisplacement) validation=\(validation)",
+                    level: .debug,
+                    category: .scene
+                )
+            }
+
+            if didStateChange,
+               rootMotionStateName.caseInsensitiveCompare("JumpStart") == .orderedSame,
+               previousDiagnostics?.currentState.caseInsensitiveCompare("JumpStart") != .orderedSame {
+                jumpStartEntryTimeByEntity[entity.id] = timelineSeconds
+                let key = "\(entity.id.uuidString)|jumpLiftOff"
+                loggedRootMotionFailureKeys.remove(key)
+                EngineLoggerContext.log(
+                    "AnimCC JumpStart active entity=\(entity.id.uuidString) entryTime=\(timelineSeconds) playbackTime=\(jumpStateSampleTime) normalized=\(jumpStateNormalizedTime)",
+                    level: .debug,
+                    category: .scene
+                )
+            }
+            if rootMotionStateName.caseInsensitiveCompare("JumpStart") == .orderedSame,
+               wasGrounded,
+               !postGroundState.isGrounded,
+               let jumpStartEntry = jumpStartEntryTimeByEntity[entity.id] {
+                let key = "\(entity.id.uuidString)|jumpLiftOff"
+                if !loggedRootMotionFailureKeys.contains(key) {
+                    loggedRootMotionFailureKeys.insert(key)
+                    let jumpStartVisibleDuration = timelineSeconds - jumpStartEntry
+                    let impulseDelay = jumpImpulseTimeByEntity[entity.id].map { timelineSeconds - $0 } ?? -1.0
+                    EngineLoggerContext.log(
+                        "AnimCC JumpStart liftoff entity=\(entity.id.uuidString) jumpStartDurationBeforeUngrounded=\(jumpStartVisibleDuration) impulseToUngrounded=\(impulseDelay)",
+                        level: .debug,
+                        category: .scene
+                    )
+                }
+            }
+            if didStateChange,
+               rootMotionStateName.caseInsensitiveCompare("Airborne") == .orderedSame,
+               previousDiagnostics?.currentState.caseInsensitiveCompare("Airborne") != .orderedSame {
+                let jumpStartDuration = jumpStartEntryTimeByEntity[entity.id].map { timelineSeconds - $0 } ?? -1.0
+                let impulseToAirborne = jumpImpulseTimeByEntity[entity.id].map { timelineSeconds - $0 } ?? -1.0
+                EngineLoggerContext.log(
+                    "AnimCC Airborne transition entity=\(entity.id.uuidString) jumpStartToAirborne=\(jumpStartDuration) impulseToAirborne=\(impulseToAirborne) grounded=\(postGroundState.isGrounded)",
+                    level: .debug,
+                    category: .scene
+                )
+            }
+
+            if abs(animatorVisualScale - 1.0) > 0.25 {
+                let scaleKey = "\(entity.id.uuidString)|scaleRootMotionVerification"
+                if !loggedRootMotionFailureKeys.contains(scaleKey) {
+                    loggedRootMotionFailureKeys.insert(scaleKey)
+                    EngineLoggerContext.log(
+                        "AnimCC scale verification entity=\(entity.id.uuidString) controllerScale=\(controllerScale) animatorVisualScale=\(animatorVisualScale) animatorSourceEntity=\(rootMotionSourceEntityID?.uuidString ?? "<none>") localRootDelta=\(localRootDelta) scaledRootDelta=\(scaledRootDelta) worldRootDelta=\(worldRootDelta) appliedDisplacementMag=\(appliedDisplacementMagnitude) fallbackDisplacement=\(usedRootMotionFallbackDisplacement)",
+                        level: .debug,
+                        category: .scene
+                    )
+                }
+            }
+
+            if rootMotionStateName.caseInsensitiveCompare("Locomotion") == .orderedSame,
+               rootMotionEnabled,
+               !rootMotionActive {
+                let failureKey = "\(entity.id.uuidString)|locomotionRootMotionInactive"
+                if !loggedRootMotionFailureKeys.contains(failureKey) {
+                    loggedRootMotionFailureKeys.insert(failureKey)
+                    EngineLoggerContext.log(
+                        "AnimCC root motion inactive during locomotion entity=\(entity.id.uuidString) currentState=\(rootMotionStateName) nextState=\(nextStateName)",
+                        level: .warning,
+                        category: .scene
+                    )
+                }
+            }
+            if rootMotionActive,
+               rootMotionDeltaMagnitude > 1.0e-4,
+               appliedDisplacementMagnitude < 1.0e-5 {
+                let failureKey = "\(entity.id.uuidString)|\(rootMotionStateName)|noAppliedDisplacement"
+                if !loggedRootMotionFailureKeys.contains(failureKey) {
+                    loggedRootMotionFailureKeys.insert(failureKey)
+                    EngineLoggerContext.log(
+                        "AnimCC root motion extraction/application mismatch entity=\(entity.id.uuidString) currentState=\(rootMotionStateName) rootDeltaTranslationMag=\(rootMotionDeltaMagnitude) appliedDisplacementMag=\(appliedDisplacementMagnitude) grounded=\(postGroundState.isGrounded)",
+                        level: .warning,
+                        category: .scene
+                    )
+                }
+            }
 
             stepHook?.postStep(.init(scene: scene,
                                      entity: entity,
@@ -565,6 +813,11 @@ public final class CharacterControllerSystem {
             renderWorldTransformCache.removeValue(forKey: entityId)
             locomotionOutputsByEntity.removeValue(forKey: entityId)
             debugVisualizationByEntity.removeValue(forKey: entityId)
+            runtimeDiagnosticsByEntity.removeValue(forKey: entityId)
+            timelineSecondsByEntity.removeValue(forKey: entityId)
+            jumpStartEntryTimeByEntity.removeValue(forKey: entityId)
+            jumpImpulseTimeByEntity.removeValue(forKey: entityId)
+            lastCardinalIntentKeyByEntity.removeValue(forKey: entityId)
         }
         characterJumpRequests.removeAll(keepingCapacity: true)
         characterLookRequests.removeAll(keepingCapacity: true)
@@ -576,6 +829,11 @@ public final class CharacterControllerSystem {
         renderWorldTransformCache.removeValue(forKey: entityId)
         locomotionOutputsByEntity.removeValue(forKey: entityId)
         debugVisualizationByEntity.removeValue(forKey: entityId)
+        runtimeDiagnosticsByEntity.removeValue(forKey: entityId)
+        timelineSecondsByEntity.removeValue(forKey: entityId)
+        jumpStartEntryTimeByEntity.removeValue(forKey: entityId)
+        jumpImpulseTimeByEntity.removeValue(forKey: entityId)
+        lastCardinalIntentKeyByEntity.removeValue(forKey: entityId)
     }
 
     public func prepareForPhysicsStart(scene: EngineScene) {
@@ -590,6 +848,12 @@ public final class CharacterControllerSystem {
         renderWorldTransformCache.removeAll(keepingCapacity: true)
         locomotionOutputsByEntity.removeAll(keepingCapacity: true)
         debugVisualizationByEntity.removeAll(keepingCapacity: true)
+        runtimeDiagnosticsByEntity.removeAll(keepingCapacity: true)
+        timelineSecondsByEntity.removeAll(keepingCapacity: true)
+        jumpStartEntryTimeByEntity.removeAll(keepingCapacity: true)
+        jumpImpulseTimeByEntity.removeAll(keepingCapacity: true)
+        lastCardinalIntentKeyByEntity.removeAll(keepingCapacity: true)
+        loggedRootMotionFailureKeys.removeAll(keepingCapacity: true)
     }
 
     public func destroyAllCharacters(using physicsSystem: PhysicsSystem) {
@@ -600,6 +864,12 @@ public final class CharacterControllerSystem {
         characterInterpolationStates.removeAll(keepingCapacity: true)
         renderWorldTransformCache.removeAll(keepingCapacity: true)
         locomotionOutputsByEntity.removeAll(keepingCapacity: true)
+        runtimeDiagnosticsByEntity.removeAll(keepingCapacity: true)
+        timelineSecondsByEntity.removeAll(keepingCapacity: true)
+        jumpStartEntryTimeByEntity.removeAll(keepingCapacity: true)
+        jumpImpulseTimeByEntity.removeAll(keepingCapacity: true)
+        lastCardinalIntentKeyByEntity.removeAll(keepingCapacity: true)
+        loggedRootMotionFailureKeys.removeAll(keepingCapacity: true)
     }
 
     public func resetForSceneApply() {
@@ -608,6 +878,12 @@ public final class CharacterControllerSystem {
         renderWorldTransformCache.removeAll(keepingCapacity: true)
         locomotionOutputsByEntity.removeAll(keepingCapacity: true)
         debugVisualizationByEntity.removeAll(keepingCapacity: true)
+        runtimeDiagnosticsByEntity.removeAll(keepingCapacity: true)
+        timelineSecondsByEntity.removeAll(keepingCapacity: true)
+        jumpStartEntryTimeByEntity.removeAll(keepingCapacity: true)
+        jumpImpulseTimeByEntity.removeAll(keepingCapacity: true)
+        lastCardinalIntentKeyByEntity.removeAll(keepingCapacity: true)
+        loggedRootMotionFailureKeys.removeAll(keepingCapacity: true)
         characterJumpRequests.removeAll(keepingCapacity: true)
         characterLookRequests.removeAll(keepingCapacity: true)
         characterSprintRequests.removeAll(keepingCapacity: true)
@@ -619,6 +895,12 @@ public final class CharacterControllerSystem {
         characterLookRequests.removeAll(keepingCapacity: true)
         characterSprintRequests.removeAll(keepingCapacity: true)
         characterJumpRequests.removeAll(keepingCapacity: true)
+        runtimeDiagnosticsByEntity.removeAll(keepingCapacity: true)
+        timelineSecondsByEntity.removeAll(keepingCapacity: true)
+        jumpStartEntryTimeByEntity.removeAll(keepingCapacity: true)
+        jumpImpulseTimeByEntity.removeAll(keepingCapacity: true)
+        lastCardinalIntentKeyByEntity.removeAll(keepingCapacity: true)
+        loggedRootMotionFailureKeys.removeAll(keepingCapacity: true)
     }
 
     private func rebuildRenderWorldTransformCache(scene: EngineScene) {
@@ -706,18 +988,82 @@ public final class CharacterControllerSystem {
         let usesRootMotion: Bool
         let enableRootMotion: Bool
         let currentStateName: String
+        let nextStateName: String
+        let jumpTriggerLatched: Bool
+        let sampleTime: Float
+        let sampleDuration: Float
+        let translationSourceJointName: String
+        let translationSourceJointIndex: Int
+        let rotationSourceJointName: String
+        let rotationSourceJointIndex: Int
+        let consumeJointName: String
+        let consumeJointIndex: Int
+        let sourceEntityID: UUID
+        let sourceWorldScale: Float
     }
 
     private func resolveRootMotionForController(scene: EngineScene,
                                                 entity: Entity,
                                                 controller: CharacterControllerComponent) -> ResolvedRootMotion? {
+        let assets = scene.engineContext?.assets
         func readRootMotion(from target: Entity) -> ResolvedRootMotion? {
             guard let animator = scene.ecs.get(AnimatorComponent.self, for: target),
                   let poseState = animator.poseRuntimeState else { return nil }
+            let graph = animator.graphHandle.flatMap { assets?.compiledAnimationGraph(handle: $0) }
+            let runtimeState = animator.graphRuntimeState
+            var stateNameByID: [UUID: String] = [:]
+            var stateByID: [UUID: AnimationGraphStateDefinition] = [:]
+            if let graph {
+                for node in graph.nodes {
+                    guard let machine = node.stateMachine else { continue }
+                    for state in machine.states {
+                        stateNameByID[state.id] = state.name
+                        stateByID[state.id] = state
+                    }
+                }
+            }
+            let currentStateID = runtimeState?.stateMachineCurrentStateByNodeID
+                .sorted(by: { $0.key.uuidString < $1.key.uuidString })
+                .first?.value
+            let nextStateID = runtimeState?.stateMachineNextStateByNodeID
+                .sorted(by: { $0.key.uuidString < $1.key.uuidString })
+                .first?.value
+            let resolvedCurrentStateName = poseState.currentStateName.isEmpty
+                ? (currentStateID.flatMap { stateNameByID[$0] } ?? "")
+                : poseState.currentStateName
+            let resolvedNextStateName = nextStateID.flatMap { stateNameByID[$0] } ?? ""
+            let jumpTriggerLatched: Bool = {
+                guard let graph, let runtimeState, let jumpIndex = graph.parameterIndexByName["jumpTrigger"] else { return false }
+                guard jumpIndex >= 0, jumpIndex < runtimeState.triggerParameterValues.count else { return false }
+                return runtimeState.triggerParameterValues[jumpIndex] || runtimeState.triggerLatchedParameterIndices.contains(jumpIndex)
+            }()
+            let stateDuration: Float = {
+                if let currentStateID, let clipHandle = stateByID[currentStateID]?.clipHandle,
+                   let clip = assets?.animationClip(handle: clipHandle) {
+                    return clip.durationSeconds
+                }
+                if let clipHandle = animator.clipHandle, let clip = assets?.animationClip(handle: clipHandle) {
+                    return clip.durationSeconds
+                }
+                return 0.0
+            }()
+            let sourceScale = scene.ecs.worldTransform(for: target).scale.x
             return ResolvedRootMotion(delta: poseState.rootMotionDelta,
                                       usesRootMotion: poseState.usesRootMotion,
                                       enableRootMotion: animator.enableRootMotion,
-                                      currentStateName: poseState.currentStateName)
+                                      currentStateName: resolvedCurrentStateName,
+                                      nextStateName: resolvedNextStateName,
+                                      jumpTriggerLatched: jumpTriggerLatched,
+                                      sampleTime: poseState.sampleTime,
+                                      sampleDuration: max(0.0, stateDuration),
+                                      translationSourceJointName: poseState.rootMotionTranslationBoneName,
+                                      translationSourceJointIndex: poseState.rootMotionTranslationJointIndex,
+                                      rotationSourceJointName: poseState.rootMotionRotationBoneName,
+                                      rotationSourceJointIndex: poseState.rootMotionRotationJointIndex,
+                                      consumeJointName: poseState.rootMotionConsumeBoneName,
+                                      consumeJointIndex: poseState.rootMotionConsumeJointIndex,
+                                      sourceEntityID: target.id,
+                                      sourceWorldScale: sourceScale)
         }
         func firstRootMotionInSubtree(root: Entity) -> ResolvedRootMotion? {
             var queue: [Entity] = [root]
@@ -752,6 +1098,123 @@ public final class CharacterControllerSystem {
             return nested
         }
         return nil
+    }
+
+    private func rootMotionRotationMagnitudeRadians(_ delta: RootMotionDelta) -> Float {
+        let q = simd_normalize(simd_quatf(vector: TransformMath.normalizedQuaternion(delta.deltaRot)))
+        let clamped = simd_clamp(abs(q.real), 0.0, 1.0)
+        return 2.0 * acos(clamped)
+    }
+
+    private func runtimeStatePlaybackNormalized(sampleTime: Float, duration: Float) -> Float {
+        guard duration > 1.0e-5 else { return 0.0 }
+        return simd_clamp(sampleTime / duration, 0.0, 1.0)
+    }
+
+    private func makeLocalMovementIntent(from rawInput: SIMD2<Float>) -> LocalMovementIntent {
+        let magnitude = simd_length(rawInput)
+        let direction = magnitude > 1.0e-5 ? (rawInput / magnitude) : .zero
+        return LocalMovementIntent(raw: rawInput, direction: direction, magnitude: magnitude)
+    }
+
+    private func makePlanarMovementBasis(cameraYawQuat: simd_quatf,
+                                         fallbackForward: SIMD3<Float>) -> PlanarMovementBasis {
+        var forward = cameraYawQuat.act(fallbackForward)
+        forward.y = 0.0
+        if simd_length_squared(forward) > 1.0e-6 {
+            forward = simd_normalize(forward)
+        } else {
+            forward = fallbackForward
+        }
+
+        var right = simd_cross(SIMD3<Float>(0.0, 1.0, 0.0), forward)
+        if simd_length_squared(right) > 1.0e-6 {
+            right = simd_normalize(right)
+        } else {
+            right = SIMD3<Float>(1.0, 0.0, 0.0)
+        }
+        return PlanarMovementBasis(forward: forward, right: right)
+    }
+
+    private func projectLocalIntentDirectionToWorld(_ localDirection: SIMD2<Float>,
+                                                    basis: PlanarMovementBasis) -> SIMD3<Float> {
+        (basis.right * localDirection.x) + (basis.forward * localDirection.y)
+    }
+
+    private func projectLocalRootDeltaToWorld(_ localRootDelta: SIMD3<Float>,
+                                              basis: PlanarMovementBasis) -> SIMD3<Float> {
+        (basis.right * localRootDelta.x) + (basis.forward * localRootDelta.z)
+    }
+
+    private func expectedDirectionSigns(intentKey: String) -> (forwardPositive: Bool?, rightPositive: Bool?) {
+        switch intentKey {
+        case "W": return (true, nil)
+        case "S": return (false, nil)
+        case "A": return (nil, false)
+        case "D": return (nil, true)
+        case "WA": return (true, false)
+        case "WD": return (true, true)
+        case "SA": return (false, false)
+        case "SD": return (false, true)
+        default: return (nil, nil)
+        }
+    }
+
+    private func signedExpectationPass(value: Float,
+                                       expectedPositive: Bool?,
+                                       tolerance: Float = 1.0e-4) -> Bool {
+        guard let expectedPositive else { return true }
+        return expectedPositive ? (value > tolerance) : (value < -tolerance)
+    }
+
+    private func validateMovementConvention(intentKey: String,
+                                            rawInput: SIMD2<Float>,
+                                            normalizedDirection: SIMD2<Float>,
+                                            localRootDelta: SIMD3<Float>,
+                                            forward: SIMD3<Float>,
+                                            right: SIMD3<Float>,
+                                            worldDelta: SIMD3<Float>,
+                                            usedFallbackDisplacement: Bool) -> String {
+        let expected = expectedDirectionSigns(intentKey: intentKey)
+        let rawInputPass = signedExpectationPass(value: rawInput.y, expectedPositive: expected.forwardPositive)
+            && signedExpectationPass(value: rawInput.x, expectedPositive: expected.rightPositive)
+        if !rawInputPass {
+            return "FAIL(stage=inputMapping)"
+        }
+
+        let normalizedPass = signedExpectationPass(value: normalizedDirection.y, expectedPositive: expected.forwardPositive)
+            && signedExpectationPass(value: normalizedDirection.x, expectedPositive: expected.rightPositive)
+        if !normalizedPass {
+            return "FAIL(stage=localDirectionNormalization)"
+        }
+
+        let localRootMagnitude = simd_length(SIMD2<Float>(localRootDelta.x, localRootDelta.z))
+        if localRootMagnitude > 1.0e-4 {
+            let localRootPass = signedExpectationPass(value: localRootDelta.z, expectedPositive: expected.forwardPositive)
+                && signedExpectationPass(value: localRootDelta.x, expectedPositive: expected.rightPositive)
+            if !localRootPass {
+                return "FAIL(stage=localRootDeltaInterpretation)"
+            }
+        }
+
+        let basisOrthogonalPass = abs(simd_dot(forward, right)) <= 1.0e-3
+            && simd_length_squared(forward) >= 0.99
+            && simd_length_squared(right) >= 0.99
+        if !basisOrthogonalPass {
+            return "FAIL(stage=basisGeneration)"
+        }
+
+        let dotForward = simd_dot(worldDelta, forward)
+        let dotRight = simd_dot(worldDelta, right)
+        let worldProjectionPass = signedExpectationPass(value: dotForward, expectedPositive: expected.forwardPositive)
+            && signedExpectationPass(value: dotRight, expectedPositive: expected.rightPositive)
+        if !worldProjectionPass {
+            return usedFallbackDisplacement
+                ? "FAIL(stage=fallbackMismatch)"
+                : "FAIL(stage=worldProjection)"
+        }
+
+        return "PASS"
     }
 }
 private struct DefaultCharacterGroundProvider: CharacterGroundProvider {

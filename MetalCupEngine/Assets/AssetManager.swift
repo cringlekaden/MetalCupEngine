@@ -9,6 +9,11 @@ import CoreGraphics
 
 /// Engine-side runtime cache for GPU assets resolved via an AssetDatabase.
 public final class AssetManager {
+    private struct OzzRootMotionRuntimeKey: Hashable {
+        let skeletonHandle: AssetHandle
+        let clipHandle: AssetHandle
+    }
+
     private struct TextureFailureRecord {
         let reason: String
         let lastModified: TimeInterval
@@ -33,6 +38,9 @@ public final class AssetManager {
     private var materialCache: [AssetHandle: MaterialAsset] = [:]
     private var skeletonCache: [AssetHandle: SkeletonAsset] = [:]
     private var animationClipCache: [AssetHandle: AnimationClipAsset] = [:]
+    private var ozzSkeletonRuntimeCache: [AssetHandle: OzzSkeletonRuntime] = [:]
+    private var ozzAnimationRuntimeCache: [AssetHandle: OzzAnimationRuntime] = [:]
+    private var ozzRootMotionRuntimeCache: [OzzRootMotionRuntimeKey: OzzRootMotionRuntime] = [:]
     private var animationGraphCache: [AssetHandle: AnimationGraphAsset] = [:]
     private var compiledAnimationGraphCache: [AssetHandle: CompiledAnimationGraph] = [:]
     private var loggedInvalidAnimationGraphHandles: Set<AssetHandle> = []
@@ -57,6 +65,10 @@ public final class AssetManager {
         self.graphics = graphics
         self.textureWorkQueue = commandQueue ?? device.makeCommandQueue()
         self.errorTexture = AssetManager.makeErrorTexture(device: device)
+    }
+
+    deinit {
+        shutdown()
     }
 
     public func handle(forSourcePath sourcePath: String) -> AssetHandle? {
@@ -305,6 +317,7 @@ public final class AssetManager {
         cacheLock.lock()
         skeletonCache[handle] = skeleton
         cacheLock.unlock()
+        cacheOzzSkeletonRuntimeIfNeeded(handle: handle, skeleton: skeleton)
         return skeleton
     }
 
@@ -319,6 +332,7 @@ public final class AssetManager {
         cacheLock.lock()
         animationClipCache[handle] = clip
         cacheLock.unlock()
+        cacheOzzAnimationRuntimeIfNeeded(handle: handle, clip: clip)
         return clip
     }
 
@@ -386,6 +400,61 @@ public final class AssetManager {
         }
     }
 
+    func ozzSkeletonRuntime(handle: AssetHandle) -> OzzSkeletonRuntime? {
+        cacheLock.lock()
+        let cached = ozzSkeletonRuntimeCache[handle]
+        cacheLock.unlock()
+        if let cached { return cached }
+        guard let skeleton = skeleton(handle: handle) else { return nil }
+        cacheLock.lock()
+        let resolved = ozzSkeletonRuntimeCache[handle]
+        cacheLock.unlock()
+        if let resolved { return resolved }
+        cacheOzzSkeletonRuntimeIfNeeded(handle: handle, skeleton: skeleton)
+        cacheLock.lock()
+        let created = ozzSkeletonRuntimeCache[handle]
+        cacheLock.unlock()
+        return created
+    }
+
+    func ozzAnimationRuntime(handle: AssetHandle) -> OzzAnimationRuntime? {
+        cacheLock.lock()
+        let cached = ozzAnimationRuntimeCache[handle]
+        cacheLock.unlock()
+        if let cached { return cached }
+        guard let clip = animationClip(handle: handle) else { return nil }
+        cacheLock.lock()
+        let resolved = ozzAnimationRuntimeCache[handle]
+        cacheLock.unlock()
+        if let resolved { return resolved }
+        cacheOzzAnimationRuntimeIfNeeded(handle: handle, clip: clip)
+        cacheLock.lock()
+        let created = ozzAnimationRuntimeCache[handle]
+        cacheLock.unlock()
+        return created
+    }
+
+    func ozzRootMotionRuntime(skeletonHandle: AssetHandle, clipHandle: AssetHandle) -> OzzRootMotionRuntime? {
+        let key = OzzRootMotionRuntimeKey(skeletonHandle: skeletonHandle, clipHandle: clipHandle)
+        cacheLock.lock()
+        let cached = ozzRootMotionRuntimeCache[key]
+        cacheLock.unlock()
+        if let cached { return cached }
+        guard let skeletonRuntime = ozzSkeletonRuntime(handle: skeletonHandle),
+              let animationRuntime = ozzAnimationRuntime(handle: clipHandle),
+              let runtime = OzzRuntimeBridge.makeRootMotionRuntime(skeletonRuntime: skeletonRuntime,
+                                                                   animationRuntime: animationRuntime) else {
+            return nil
+        }
+        cacheLock.lock()
+        if ozzRootMotionRuntimeCache[key] == nil {
+            ozzRootMotionRuntimeCache[key] = runtime
+        }
+        let created = ozzRootMotionRuntimeCache[key]
+        cacheLock.unlock()
+        return created
+    }
+
     public func registerRuntimeTexture(handle: AssetHandle, texture: MTLTexture) {
         cacheLock.lock()
         textureCache[handle] = texture
@@ -408,6 +477,7 @@ public final class AssetManager {
         runtimeSkeletonHandles.insert(handle)
         cacheRevision &+= 1
         cacheLock.unlock()
+        cacheOzzSkeletonRuntimeIfNeeded(handle: handle, skeleton: skeleton)
     }
 
     public func registerRuntimeAnimationClip(handle: AssetHandle, clip: AnimationClipAsset) {
@@ -416,6 +486,7 @@ public final class AssetManager {
         runtimeAnimationClipHandles.insert(handle)
         cacheRevision &+= 1
         cacheLock.unlock()
+        cacheOzzAnimationRuntimeIfNeeded(handle: handle, clip: clip)
     }
 
     public func registerRuntimeAnimationGraph(handle: AssetHandle, graph: AnimationGraphAsset, compiled: CompiledAnimationGraph?) {
@@ -464,6 +535,12 @@ public final class AssetManager {
         meshUnresolvedLoggedHandles.removeAll()
         skeletonCache = skeletonCache.filter { runtimeSkeletonHandles.contains($0.key) }
         animationClipCache = animationClipCache.filter { runtimeAnimationClipHandles.contains($0.key) }
+        ozzSkeletonRuntimeCache = ozzSkeletonRuntimeCache.filter { runtimeSkeletonHandles.contains($0.key) }
+        ozzAnimationRuntimeCache = ozzAnimationRuntimeCache.filter { runtimeAnimationClipHandles.contains($0.key) }
+        ozzRootMotionRuntimeCache = ozzRootMotionRuntimeCache.filter {
+            runtimeSkeletonHandles.contains($0.key.skeletonHandle) &&
+            runtimeAnimationClipHandles.contains($0.key.clipHandle)
+        }
         animationGraphCache = animationGraphCache.filter { runtimeAnimationGraphHandles.contains($0.key) }
         compiledAnimationGraphCache = compiledAnimationGraphCache.filter { runtimeAnimationGraphHandles.contains($0.key) }
         loggedInvalidAnimationGraphHandles.removeAll()
@@ -474,11 +551,90 @@ public final class AssetManager {
         cacheLock.unlock()
     }
 
+    public func shutdown() {
+        cacheLock.lock()
+        textureCache.removeAll()
+        textureFailureCacheByPath.removeAll()
+        textureFailureLoggedPaths.removeAll()
+        meshCache.removeAll()
+        meshRequestLoggedHandles.removeAll()
+        meshCacheHitLoggedHandles.removeAll()
+        meshUnresolvedLoggedHandles.removeAll()
+        materialCache.removeAll()
+        materialCacheModified.removeAll()
+        skeletonCache.removeAll()
+        animationClipCache.removeAll()
+        ozzAnimationRuntimeCache.removeAll()
+        ozzSkeletonRuntimeCache.removeAll()
+        ozzRootMotionRuntimeCache.removeAll()
+        animationGraphCache.removeAll()
+        compiledAnimationGraphCache.removeAll()
+        loggedInvalidAnimationGraphHandles.removeAll()
+        failedAnimationGraphHandles.removeAll()
+        runtimeTextureHandles.removeAll()
+        runtimeMeshHandles.removeAll()
+        runtimeSkeletonHandles.removeAll()
+        runtimeAnimationClipHandles.removeAll()
+        runtimeAnimationGraphHandles.removeAll()
+        cacheRevision &+= 1
+        cacheLock.unlock()
+    }
+
     public func cacheRevisionToken() -> UInt64 {
         cacheLock.lock()
         let revision = cacheRevision
         cacheLock.unlock()
         return revision
+    }
+
+    private func cacheOzzSkeletonRuntimeIfNeeded(handle: AssetHandle, skeleton: SkeletonAsset) {
+        cacheLock.lock()
+        let alreadyCached = ozzSkeletonRuntimeCache[handle] != nil
+        cacheLock.unlock()
+        if alreadyCached { return }
+        guard let runtime = OzzRuntimeBridge.makeSkeletonRuntime(from: skeleton) else { return }
+        cacheLock.lock()
+        if ozzSkeletonRuntimeCache[handle] == nil {
+            ozzSkeletonRuntimeCache[handle] = runtime
+        }
+        cacheLock.unlock()
+    }
+
+    private func cacheOzzAnimationRuntimeIfNeeded(handle: AssetHandle, clip: AnimationClipAsset) {
+        cacheLock.lock()
+        let alreadyCached = ozzAnimationRuntimeCache[handle] != nil
+        cacheLock.unlock()
+        if alreadyCached { return }
+
+        let jointTrackCount: Int = {
+            if let database = assetDatabase,
+               let metadata = database.metadata(for: handle),
+               let rawSkeletonHandle = metadata.importSettings["skeletonHandle"],
+               let skeletonUUID = UUID(uuidString: rawSkeletonHandle) {
+                let skeletonHandle = AssetHandle(rawValue: skeletonUUID)
+                if let runtime = ozzSkeletonRuntime(handle: skeletonHandle) {
+                    return runtime.jointCount
+                }
+                if let skeletonAsset = skeleton(handle: skeletonHandle) {
+                    return skeletonAsset.joints.count
+                }
+            }
+            if let maxJointIndex = clip.tracks.map(\.jointIndex).max() {
+                return max(maxJointIndex + 1, 0)
+            }
+            return 0
+        }()
+
+        guard jointTrackCount > 0,
+              let runtime = OzzRuntimeBridge.makeAnimationRuntime(from: clip, jointTrackCount: jointTrackCount) else {
+            return
+        }
+
+        cacheLock.lock()
+        if ozzAnimationRuntimeCache[handle] == nil {
+            ozzAnimationRuntimeCache[handle] = runtime
+        }
+        cacheLock.unlock()
     }
 
     public static func isColorTexture(path: String) -> Bool {

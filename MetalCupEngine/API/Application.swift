@@ -16,6 +16,10 @@ open class Application: NSObject, EventHandler {
     public var mainWindow: EngineWindow { window }
     public var mainRenderer: Renderer { renderer }
 
+    deinit {
+        engineContext.assets.shutdown()
+    }
+
     public init(specification: ApplicationSpecification) {
         self.specification = specification
         guard let device = MTLCreateSystemDefaultDevice() else {

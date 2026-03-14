@@ -81,6 +81,7 @@ public final class AnimationSystem {
     private var timingAverages = TimingAverages()
     private var loggedTriggerDiagnosticsKeys: Set<String> = []
     private var lastStateMachineSignatureByKey: [String: String] = [:]
+    private var loggedBlend2DDiagnosticsKeys: Set<String> = []
     private struct ClipDiagnosticState {
         var lastClipHandle: AssetHandle?
         var pendingSummaryClipHandle: AssetHandle?
@@ -168,7 +169,7 @@ public final class AnimationSystem {
                     let globalPose = poseState?.globalPose ?? []
                     let paletteStart = bonePaletteMatrices.count
                     let paletteStartTime = CACurrentMediaTime()
-                    let paletteResult = makeBonePalette(skeleton: skeleton, globalPose: globalPose)
+                    let paletteResult = makeBonePalette(skeleton: skeleton, globalPose: globalPose, assets: assets)
                     timingAverages.paletteMS += (CACurrentMediaTime() - paletteStartTime) * 1000.0
                     bonePaletteMatrices.append(contentsOf: paletteResult.matrices)
                     paletteRange = paletteResult.matrices.isEmpty
@@ -218,7 +219,9 @@ public final class AnimationSystem {
         return SnapshotPreparation(skinnedEntityCount: skinnedCount, payload: payload)
     }
 
-    private func makeBonePalette(skeleton: SkeletonAsset, globalPose: [TransformComponent]) -> BonePaletteBuildResult {
+    private func makeBonePalette(skeleton: SkeletonAsset,
+                                 globalPose: [TransformComponent],
+                                 assets: AssetManager? = nil) -> BonePaletteBuildResult {
         let jointCount = min(skeleton.joints.count, globalPose.count)
         guard jointCount > 0 else {
             return BonePaletteBuildResult(matrices: [], bindPolicy: "none", importedInverseBindCount: 0, nonFiniteMatrixCount: 0)
@@ -229,7 +232,7 @@ public final class AnimationSystem {
                                rotation: joint.bindLocalRotation,
                                scale: joint.bindLocalScale)
         }
-        let bindGlobalMatrices = globalMatrices(from: bindLocalPose, skeleton: skeleton)
+        let bindGlobalMatrices = globalMatrices(from: bindLocalPose, skeleton: skeleton, assets: assets)
 
         var palette = Array(repeating: matrix_identity_float4x4, count: jointCount)
         var importedInverseBindCount = 0
@@ -293,7 +296,9 @@ public final class AnimationSystem {
             animator.evaluationMode = .clip
             animator.graphRuntimeState = nil
             if let skeleton {
-                animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton, playbackTime: animator.playbackTime)
+                animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton,
+                                                              playbackTime: animator.playbackTime,
+                                                              assets: assets)
             } else {
                 animator.poseRuntimeState = nil
             }
@@ -308,7 +313,9 @@ public final class AnimationSystem {
                 level: .warning
             )
             if let skeleton {
-                animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton, playbackTime: animator.playbackTime)
+                animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton,
+                                                              playbackTime: animator.playbackTime,
+                                                              assets: assets)
             } else {
                 animator.poseRuntimeState = nil
             }
@@ -338,7 +345,9 @@ public final class AnimationSystem {
                 message: "Animator graph evaluation fallback entity=\(entity.id.uuidString)\nactiveGraphHandle=\(graphHandle.rawValue.uuidString)\nactiveGraphPath=\(graphPath)\nactiveOutputNode=\(compiledGraph.nodes[compiledGraph.outputNodeIndex].id.uuidString)\nactiveOutputSourceNode=<none>\nreason=outputPoseHasNoIncomingLink\nevaluatedPose=false",
                 level: .warning
             )
-            animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton, playbackTime: animator.playbackTime)
+            animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton,
+                                                          playbackTime: animator.playbackTime,
+                                                          assets: assets)
             animator.graphRuntimeState = runtimeState
             return
         }
@@ -364,7 +373,9 @@ public final class AnimationSystem {
                                                        runtimeState: runtimeState,
                                                        isPlaying: animator.isPlaying,
                                                        deltaTime: dt * max(0.0, animator.playbackSpeed),
-                                                       isLooping: animator.isLooping)
+                                                       isLooping: animator.isLooping,
+                                                       rootMotionTranslationJointOverride: nil,
+                                                       rootMotionRotationJointOverride: nil)
         let graphEvalStart = CACurrentMediaTime()
         guard let graphResult = evaluateGraphNodePose(nodeIndex: outputSourceNodeIndex, context: &evaluationContext) else {
             logRuntimeIssueOnce(
@@ -372,7 +383,9 @@ public final class AnimationSystem {
                 message: "Animator graph evaluation fallback entity=\(entity.id.uuidString)\nactiveGraphHandle=\(graphHandle.rawValue.uuidString)\nactiveGraphPath=\(graphPath)\nactiveOutputNode=\(compiledGraph.nodes[compiledGraph.outputNodeIndex].id.uuidString)\nactiveOutputSourceNode=\(sourceNode.id.uuidString)\nactiveOutputSourceType=\(sourceNode.type.rawValue)\nreason=nodeEvaluationFailed\nevaluatedPose=false",
                 level: .warning
             )
-            animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton, playbackTime: animator.playbackTime)
+            animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton,
+                                                          playbackTime: animator.playbackTime,
+                                                          assets: assets)
             animator.graphRuntimeState = runtimeState
             return
         }
@@ -390,7 +403,14 @@ public final class AnimationSystem {
                                                   currentStateName: graphResult.currentStateName,
                                                   rootMotionBoneName: graphResult.rootMotionBoneName,
                                                   rootMotionJointIndex: graphResult.rootMotionJointIndex,
-                                                  rootMotionTrackConsumed: graphResult.rootMotionTrackConsumed)
+                                                  rootMotionTrackConsumed: graphResult.rootMotionTrackConsumed,
+                                                  rootMotionTranslationBoneName: graphResult.rootMotionTranslationBoneName,
+                                                  rootMotionTranslationJointIndex: graphResult.rootMotionTranslationJointIndex,
+                                                  rootMotionRotationBoneName: graphResult.rootMotionRotationBoneName,
+                                                  rootMotionRotationJointIndex: graphResult.rootMotionRotationJointIndex,
+                                                  rootMotionConsumeBoneName: graphResult.rootMotionConsumeBoneName,
+                                                  rootMotionConsumeJointIndex: graphResult.rootMotionConsumeJointIndex,
+                                                  assets: assets)
         let localToGlobalElapsedMS = (CACurrentMediaTime() - localToGlobalStart) * 1000.0
         timingAverages.graphEvalMS += graphEvalElapsedMS
         timingAverages.samplePoseMS += evaluationContext.samplePoseTimeMS
@@ -420,7 +440,47 @@ public final class AnimationSystem {
         let rootMotionBoneName: String
         let rootMotionJointIndex: Int
         let rootMotionTrackConsumed: Bool
+        let rootMotionTranslationBoneName: String
+        let rootMotionTranslationJointIndex: Int
+        let rootMotionRotationBoneName: String
+        let rootMotionRotationJointIndex: Int
+        let rootMotionConsumeBoneName: String
+        let rootMotionConsumeJointIndex: Int
         let diagnosticClipHandle: String?
+
+        init(localPose: [TransformComponent],
+             sampleTime: Float,
+             sampleDuration: Float,
+             rootMotionDelta: RootMotionDelta,
+             usesRootMotion: Bool,
+             currentStateName: String,
+             rootMotionBoneName: String,
+             rootMotionJointIndex: Int,
+             rootMotionTrackConsumed: Bool,
+             rootMotionTranslationBoneName: String = "",
+             rootMotionTranslationJointIndex: Int = -1,
+             rootMotionRotationBoneName: String = "",
+             rootMotionRotationJointIndex: Int = -1,
+             rootMotionConsumeBoneName: String = "",
+             rootMotionConsumeJointIndex: Int = -1,
+             diagnosticClipHandle: String?) {
+            self.localPose = localPose
+            self.sampleTime = sampleTime
+            self.sampleDuration = sampleDuration
+            self.rootMotionDelta = rootMotionDelta
+            self.usesRootMotion = usesRootMotion
+            self.currentStateName = currentStateName
+            self.rootMotionBoneName = rootMotionBoneName
+            self.rootMotionJointIndex = rootMotionJointIndex
+            self.rootMotionTrackConsumed = rootMotionTrackConsumed
+            self.rootMotionTranslationBoneName = rootMotionTranslationBoneName
+            self.rootMotionTranslationJointIndex = rootMotionTranslationJointIndex
+            self.rootMotionRotationBoneName = rootMotionRotationBoneName
+            self.rootMotionRotationJointIndex = rootMotionRotationJointIndex
+            self.rootMotionConsumeBoneName = rootMotionConsumeBoneName
+            self.rootMotionConsumeJointIndex = rootMotionConsumeJointIndex
+            self.diagnosticClipHandle = diagnosticClipHandle
+        }
     }
 
     private struct RootMotionPolicy {
@@ -428,6 +488,15 @@ public final class AnimationSystem {
         let applyRotation: Bool
         let consumeTranslation: Bool
         let consumeRotation: Bool
+    }
+
+    private struct RootMotionChannels {
+        let translationJointIndex: Int
+        let rotationJointIndex: Int
+        let consumeJointIndex: Int
+        let translationJointName: String
+        let rotationJointName: String
+        let consumeJointName: String
     }
 
     private struct NodeSampleTimes {
@@ -447,6 +516,8 @@ public final class AnimationSystem {
         let isPlaying: Bool
         let deltaTime: Float
         let isLooping: Bool
+        var rootMotionTranslationJointOverride: Int?
+        var rootMotionRotationJointOverride: Int?
         var cache: [Int: GraphNodeEvaluationResult] = [:]
         var evaluationStack: Set<Int> = []
         var samplePoseTimeMS: Double = 0
@@ -473,6 +544,20 @@ public final class AnimationSystem {
             result = evaluateBlend1DNode(node: node, context: &context)
         case .blend2D:
             result = evaluateBlend2DNode(node: node, context: &context)
+        case .blendList,
+             .layeredBlend,
+             .select,
+             .poseCache,
+             .aimOffset,
+             .lookAt,
+             .twoBoneIK,
+             .strideWarp,
+             .orientationWarp,
+             .motionMatch,
+             .rootMotionModifier:
+            result = evaluatePassThroughPoseNode(nodeIndex: nodeIndex, context: &context)
+        case .additiveClip:
+            result = evaluateClipPlayerNode(node: node, context: &context)
         case .stateMachine:
             result = evaluateStateMachineNode(node: node, context: &context)
         default:
@@ -484,6 +569,24 @@ public final class AnimationSystem {
         return result
     }
 
+    private func evaluatePassThroughPoseNode(nodeIndex: Int,
+                                             context: inout GraphEvaluationContext) -> GraphNodeEvaluationResult? {
+        let candidates = context.compiledGraph.links
+            .filter { $0.toNodeIndex == nodeIndex }
+            .sorted { lhs, rhs in
+                if lhs.toSlotIndex == rhs.toSlotIndex {
+                    return lhs.fromNodeIndex < rhs.fromNodeIndex
+                }
+                return lhs.toSlotIndex < rhs.toSlotIndex
+            }
+        for candidate in candidates {
+            if let result = evaluateGraphNodePose(nodeIndex: candidate.fromNodeIndex, context: &context) {
+                return result
+            }
+        }
+        return nil
+    }
+
     private func evaluateClipPlayerNode(node: CompiledAnimationGraph.Node,
                                         context: inout GraphEvaluationContext) -> GraphNodeEvaluationResult? {
         guard let clipHandle = node.clipHandle,
@@ -493,14 +596,17 @@ public final class AnimationSystem {
                                                           isLooping: context.isLooping,
                                                           context: &context)
         let sampleStart = CACurrentMediaTime()
-        let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTimes.current)
+        let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTimes.current, assets: context.assets)
         context.samplePoseTimeMS += (CACurrentMediaTime() - sampleStart) * 1000.0
         let rootMotion = sampleClipRootMotionDelta(skeleton: context.skeleton,
                                                    clip: clip,
                                                    rootJointIndex: context.rootJointIndex,
+                                                   translationJointIndexOverride: context.rootMotionTranslationJointOverride,
+                                                   rotationJointIndexOverride: context.rootMotionRotationJointOverride,
                                                    previousTime: sampleTimes.previous,
                                                    currentTime: sampleTimes.current,
-                                                   isLooping: context.isLooping)
+                                                   isLooping: context.isLooping,
+                                                   assets: context.assets)
         return GraphNodeEvaluationResult(localPose: localPose,
                                          sampleTime: sampleTimes.current,
                                          sampleDuration: max(clip.durationSeconds, 0.0),
@@ -540,14 +646,17 @@ public final class AnimationSystem {
                                                      duration: clip.durationSeconds,
                                                      isLooping: context.isLooping)
             let sampleStart = CACurrentMediaTime()
-            let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTime)
+            let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTime, assets: context.assets)
             context.samplePoseTimeMS += (CACurrentMediaTime() - sampleStart) * 1000.0
             let rootMotion = sampleClipRootMotionDelta(skeleton: context.skeleton,
                                                        clip: clip,
                                                        rootJointIndex: context.rootJointIndex,
+                                                       translationJointIndexOverride: context.rootMotionTranslationJointOverride,
+                                                       rotationJointIndexOverride: context.rootMotionRotationJointOverride,
                                                        previousTime: previousTime,
                                                        currentTime: sampleTime,
-                                                       isLooping: context.isLooping)
+                                                       isLooping: context.isLooping,
+                                                       assets: context.assets)
             return GraphNodeEvaluationResult(localPose: localPose,
                                              sampleTime: sampleTime,
                                              sampleDuration: max(clip.durationSeconds, 0.0),
@@ -575,23 +684,33 @@ public final class AnimationSystem {
                                                           duration: upperClip.durationSeconds,
                                                           isLooping: context.isLooping)
             let sampleStart = CACurrentMediaTime()
-            let lowerLocalPose = evaluateLocalPose(skeleton: context.skeleton, clip: lowerClip, playbackTime: lowerTime)
-            let upperLocalPose = evaluateLocalPose(skeleton: context.skeleton, clip: upperClip, playbackTime: upperTime)
+            let lowerLocalPose = evaluateLocalPose(skeleton: context.skeleton, clip: lowerClip, playbackTime: lowerTime, assets: context.assets)
+            let upperLocalPose = evaluateLocalPose(skeleton: context.skeleton, clip: upperClip, playbackTime: upperTime, assets: context.assets)
             context.samplePoseTimeMS += (CACurrentMediaTime() - sampleStart) * 1000.0
             let lowerRootMotion = sampleClipRootMotionDelta(skeleton: context.skeleton,
                                                             clip: lowerClip,
                                                             rootJointIndex: context.rootJointIndex,
+                                                            translationJointIndexOverride: context.rootMotionTranslationJointOverride,
+                                                            rotationJointIndexOverride: context.rootMotionRotationJointOverride,
                                                             previousTime: lowerPreviousTime,
                                                             currentTime: lowerTime,
-                                                            isLooping: context.isLooping)
+                                                            isLooping: context.isLooping,
+                                                            assets: context.assets)
             let upperRootMotion = sampleClipRootMotionDelta(skeleton: context.skeleton,
                                                             clip: upperClip,
                                                             rootJointIndex: context.rootJointIndex,
+                                                            translationJointIndexOverride: context.rootMotionTranslationJointOverride,
+                                                            rotationJointIndexOverride: context.rootMotionRotationJointOverride,
                                                             previousTime: upperPreviousTime,
                                                             currentTime: upperTime,
-                                                            isLooping: context.isLooping)
+                                                            isLooping: context.isLooping,
+                                                            assets: context.assets)
             let blendStart = CACurrentMediaTime()
-            let blendedLocal = blendLocalPoses(lowerLocalPose, upperLocalPose, weight: t)
+            let blendedLocal = blendLocalPoses(lowerLocalPose,
+                                               upperLocalPose,
+                                               weight: t,
+                                               skeleton: context.skeleton,
+                                               assets: context.assets)
             let blendedRootMotion = blendRootMotionDeltas(lowerRootMotion, upperRootMotion, weight: t)
             context.blendTimeMS += (CACurrentMediaTime() - blendStart) * 1000.0
             return GraphNodeEvaluationResult(localPose: blendedLocal,
@@ -613,14 +732,17 @@ public final class AnimationSystem {
                                                      duration: clip.durationSeconds,
                                                      isLooping: context.isLooping)
             let sampleStart = CACurrentMediaTime()
-            let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTime)
+            let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTime, assets: context.assets)
             context.samplePoseTimeMS += (CACurrentMediaTime() - sampleStart) * 1000.0
             let rootMotion = sampleClipRootMotionDelta(skeleton: context.skeleton,
                                                        clip: clip,
                                                        rootJointIndex: context.rootJointIndex,
+                                                       translationJointIndexOverride: context.rootMotionTranslationJointOverride,
+                                                       rotationJointIndexOverride: context.rootMotionRotationJointOverride,
                                                        previousTime: previousTime,
                                                        currentTime: sampleTime,
-                                                       isLooping: context.isLooping)
+                                                       isLooping: context.isLooping,
+                                                       assets: context.assets)
             return GraphNodeEvaluationResult(localPose: localPose,
                                              sampleTime: sampleTime,
                                              sampleDuration: max(clip.durationSeconds, 0.0),
@@ -645,7 +767,20 @@ public final class AnimationSystem {
         let py = graphParameterFloat(name: blend.parameterYName,
                                      compiledGraph: context.compiledGraph,
                                      runtimeState: context.runtimeState)
-        let parameterPoint = SIMD2<Float>(px, py)
+        let originalPoint = SIMD2<Float>(px, py)
+        var parameterPoint = originalPoint
+        let locomotionNode = isLocomotionBlendNode(node)
+        let cardinalStrafeIntent = locomotionNode
+            && abs(parameterPoint.x) >= 0.75
+            && abs(parameterPoint.y) <= 0.2
+        // For pure cardinal strafe, lock to exact side sample to prevent forward contamination.
+        if cardinalStrafeIntent {
+            parameterPoint = SIMD2<Float>(parameterPoint.x < 0.0 ? -1.0 : 1.0, 0.0)
+        } else if locomotionNode,
+                  abs(parameterPoint.x) >= 0.85,
+                  abs(parameterPoint.y) <= 0.15 {
+            parameterPoint.y = 0.0
+        }
 
         let representativeDuration = blend.samples.reduce(Float(0.0)) { current, sample in
             guard let clip = context.assets.animationClip(handle: sample.clipHandle) else { return current }
@@ -679,14 +814,27 @@ public final class AnimationSystem {
                                                      duration: clip.durationSeconds,
                                                      isLooping: context.isLooping)
             let sampleStart = CACurrentMediaTime()
-            let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTime)
+            let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTime, assets: context.assets)
             context.samplePoseTimeMS += (CACurrentMediaTime() - sampleStart) * 1000.0
-            let rootMotion = sampleClipRootMotionDelta(skeleton: context.skeleton,
-                                                       clip: clip,
-                                                       rootJointIndex: context.rootJointIndex,
-                                                       previousTime: previousTime,
-                                                       currentTime: sampleTime,
-                                                       isLooping: context.isLooping)
+            let sampledRootMotion = sampleClipRootMotionDelta(skeleton: context.skeleton,
+                                                              clip: clip,
+                                                              rootJointIndex: context.rootJointIndex,
+                                                              translationJointIndexOverride: context.rootMotionTranslationJointOverride,
+                                                              rotationJointIndexOverride: context.rootMotionRotationJointOverride,
+                                                              previousTime: previousTime,
+                                                              currentTime: sampleTime,
+                                                              isLooping: context.isLooping,
+                                                              assets: context.assets)
+            let rootMotion = cardinalStrafeIntent
+                ? constrainCardinalStrafeRootMotion(sampledRootMotion, inputX: originalPoint.x)
+                : sampledRootMotion
+            maybeLogLocomotionBlendSelection(node: node,
+                                             originalPoint: originalPoint,
+                                             adjustedPoint: parameterPoint,
+                                             samples: ["\(clip.name)=1.0"],
+                                             blendedDelta: rootMotion,
+                                             context: context,
+                                             cardinalStrafeIntent: cardinalStrafeIntent)
             return GraphNodeEvaluationResult(localPose: localPose,
                                              sampleTime: sampleTime,
                                              sampleDuration: max(clip.durationSeconds, 0.0),
@@ -706,6 +854,7 @@ public final class AnimationSystem {
                 return lhsDistance < rhsDistance
             }
             .prefix(4)
+        var weightedDiagnostics: [(name: String, weight: Float)] = []
         let sampleStart = CACurrentMediaTime()
         for sample in nearestSamples {
             guard let clip = context.assets.animationClip(handle: sample.clipHandle) else { continue }
@@ -718,22 +867,46 @@ public final class AnimationSystem {
             let previousTime = resolveClipSampleTime(nodeTime: nodeSampleTimes.previous,
                                                      duration: clip.durationSeconds,
                                                      isLooping: context.isLooping)
-            localPoses.append(evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTime))
+            localPoses.append(evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTime, assets: context.assets))
             rootMotions.append(sampleClipRootMotionDelta(skeleton: context.skeleton,
                                                          clip: clip,
                                                          rootJointIndex: context.rootJointIndex,
+                                                         translationJointIndexOverride: context.rootMotionTranslationJointOverride,
+                                                         rotationJointIndexOverride: context.rootMotionRotationJointOverride,
                                                          previousTime: previousTime,
                                                          currentTime: sampleTime,
-                                                         isLooping: context.isLooping))
+                                                         isLooping: context.isLooping,
+                                                         assets: context.assets))
             weights.append(weight)
+            weightedDiagnostics.append((clip.name, weight))
             diagnosticHandles.append(sample.clipHandle.rawValue.uuidString)
         }
         context.samplePoseTimeMS += (CACurrentMediaTime() - sampleStart) * 1000.0
 
         guard !localPoses.isEmpty else { return nil }
         let blendStart = CACurrentMediaTime()
-        let blendedLocal = blendLocalPoses(localPoses: localPoses, weights: weights)
-        let blendedRootMotion = blendRootMotionDeltas(rootMotions, weights: weights)
+        let blendedLocal = blendLocalPoses(localPoses: localPoses,
+                                           weights: weights,
+                                           skeleton: context.skeleton,
+                                           assets: context.assets)
+        let sampledBlendedRootMotion = blendRootMotionDeltas(rootMotions, weights: weights)
+        let blendedRootMotion = cardinalStrafeIntent
+            ? constrainCardinalStrafeRootMotion(sampledBlendedRootMotion, inputX: originalPoint.x)
+            : sampledBlendedRootMotion
+        let sampleSummary = weightedDiagnostics.map { "\($0.name)=\($0.weight)" }
+        maybeLogLocomotionBlendSelection(node: node,
+                                         originalPoint: originalPoint,
+                                         adjustedPoint: parameterPoint,
+                                         samples: sampleSummary,
+                                         blendedDelta: blendedRootMotion,
+                                         context: context,
+                                         cardinalStrafeIntent: cardinalStrafeIntent)
+        maybeLogBlend2DDiagnostics(node: node,
+                                   point: parameterPoint,
+                                   originalPoint: originalPoint,
+                                   weights: sampleSummary,
+                                   blendedDelta: blendedRootMotion,
+                                   context: context)
         context.blendTimeMS += (CACurrentMediaTime() - blendStart) * 1000.0
         return GraphNodeEvaluationResult(localPose: blendedLocal,
                                          sampleTime: nodeSampleTimes.current,
@@ -818,7 +991,11 @@ public final class AnimationSystem {
                 return currentStatePose
             }
 
-            let blendedLocal = blendLocalPoses(currentStatePose.localPose, nextStatePose.localPose, weight: alpha)
+            let blendedLocal = blendLocalPoses(currentStatePose.localPose,
+                                               nextStatePose.localPose,
+                                               weight: alpha,
+                                               skeleton: context.skeleton,
+                                               assets: context.assets)
             let blendedRootMotion = blendRootMotionDeltas(currentStatePose.rootMotionDelta,
                                                           nextStatePose.rootMotionDelta,
                                                           weight: alpha)
@@ -835,15 +1012,22 @@ public final class AnimationSystem {
             }
 
             let duration = max(currentStatePose.sampleDuration, nextStatePose.sampleDuration)
+            let reportedPose = alpha >= 0.5 ? nextStatePose : currentStatePose
             return GraphNodeEvaluationResult(localPose: blendedLocal,
-                                             sampleTime: currentStatePose.sampleTime,
+                                             sampleTime: reportedPose.sampleTime,
                                              sampleDuration: duration,
                                              rootMotionDelta: blendedRootMotion,
                                              usesRootMotion: currentStatePose.usesRootMotion || nextStatePose.usesRootMotion,
-                                             currentStateName: alpha >= 0.5 ? nextStatePose.currentStateName : currentStatePose.currentStateName,
-                                             rootMotionBoneName: currentStatePose.rootMotionBoneName,
-                                             rootMotionJointIndex: currentStatePose.rootMotionJointIndex,
+                                             currentStateName: reportedPose.currentStateName,
+                                             rootMotionBoneName: reportedPose.rootMotionBoneName,
+                                             rootMotionJointIndex: reportedPose.rootMotionJointIndex,
                                              rootMotionTrackConsumed: currentStatePose.rootMotionTrackConsumed || nextStatePose.rootMotionTrackConsumed,
+                                             rootMotionTranslationBoneName: reportedPose.rootMotionTranslationBoneName,
+                                             rootMotionTranslationJointIndex: reportedPose.rootMotionTranslationJointIndex,
+                                             rootMotionRotationBoneName: reportedPose.rootMotionRotationBoneName,
+                                             rootMotionRotationJointIndex: reportedPose.rootMotionRotationJointIndex,
+                                             rootMotionConsumeBoneName: reportedPose.rootMotionConsumeBoneName,
+                                             rootMotionConsumeJointIndex: reportedPose.rootMotionConsumeJointIndex,
                                              diagnosticClipHandle: [currentStatePose.diagnosticClipHandle, nextStatePose.diagnosticClipHandle]
                                                 .compactMap { $0 }
                                                 .joined(separator: ","))
@@ -877,7 +1061,20 @@ public final class AnimationSystem {
             resetStateMachineEntryPlayback(stateMachineNodeID: node.id, state: destinationState, context: &context)
             emitStateMachineDiagnostic(node: node, machine: machine, context: &context, reason: "transitionStarted")
             if let destinationPose = evaluateStateMachineStatePose(state: destinationState, stateMachineNodeID: node.id, context: &context) {
-                let blendedLocal = blendLocalPoses(currentStatePose.localPose, destinationPose.localPose, weight: 0.0)
+                if destinationState.name.caseInsensitiveCompare("JumpStart") == .orderedSame {
+                    let sourceName = currentState.name.isEmpty ? currentState.id.uuidString : currentState.name
+                    let destinationName = destinationState.name.isEmpty ? destinationState.id.uuidString : destinationState.name
+                    EngineLoggerContext.log(
+                        "Animator JumpStart entry sourceState=\(sourceName) destinationState=\(destinationName) entryPlaybackTime=\(destinationPose.sampleTime) normalized=\(stateNormalizedTime(for: destinationPose)) entity=\(context.entityID.uuidString)",
+                        level: .debug,
+                        category: .scene
+                    )
+                }
+                let blendedLocal = blendLocalPoses(currentStatePose.localPose,
+                                                   destinationPose.localPose,
+                                                   weight: 0.0,
+                                                   skeleton: context.skeleton,
+                                                   assets: context.assets)
                 return GraphNodeEvaluationResult(localPose: blendedLocal,
                                                  sampleTime: currentStatePose.sampleTime,
                                                  sampleDuration: max(currentStatePose.sampleDuration, destinationPose.sampleDuration),
@@ -889,6 +1086,12 @@ public final class AnimationSystem {
                                                  rootMotionBoneName: currentStatePose.rootMotionBoneName,
                                                  rootMotionJointIndex: currentStatePose.rootMotionJointIndex,
                                                  rootMotionTrackConsumed: currentStatePose.rootMotionTrackConsumed || destinationPose.rootMotionTrackConsumed,
+                                                 rootMotionTranslationBoneName: currentStatePose.rootMotionTranslationBoneName,
+                                                 rootMotionTranslationJointIndex: currentStatePose.rootMotionTranslationJointIndex,
+                                                 rootMotionRotationBoneName: currentStatePose.rootMotionRotationBoneName,
+                                                 rootMotionRotationJointIndex: currentStatePose.rootMotionRotationJointIndex,
+                                                 rootMotionConsumeBoneName: currentStatePose.rootMotionConsumeBoneName,
+                                                 rootMotionConsumeJointIndex: currentStatePose.rootMotionConsumeJointIndex,
                                                  diagnosticClipHandle: [currentStatePose.diagnosticClipHandle, destinationPose.diagnosticClipHandle]
                                                     .compactMap { $0 }
                                                     .joined(separator: ","))
@@ -965,6 +1168,22 @@ public final class AnimationSystem {
                                                stateMachineNodeID: UUID,
                                                context: inout GraphEvaluationContext) -> GraphNodeEvaluationResult? {
         let policy = rootMotionPolicy(for: state)
+        let stateChannels = resolveStateRootMotionChannels(state: state,
+                                                           skeleton: context.skeleton,
+                                                           clip: state.clipHandle.flatMap { context.assets.animationClip(handle: $0) },
+                                                           preferredRootJointIndex: context.rootJointIndex)
+        let hasExplicitConsumeJoint = !(state.rootMotion?.consumeJointName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let consumeTranslationJointIndex = hasExplicitConsumeJoint ? stateChannels.consumeJointIndex : stateChannels.translationJointIndex
+        let consumeRotationJointIndex = hasExplicitConsumeJoint ? stateChannels.consumeJointIndex : stateChannels.rotationJointIndex
+        let previousTranslationOverride = context.rootMotionTranslationJointOverride
+        let previousRotationOverride = context.rootMotionRotationJointOverride
+        context.rootMotionTranslationJointOverride = stateChannels.translationJointIndex
+        context.rootMotionRotationJointOverride = stateChannels.rotationJointIndex
+        defer {
+            context.rootMotionTranslationJointOverride = previousTranslationOverride
+            context.rootMotionRotationJointOverride = previousRotationOverride
+        }
+
         if let stateNodeID = state.nodeID {
             guard let nodeIndex = context.compiledGraph.nodes.firstIndex(where: { $0.id == stateNodeID }) else { return nil }
             guard context.compiledGraph.nodes[nodeIndex].id != stateMachineNodeID else { return nil }
@@ -976,7 +1195,8 @@ public final class AnimationSystem {
             let consumedPose = state.usesRootMotion
                 ? consumeRootMotionTracks(in: evaluated.localPose,
                                           skeleton: context.skeleton,
-                                          rootJointIndex: context.rootJointIndex,
+                                          translationJointIndex: consumeTranslationJointIndex,
+                                          rotationJointIndex: consumeRotationJointIndex,
                                           consumeTranslation: policy.consumeTranslation,
                                           consumeRotation: policy.consumeRotation)
                 : evaluated.localPose
@@ -986,9 +1206,15 @@ public final class AnimationSystem {
                                              rootMotionDelta: filteredRootMotion,
                                              usesRootMotion: state.usesRootMotion,
                                              currentStateName: state.name,
-                                             rootMotionBoneName: context.rootBoneName,
-                                             rootMotionJointIndex: context.rootJointIndex,
+                                             rootMotionBoneName: stateChannels.consumeJointName,
+                                             rootMotionJointIndex: stateChannels.consumeJointIndex,
                                              rootMotionTrackConsumed: state.usesRootMotion && (policy.consumeTranslation || policy.consumeRotation),
+                                             rootMotionTranslationBoneName: stateChannels.translationJointName,
+                                             rootMotionTranslationJointIndex: stateChannels.translationJointIndex,
+                                             rootMotionRotationBoneName: stateChannels.rotationJointName,
+                                             rootMotionRotationJointIndex: stateChannels.rotationJointIndex,
+                                             rootMotionConsumeBoneName: stateChannels.consumeJointName,
+                                             rootMotionConsumeJointIndex: stateChannels.consumeJointIndex,
                                              diagnosticClipHandle: evaluated.diagnosticClipHandle)
         }
 
@@ -1000,14 +1226,17 @@ public final class AnimationSystem {
                                                           isLooping: shouldLoop,
                                                           context: &context)
         let sampleStart = CACurrentMediaTime()
-        let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTimes.current)
+        let localPose = evaluateLocalPose(skeleton: context.skeleton, clip: clip, playbackTime: sampleTimes.current, assets: context.assets)
         context.samplePoseTimeMS += (CACurrentMediaTime() - sampleStart) * 1000.0
         let rootMotion = sampleClipRootMotionDelta(skeleton: context.skeleton,
                                                    clip: clip,
                                                    rootJointIndex: context.rootJointIndex,
+                                                   translationJointIndexOverride: stateChannels.translationJointIndex,
+                                                   rotationJointIndexOverride: stateChannels.rotationJointIndex,
                                                    previousTime: sampleTimes.previous,
                                                    currentTime: sampleTimes.current,
-                                                   isLooping: shouldLoop)
+                                                   isLooping: shouldLoop,
+                                                   assets: context.assets)
         let filteredRootMotion = RootMotionDelta(
             deltaPos: policy.applyTranslation ? rootMotion.deltaPos : .zero,
             deltaRot: policy.applyRotation ? rootMotion.deltaRot : TransformMath.identityQuaternion
@@ -1015,7 +1244,8 @@ public final class AnimationSystem {
         let outputPose = state.usesRootMotion
             ? consumeRootMotionTracks(in: localPose,
                                       skeleton: context.skeleton,
-                                      rootJointIndex: context.rootJointIndex,
+                                      translationJointIndex: consumeTranslationJointIndex,
+                                      rotationJointIndex: consumeRotationJointIndex,
                                       consumeTranslation: policy.consumeTranslation,
                                       consumeRotation: policy.consumeRotation)
             : localPose
@@ -1025,9 +1255,15 @@ public final class AnimationSystem {
                                          rootMotionDelta: filteredRootMotion,
                                          usesRootMotion: state.usesRootMotion,
                                          currentStateName: state.name,
-                                         rootMotionBoneName: context.rootBoneName,
-                                         rootMotionJointIndex: context.rootJointIndex,
+                                         rootMotionBoneName: stateChannels.consumeJointName,
+                                         rootMotionJointIndex: stateChannels.consumeJointIndex,
                                          rootMotionTrackConsumed: state.usesRootMotion && (policy.consumeTranslation || policy.consumeRotation),
+                                         rootMotionTranslationBoneName: stateChannels.translationJointName,
+                                         rootMotionTranslationJointIndex: stateChannels.translationJointIndex,
+                                         rootMotionRotationBoneName: stateChannels.rotationJointName,
+                                         rootMotionRotationJointIndex: stateChannels.rotationJointIndex,
+                                         rootMotionConsumeBoneName: stateChannels.consumeJointName,
+                                         rootMotionConsumeJointIndex: stateChannels.consumeJointIndex,
                                          diagnosticClipHandle: clipHandle.rawValue.uuidString)
     }
 
@@ -1037,6 +1273,12 @@ public final class AnimationSystem {
                                     applyRotation: false,
                                     consumeTranslation: false,
                                     consumeRotation: false)
+        }
+        if let configured = state.rootMotion {
+            return RootMotionPolicy(applyTranslation: configured.applyTranslation ?? true,
+                                    applyRotation: configured.applyRotation ?? true,
+                                    consumeTranslation: configured.consumeTranslation ?? true,
+                                    consumeRotation: configured.consumeRotation ?? true)
         }
         let normalized = state.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized.contains("turn") {
@@ -1055,6 +1297,60 @@ public final class AnimationSystem {
                                 applyRotation: true,
                                 consumeTranslation: true,
                                 consumeRotation: true)
+    }
+
+    private func resolveStateRootMotionChannels(state: AnimationGraphStateDefinition,
+                                                skeleton: SkeletonAsset,
+                                                clip: AnimationClipAsset?,
+                                                preferredRootJointIndex: Int) -> RootMotionChannels {
+        let translationConfiguredIndex = state.rootMotion?.translationSourceJointName.flatMap {
+            jointIndex(named: $0, skeleton: skeleton)
+        }
+        let rotationConfiguredIndex = state.rootMotion?.rotationSourceJointName.flatMap {
+            jointIndex(named: $0, skeleton: skeleton)
+        }
+        let consumeConfiguredIndex = state.rootMotion?.consumeJointName.flatMap {
+            jointIndex(named: $0, skeleton: skeleton)
+        }
+        let channelPair: (translationJointIndex: Int, rotationJointIndex: Int)
+        if let clip {
+            channelPair = resolveRootMotionChannels(skeleton: skeleton,
+                                                    clip: clip,
+                                                    preferredRootJointIndex: preferredRootJointIndex,
+                                                    translationJointIndexOverride: translationConfiguredIndex,
+                                                    rotationJointIndexOverride: rotationConfiguredIndex)
+        } else {
+            let fallbackJoint = fallbackRootMotionJointIndex(skeleton: skeleton,
+                                                             preferredRootJointIndex: preferredRootJointIndex)
+            let translation = translationConfiguredIndex ?? fallbackJoint
+            let rotation = rotationConfiguredIndex ?? fallbackJoint
+            channelPair = (translationJointIndex: translation, rotationJointIndex: rotation)
+        }
+        let consumeJointIndex = consumeConfiguredIndex ?? channelPair.translationJointIndex
+        let translationName = skeleton.joints.indices.contains(channelPair.translationJointIndex)
+            ? skeleton.joints[channelPair.translationJointIndex].name
+            : ""
+        let rotationName = skeleton.joints.indices.contains(channelPair.rotationJointIndex)
+            ? skeleton.joints[channelPair.rotationJointIndex].name
+            : ""
+        let consumeName = skeleton.joints.indices.contains(consumeJointIndex)
+            ? skeleton.joints[consumeJointIndex].name
+            : ""
+        return RootMotionChannels(translationJointIndex: channelPair.translationJointIndex,
+                                  rotationJointIndex: channelPair.rotationJointIndex,
+                                  consumeJointIndex: consumeJointIndex,
+                                  translationJointName: translationName,
+                                  rotationJointName: rotationName,
+                                  consumeJointName: consumeName)
+    }
+
+    private func jointIndex(named rawName: String, skeleton: SkeletonAsset) -> Int? {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let exact = skeleton.joints.firstIndex(where: { $0.name == trimmed }) {
+            return exact
+        }
+        return skeleton.joints.firstIndex(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame })
     }
 
     private func stateNormalizedTime(for result: GraphNodeEvaluationResult) -> Float {
@@ -1207,6 +1503,67 @@ public final class AnimationSystem {
         }
     }
 
+    private func isLocomotionBlendNode(_ node: CompiledAnimationGraph.Node) -> Bool {
+        let title = node.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return title.contains("locomotion")
+    }
+
+    private func constrainCardinalStrafeRootMotion(_ delta: RootMotionDelta,
+                                                   inputX: Float) -> RootMotionDelta {
+        let sign: Float = inputX < 0.0 ? -1.0 : 1.0
+        let planarMagnitude = simd_length(SIMD2<Float>(delta.deltaPos.x, delta.deltaPos.z))
+        let constrained = SIMD3<Float>(sign * planarMagnitude, 0.0, 0.0)
+        return RootMotionDelta(deltaPos: constrained, deltaRot: delta.deltaRot)
+    }
+
+    private func maybeLogLocomotionBlendSelection(node: CompiledAnimationGraph.Node,
+                                                  originalPoint: SIMD2<Float>,
+                                                  adjustedPoint: SIMD2<Float>,
+                                                  samples: [String],
+                                                  blendedDelta: RootMotionDelta,
+                                                  context: GraphEvaluationContext,
+                                                  cardinalStrafeIntent: Bool) {
+#if DEBUG
+        guard isLocomotionBlendNode(node) else { return }
+        let significantAdjustment = simd_length(originalPoint - adjustedPoint) > 0.1
+        guard cardinalStrafeIntent || significantAdjustment else { return }
+        let sector = cardinalStrafeIntent ? (originalPoint.x < 0.0 ? "left" : "right") : "adjusted"
+        let key = "\(context.entityID.uuidString)|\(context.graphHandle.rawValue.uuidString)|\(node.id.uuidString)|\(sector)"
+        guard !loggedBlend2DDiagnosticsKeys.contains(key) else { return }
+        loggedBlend2DDiagnosticsKeys.insert(key)
+        let sampleSummary = samples.isEmpty ? "<none>" : samples.joined(separator: ", ")
+        EngineLoggerContext.log(
+            "Animator locomotion blend selection entity=\(context.entityID.uuidString) node=\(node.title) inputPoint=\(originalPoint) adjustedPoint=\(adjustedPoint) samples=\(sampleSummary) blendedLocalRootDelta=\(blendedDelta.deltaPos)",
+            level: .debug,
+            category: .scene
+        )
+#endif
+    }
+
+    private func maybeLogBlend2DDiagnostics(node: CompiledAnimationGraph.Node,
+                                            point: SIMD2<Float>,
+                                            originalPoint: SIMD2<Float>,
+                                            weights: [String],
+                                            blendedDelta: RootMotionDelta,
+                                            context: GraphEvaluationContext) {
+#if DEBUG
+        guard isLocomotionBlendNode(node) else { return }
+        let strafeIntent = abs(point.x) >= 0.85 && abs(point.y) <= 0.2
+        guard strafeIntent else { return }
+        let forwardDominant = abs(blendedDelta.deltaPos.z) > (abs(blendedDelta.deltaPos.x) * 1.4 + 0.02)
+        guard forwardDominant else { return }
+        let key = "\(context.entityID.uuidString)|\(context.graphHandle.rawValue.uuidString)|\(node.id.uuidString)|strafeForwardBias"
+        guard !loggedBlend2DDiagnosticsKeys.contains(key) else { return }
+        loggedBlend2DDiagnosticsKeys.insert(key)
+        let sampleSummary = weights.isEmpty ? "<none>" : weights.joined(separator: ", ")
+        EngineLoggerContext.log(
+            "Animator locomotion blend strafe-forward-bias entity=\(context.entityID.uuidString) node=\(node.title) inputPoint=\(originalPoint) adjustedPoint=\(point) blendedLocalRootDelta=\(blendedDelta.deltaPos) samples=\(sampleSummary)",
+            level: .warning,
+            category: .scene
+        )
+#endif
+    }
+
     private func graphParameterIndex(name: String,
                                      compiledGraph: CompiledAnimationGraph) -> Int? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1233,73 +1590,63 @@ public final class AnimationSystem {
         }
     }
 
+    // Ozz is the primary runtime backend for local-space pose blending.
+    // Legacy math is kept as a narrow fallback when Ozz runtime assets are unavailable.
     private func blendLocalPoses(_ a: [TransformComponent],
                                  _ b: [TransformComponent],
-                                 weight: Float) -> [TransformComponent] {
+                                 weight: Float,
+                                 skeleton: SkeletonAsset,
+                                 assets: AssetManager? = nil) -> [TransformComponent] {
         let count = min(a.count, b.count)
         guard count > 0 else { return [] }
         let t = simd_clamp(weight, 0.0, 1.0)
-        var output = Array(repeating: TransformComponent(), count: count)
-        for i in 0..<count {
-            let pa = a[i]
-            let pb = b[i]
-            let blendedPosition = pa.position + ((pb.position - pa.position) * t)
-            let blendedScale = pa.scale + ((pb.scale - pa.scale) * t)
-            let qa = simd_quatf(real: pa.rotation.w, imag: SIMD3<Float>(pa.rotation.x, pa.rotation.y, pa.rotation.z))
-            let qb = simd_quatf(real: pb.rotation.w, imag: SIMD3<Float>(pb.rotation.x, pb.rotation.y, pb.rotation.z))
-            let q = simd_slerp(qa, qb, t)
-            output[i] = TransformComponent(position: blendedPosition,
-                                           rotation: SIMD4<Float>(q.imag.x, q.imag.y, q.imag.z, q.real),
-                                           scale: blendedScale)
+        if let assets,
+           let skeletonRuntime = assets.ozzSkeletonRuntime(handle: skeleton.handle),
+           let blendingContext = skeletonRuntime.blendingContext(maxLayers: 2),
+           let blended = OzzRuntimeBridge.blendLocalPoses(skeletonRuntime: skeletonRuntime,
+                                                          blendingContext: blendingContext,
+                                                          localPoses: [a, b],
+                                                          weights: [1.0 - t, t],
+                                                          expectedJointCount: count),
+           blended.count == count {
+            return blended
         }
-        return output
+
+        return blendLocalPosesFallback(a, b, weight: t, count: count)
     }
 
     private func blendLocalPoses(localPoses: [[TransformComponent]],
-                                 weights: [Float]) -> [TransformComponent] {
+                                 weights: [Float],
+                                 skeleton: SkeletonAsset,
+                                 assets: AssetManager? = nil) -> [TransformComponent] {
         guard !localPoses.isEmpty, localPoses.count == weights.count else { return [] }
         let jointCount = localPoses.map(\.count).min() ?? 0
         guard jointCount > 0 else { return [] }
-        let weightSum = max(weights.reduce(0, +), 1.0e-6)
-        var normalizedWeights = weights.map { $0 / weightSum }
-        if normalizedWeights.isEmpty {
-            normalizedWeights = Array(repeating: 1.0 / Float(localPoses.count), count: localPoses.count)
+        if let assets,
+           let skeletonRuntime = assets.ozzSkeletonRuntime(handle: skeleton.handle),
+           let blendingContext = skeletonRuntime.blendingContext(maxLayers: localPoses.count),
+           let blended = OzzRuntimeBridge.blendLocalPoses(skeletonRuntime: skeletonRuntime,
+                                                          blendingContext: blendingContext,
+                                                          localPoses: localPoses,
+                                                          weights: weights,
+                                                          expectedJointCount: jointCount),
+           blended.count == jointCount {
+            return blended
         }
 
-        var output = Array(repeating: TransformComponent(), count: jointCount)
-        for jointIndex in 0..<jointCount {
-            var blendedPosition = SIMD3<Float>(repeating: 0.0)
-            var blendedScale = SIMD3<Float>(repeating: 0.0)
-            let firstRotation = localPoses[0][jointIndex].rotation
-            var accumRotation = SIMD4<Float>(repeating: 0.0)
-            for poseIndex in 0..<localPoses.count {
-                let pose = localPoses[poseIndex][jointIndex]
-                let w = normalizedWeights[poseIndex]
-                blendedPosition += pose.position * w
-                blendedScale += pose.scale * w
-
-                var q = TransformMath.normalizedQuaternion(pose.rotation)
-                if simd_dot(firstRotation, q) < 0.0 {
-                    q = -q
-                }
-                accumRotation += q * w
-            }
-            output[jointIndex] = TransformComponent(position: blendedPosition,
-                                                    rotation: TransformMath.normalizedQuaternion(accumRotation),
-                                                    scale: blendedScale)
-        }
-        return output
+        return blendLocalPosesFallback(localPoses: localPoses, weights: weights, jointCount: jointCount)
     }
 
+    // Ozz BlendingJob is the primary path for root-motion delta blending.
+    // Legacy blend math remains only as a runtime-availability fallback.
     private func blendRootMotionDeltas(_ a: RootMotionDelta,
                                        _ b: RootMotionDelta,
                                        weight: Float) -> RootMotionDelta {
         let t = simd_clamp(weight, 0.0, 1.0)
-        let blendedPosition = simd_mix(a.deltaPos, b.deltaPos, SIMD3<Float>(repeating: t))
-        let qa = simd_quatf(vector: TransformMath.normalizedQuaternion(a.deltaRot))
-        let qb = simd_quatf(vector: TransformMath.normalizedQuaternion(b.deltaRot))
-        let blendedRotation = simd_slerp(qa, qb, t).vector
-        return RootMotionDelta(deltaPos: blendedPosition, deltaRot: blendedRotation)
+        if let ozzBlended = OzzRuntimeBridge.blendRootMotionDeltas([a, b], weights: [1.0 - t, t]) {
+            return ozzBlended
+        }
+        return blendRootMotionDeltasFallback(a, b, weight: t)
     }
 
     private func blendRootMotionDeltas(_ deltas: [RootMotionDelta],
@@ -1310,16 +1657,10 @@ public final class AnimationSystem {
         if normalized.allSatisfy({ $0 <= 1.0e-6 }) {
             normalized = Array(repeating: 1.0 / Float(deltas.count), count: deltas.count)
         }
-        var result = deltas[0]
-        var consumed = normalized[0]
-        if deltas.count == 1 { return result }
-        for i in 1..<deltas.count {
-            let nextWeight = normalized[i]
-            let t = nextWeight / max(consumed + nextWeight, 1.0e-6)
-            result = blendRootMotionDeltas(result, deltas[i], weight: t)
-            consumed += nextWeight
+        if let ozzBlended = OzzRuntimeBridge.blendRootMotionDeltas(deltas, weights: normalized) {
+            return ozzBlended
         }
-        return result
+        return blendRootMotionDeltasFallback(deltas, weights: normalized)
     }
 
     private func resolveRootJointSelection(skeleton: SkeletonAsset,
@@ -1372,12 +1713,17 @@ public final class AnimationSystem {
         return (0, "")
     }
 
+    // Root motion extraction remains graph-controlled, but extraction math is Ozz-backed.
+    // Legacy extraction is retained only if Ozz runtime objects are unavailable.
     private func sampleClipRootMotionDelta(skeleton: SkeletonAsset,
                                            clip: AnimationClipAsset,
                                            rootJointIndex: Int,
+                                           translationJointIndexOverride: Int? = nil,
+                                           rotationJointIndexOverride: Int? = nil,
                                            previousTime: Float,
                                            currentTime: Float,
-                                           isLooping: Bool) -> RootMotionDelta {
+                                           isLooping: Bool,
+                                           assets: AssetManager? = nil) -> RootMotionDelta {
         let duration = max(clip.durationSeconds, 0.0)
         let prev = resolveClipSampleTime(nodeTime: previousTime, duration: duration, isLooping: isLooping)
         let curr = resolveClipSampleTime(nodeTime: currentTime, duration: duration, isLooping: isLooping)
@@ -1385,26 +1731,38 @@ public final class AnimationSystem {
             return sampleRootMotionDeltaSingleSpan(skeleton: skeleton,
                                                    clip: clip,
                                                    rootJointIndex: rootJointIndex,
+                                                   translationJointIndexOverride: translationJointIndexOverride,
+                                                   rotationJointIndexOverride: rotationJointIndexOverride,
                                                    fromTime: prev,
-                                                   toTime: curr)
+                                                   toTime: curr,
+                                                   assets: assets)
         }
         if !isLooping || curr >= prev {
             return sampleRootMotionDeltaSingleSpan(skeleton: skeleton,
                                                    clip: clip,
                                                    rootJointIndex: rootJointIndex,
+                                                   translationJointIndexOverride: translationJointIndexOverride,
+                                                   rotationJointIndexOverride: rotationJointIndexOverride,
                                                    fromTime: prev,
-                                                   toTime: curr)
+                                                   toTime: curr,
+                                                   assets: assets)
         }
         let preWrap = sampleRootMotionDeltaSingleSpan(skeleton: skeleton,
                                                       clip: clip,
                                                       rootJointIndex: rootJointIndex,
+                                                      translationJointIndexOverride: translationJointIndexOverride,
+                                                      rotationJointIndexOverride: rotationJointIndexOverride,
                                                       fromTime: prev,
-                                                      toTime: duration)
+                                                      toTime: duration,
+                                                      assets: assets)
         let postWrap = sampleRootMotionDeltaSingleSpan(skeleton: skeleton,
                                                        clip: clip,
                                                        rootJointIndex: rootJointIndex,
+                                                       translationJointIndexOverride: translationJointIndexOverride,
+                                                       rotationJointIndexOverride: rotationJointIndexOverride,
                                                        fromTime: 0.0,
-                                                       toTime: curr)
+                                                       toTime: curr,
+                                                       assets: assets)
         let composedPosition = preWrap.deltaPos + simd_quatf(vector: preWrap.deltaRot).act(postWrap.deltaPos)
         let composedRotation = (simd_quatf(vector: preWrap.deltaRot) * simd_quatf(vector: postWrap.deltaRot)).vector
         return RootMotionDelta(deltaPos: composedPosition, deltaRot: composedRotation)
@@ -1413,89 +1771,109 @@ public final class AnimationSystem {
     private func sampleRootMotionDeltaSingleSpan(skeleton: SkeletonAsset,
                                                  clip: AnimationClipAsset,
                                                  rootJointIndex: Int,
+                                                 translationJointIndexOverride: Int? = nil,
+                                                 rotationJointIndexOverride: Int? = nil,
                                                  fromTime: Float,
-                                                 toTime: Float) -> RootMotionDelta {
+                                                 toTime: Float,
+                                                 assets: AssetManager? = nil) -> RootMotionDelta {
         guard rootJointIndex >= 0, rootJointIndex < skeleton.joints.count else { return .zero }
         let channels = resolveRootMotionChannels(skeleton: skeleton,
                                                  clip: clip,
-                                                 preferredRootJointIndex: rootJointIndex)
-        let fromLocalPose = evaluateLocalPose(skeleton: skeleton, clip: clip, playbackTime: fromTime)
-        let toLocalPose = evaluateLocalPose(skeleton: skeleton, clip: clip, playbackTime: toTime)
-        let fromGlobalPose = makeGlobalPose(localPose: fromLocalPose, skeleton: skeleton)
-        let toGlobalPose = makeGlobalPose(localPose: toLocalPose, skeleton: skeleton)
-        guard channels.translationJointIndex < fromGlobalPose.count,
-              channels.translationJointIndex < toGlobalPose.count,
-              channels.rotationJointIndex < fromGlobalPose.count,
-              channels.rotationJointIndex < toGlobalPose.count else { return .zero }
-
-        let fromTranslationTransform = fromGlobalPose[channels.translationJointIndex]
-        let toTranslationTransform = toGlobalPose[channels.translationJointIndex]
-        let fromRotationTransform = fromGlobalPose[channels.rotationJointIndex]
-        let toRotationTransform = toGlobalPose[channels.rotationJointIndex]
-
-        var previousRotationVector = TransformMath.normalizedQuaternion(fromRotationTransform.rotation)
-        if !simd4IsFinite(previousRotationVector) || simd_length_squared(previousRotationVector) <= 1.0e-8 {
-            previousRotationVector = TransformMath.identityQuaternion
+                                                 preferredRootJointIndex: rootJointIndex,
+                                                 translationJointIndexOverride: translationJointIndexOverride,
+                                                 rotationJointIndexOverride: rotationJointIndexOverride)
+        let clipTrackDelta = sampleRootMotionDeltaFromClipTracks(clip: clip,
+                                                                 channels: channels,
+                                                                 fromTime: fromTime,
+                                                                 toTime: toTime)
+        if let assets,
+           let skeletonRuntime = assets.ozzSkeletonRuntime(handle: skeleton.handle),
+           let animationRuntime = assets.ozzAnimationRuntime(handle: clip.handle),
+           let rootMotionRuntime = assets.ozzRootMotionRuntime(skeletonHandle: skeleton.handle, clipHandle: clip.handle),
+           let ozzDelta = OzzRuntimeBridge.extractRootMotionDelta(skeletonRuntime: skeletonRuntime,
+                                                                  animationRuntime: animationRuntime,
+                                                                  rootMotionRuntime: rootMotionRuntime,
+                                                                  translationJointIndex: channels.translationJointIndex,
+                                                                  rotationJointIndex: channels.rotationJointIndex,
+                                                                  previousTimeSeconds: fromTime,
+                                                                  currentTimeSeconds: toTime) {
+            if simd_length_squared(ozzDelta.deltaPos) <= 1.0e-10,
+               simd_length_squared(clipTrackDelta.deltaPos) > 1.0e-8 {
+                return RootMotionDelta(deltaPos: clipTrackDelta.deltaPos, deltaRot: ozzDelta.deltaRot)
+            }
+            return ozzDelta
         }
-        var currentRotationVector = TransformMath.normalizedQuaternion(toRotationTransform.rotation)
-        if !simd4IsFinite(currentRotationVector) || simd_length_squared(currentRotationVector) <= 1.0e-8 {
-            currentRotationVector = TransformMath.identityQuaternion
+        let fallbackDelta = sampleRootMotionDeltaSingleSpanFallback(skeleton: skeleton,
+                                                                    clip: clip,
+                                                                    channels: channels,
+                                                                    fromTime: fromTime,
+                                                                    toTime: toTime,
+                                                                    assets: assets)
+        if simd_length_squared(fallbackDelta.deltaPos) <= 1.0e-10,
+           simd_length_squared(clipTrackDelta.deltaPos) > 1.0e-8 {
+            return RootMotionDelta(deltaPos: clipTrackDelta.deltaPos, deltaRot: fallbackDelta.deltaRot)
         }
-        let previousRotation = simd_quatf(vector: previousRotationVector)
-        let currentRotation = simd_quatf(vector: currentRotationVector)
-        let rawDeltaRotation = simd_normalize(simd_inverse(previousRotation) * currentRotation).vector
-        let deltaRotation = simd4IsFinite(rawDeltaRotation)
-            ? TransformMath.normalizedQuaternion(rawDeltaRotation)
-            : TransformMath.identityQuaternion
-
-        let worldTranslationDelta = toTranslationTransform.position - fromTranslationTransform.position
-        let localTranslationDeltaRaw = previousRotation.inverse.act(worldTranslationDelta)
-        let localTranslationDelta = simd3IsFinite(localTranslationDeltaRaw) ? localTranslationDeltaRaw : .zero
-
-        return RootMotionDelta(deltaPos: localTranslationDelta,
-                               deltaRot: deltaRotation)
+        return fallbackDelta
     }
 
     private func consumeRootMotionTracks(in localPose: [TransformComponent],
                                          skeleton: SkeletonAsset,
-                                         rootJointIndex: Int,
+                                         translationJointIndex: Int,
+                                         rotationJointIndex: Int,
                                          consumeTranslation: Bool,
                                          consumeRotation: Bool) -> [TransformComponent] {
         guard consumeTranslation || consumeRotation else { return localPose }
-        guard rootJointIndex >= 0,
-              rootJointIndex < localPose.count,
-              rootJointIndex < skeleton.joints.count else { return localPose }
         var consumed = localPose
         if consumeTranslation {
-            let bindJoint = skeleton.joints[rootJointIndex]
-            var translationJoint = consumed[rootJointIndex]
+            guard translationJointIndex >= 0,
+                  translationJointIndex < consumed.count,
+                  translationJointIndex < skeleton.joints.count else { return localPose }
+            let bindJoint = skeleton.joints[translationJointIndex]
+            var translationJoint = consumed[translationJointIndex]
             translationJoint.position = bindJoint.bindLocalPosition
-            consumed[rootJointIndex] = translationJoint
+            consumed[translationJointIndex] = translationJoint
         }
         if consumeRotation {
-            let rotationJointIndex = resolveRotationChannelJointIndex(skeleton: skeleton,
-                                                                      preferredRootJointIndex: rootJointIndex)
-            if rotationJointIndex >= 0,
-               rotationJointIndex < consumed.count,
-               rotationJointIndex < skeleton.joints.count {
-                let bindJoint = skeleton.joints[rotationJointIndex]
-                var rotationJoint = consumed[rotationJointIndex]
-                rotationJoint.rotation = bindJoint.bindLocalRotation
-                consumed[rotationJointIndex] = rotationJoint
-            }
+            guard rotationJointIndex >= 0,
+                  rotationJointIndex < consumed.count,
+                  rotationJointIndex < skeleton.joints.count else { return localPose }
+            let bindJoint = skeleton.joints[rotationJointIndex]
+            var rotationJoint = consumed[rotationJointIndex]
+            rotationJoint.rotation = bindJoint.bindLocalRotation
+            consumed[rotationJointIndex] = rotationJoint
         }
         return consumed
     }
 
     private func resolveRootMotionChannels(skeleton: SkeletonAsset,
                                            clip: AnimationClipAsset,
-                                           preferredRootJointIndex: Int) -> (translationJointIndex: Int, rotationJointIndex: Int) {
+                                           preferredRootJointIndex: Int,
+                                           translationJointIndexOverride: Int? = nil,
+                                           rotationJointIndexOverride: Int? = nil) -> (translationJointIndex: Int, rotationJointIndex: Int) {
+        if let translationJointIndexOverride,
+           let rotationJointIndexOverride,
+           translationJointIndexOverride >= 0,
+           translationJointIndexOverride < skeleton.joints.count,
+           rotationJointIndexOverride >= 0,
+           rotationJointIndexOverride < skeleton.joints.count {
+            return (translationJointIndexOverride, rotationJointIndexOverride)
+        }
         let translationJointIndex = resolveTranslationChannelJointIndex(skeleton: skeleton,
                                                                         clip: clip,
                                                                         preferredRootJointIndex: preferredRootJointIndex)
         let rotationJointIndex = resolveRotationChannelJointIndex(skeleton: skeleton,
                                                                   preferredRootJointIndex: preferredRootJointIndex,
                                                                   clip: clip)
+        if let translationJointIndexOverride,
+           translationJointIndexOverride >= 0,
+           translationJointIndexOverride < skeleton.joints.count {
+            return (translationJointIndexOverride, rotationJointIndex)
+        }
+        if let rotationJointIndexOverride,
+           rotationJointIndexOverride >= 0,
+           rotationJointIndexOverride < skeleton.joints.count {
+            return (translationJointIndex, rotationJointIndexOverride)
+        }
         return (translationJointIndex, rotationJointIndex)
     }
 
@@ -1559,6 +1937,63 @@ public final class AnimationSystem {
         return result
     }
 
+    private func fallbackRootMotionJointIndex(skeleton: SkeletonAsset,
+                                              preferredRootJointIndex: Int) -> Int {
+        guard !skeleton.joints.isEmpty else { return preferredRootJointIndex }
+        if preferredRootJointIndex >= 0,
+           preferredRootJointIndex < skeleton.joints.count {
+            let preferredName = skeleton.joints[preferredRootJointIndex].name.lowercased()
+            let looksLikeRoot = preferredName.contains("root")
+            if !looksLikeRoot {
+                return preferredRootJointIndex
+            }
+        }
+        if let hipsOrPelvis = skeleton.joints.firstIndex(where: { joint in
+            let name = joint.name.lowercased()
+            return name.contains("hips") || name.contains("pelvis")
+        }) {
+            return hipsOrPelvis
+        }
+        if let firstNonRoot = skeleton.joints.firstIndex(where: { joint in
+            !joint.name.lowercased().contains("root")
+        }) {
+            return firstNonRoot
+        }
+        return min(max(preferredRootJointIndex, 0), skeleton.joints.count - 1)
+    }
+
+    private func sampleRootMotionDeltaFromClipTracks(clip: AnimationClipAsset,
+                                                     channels: (translationJointIndex: Int, rotationJointIndex: Int),
+                                                     fromTime: Float,
+                                                     toTime: Float) -> RootMotionDelta {
+        let translationTrack = clip.tracks.first(where: { $0.jointIndex == channels.translationJointIndex })
+        let rotationTrack = clip.tracks.first(where: { $0.jointIndex == channels.rotationJointIndex })
+
+        let fromTranslation = translationTrack.flatMap { sampleTranslation($0.translations, time: fromTime) } ?? .zero
+        let toTranslation = translationTrack.flatMap { sampleTranslation($0.translations, time: toTime) } ?? fromTranslation
+
+        var prevRotationVector = rotationTrack.flatMap { sampleRotation($0.rotations, time: fromTime) } ?? TransformMath.identityQuaternion
+        if !simd4IsFinite(prevRotationVector) || simd_length_squared(prevRotationVector) <= 1.0e-8 {
+            prevRotationVector = TransformMath.identityQuaternion
+        }
+        var currRotationVector = rotationTrack.flatMap { sampleRotation($0.rotations, time: toTime) } ?? prevRotationVector
+        if !simd4IsFinite(currRotationVector) || simd_length_squared(currRotationVector) <= 1.0e-8 {
+            currRotationVector = prevRotationVector
+        }
+
+        let prevRotation = simd_quatf(vector: TransformMath.normalizedQuaternion(prevRotationVector))
+        let currRotation = simd_quatf(vector: TransformMath.normalizedQuaternion(currRotationVector))
+        let worldDelta = toTranslation - fromTranslation
+        let localDeltaRaw = prevRotation.inverse.act(worldDelta)
+        let localDelta = simd3IsFinite(localDeltaRaw) ? localDeltaRaw : .zero
+        let deltaRotation = simd_normalize(prevRotation.inverse * currRotation).vector
+        let safeDeltaRotation = simd4IsFinite(deltaRotation)
+            ? TransformMath.normalizedQuaternion(deltaRotation)
+            : TransformMath.identityQuaternion
+
+        return RootMotionDelta(deltaPos: localDelta, deltaRot: safeDeltaRotation)
+    }
+
     private func hasMeaningfulTranslationTrack(clip: AnimationClipAsset, jointIndex: Int) -> Bool {
         guard let track = clip.tracks.first(where: { $0.jointIndex == jointIndex }),
               track.translations.count > 1 else { return false }
@@ -1585,29 +2020,6 @@ public final class AnimationSystem {
         value.x.isFinite && value.y.isFinite && value.z.isFinite && value.w.isFinite
     }
 
-    private func rootLocalTransform(skeleton: SkeletonAsset,
-                                    clip: AnimationClipAsset,
-                                    jointIndex: Int,
-                                    playbackTime: Float) -> TransformComponent {
-        guard jointIndex >= 0, jointIndex < skeleton.joints.count else { return TransformComponent() }
-        let joint = skeleton.joints[jointIndex]
-        var jointLocal = TransformComponent(position: joint.bindLocalPosition,
-                                            rotation: joint.bindLocalRotation,
-                                            scale: joint.bindLocalScale)
-        if let track = clip.tracks.first(where: { $0.jointIndex == jointIndex }) {
-            if let translation = sampleTranslation(track.translations, time: playbackTime) {
-                jointLocal.position = translation
-            }
-            if let rotation = sampleRotation(track.rotations, time: playbackTime) {
-                jointLocal.rotation = rotation
-            }
-            if let scale = sampleScale(track.scales, time: playbackTime) {
-                jointLocal.scale = scale
-            }
-        }
-        return jointLocal
-    }
-
     private func evaluateClipMode(scene: EngineScene,
                                   entity: Entity,
                                   dt: Float,
@@ -1615,9 +2027,10 @@ public final class AnimationSystem {
                                   skeleton: SkeletonAsset?,
                                   animator: inout AnimatorComponent) {
         animator.graphRuntimeState = nil
+        let assets = scene.engineContext?.assets
         let previousPlaybackTime = animator.playbackTime
         let clipHandle = animator.clipHandle
-        let clip = clipHandle.flatMap { scene.engineContext?.assets.animationClip(handle: $0) }
+        let clip = clipHandle.flatMap { assets?.animationClip(handle: $0) }
         let clipMetadata = clipHandle.flatMap { scene.engineContext?.assetDatabase?.metadata(for: $0) }
         let clipAssociatedSkeletonHandle = assetHandle(from: clipMetadata?.importSettings["skeletonHandle"])
         let skinnedSkeletonHandle = skinnedMesh?.skeletonHandle
@@ -1682,6 +2095,7 @@ public final class AnimationSystem {
             let rootSelection = resolveRootJointSelection(skeleton: skeleton, skinnedMesh: skinnedMesh)
             animator.poseRuntimeState = evaluatePose(skeleton: skeleton,
                                                      clip: clip,
+                                                     assets: assets,
                                                      previousPlaybackTime: previousPlaybackTime,
                                                      playbackTime: animator.playbackTime,
                                                      isLooping: animator.isLooping,
@@ -1690,7 +2104,9 @@ public final class AnimationSystem {
                                                      usesRootMotion: animator.enableRootMotion,
                                                      currentStateName: "")
         } else if let skeleton {
-            animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton, playbackTime: animator.playbackTime)
+            animator.poseRuntimeState = makeBindPoseState(skeleton: skeleton,
+                                                          playbackTime: animator.playbackTime,
+                                                          assets: assets)
         } else {
             animator.poseRuntimeState = nil
         }
@@ -1699,6 +2115,7 @@ public final class AnimationSystem {
 
     private func evaluatePose(skeleton: SkeletonAsset,
                               clip: AnimationClipAsset,
+                              assets: AssetManager?,
                               previousPlaybackTime: Float,
                               playbackTime: Float,
                               isLooping: Bool,
@@ -1706,22 +2123,29 @@ public final class AnimationSystem {
                               rootBoneName: String,
                               usesRootMotion: Bool,
                               currentStateName: String) -> AnimationPoseRuntimeState {
-        let sampledLocalPose = evaluateLocalPose(skeleton: skeleton, clip: clip, playbackTime: playbackTime)
+        let sampledLocalPose = evaluateLocalPose(skeleton: skeleton,
+                                               clip: clip,
+                                               playbackTime: playbackTime,
+                                               assets: assets)
         let rootMotionDelta = sampleClipRootMotionDelta(skeleton: skeleton,
                                                         clip: clip,
                                                         rootJointIndex: rootJointIndex,
                                                         previousTime: previousPlaybackTime,
                                                         currentTime: playbackTime,
-                                                        isLooping: isLooping)
+                                                        isLooping: isLooping,
+                                                        assets: assets)
         let consumedRootTrack = usesRootMotion
         let outputLocalPose = consumedRootTrack
             ? consumeRootMotionTracks(in: sampledLocalPose,
                                       skeleton: skeleton,
-                                      rootJointIndex: rootJointIndex,
+                                      translationJointIndex: rootJointIndex,
+                                      rotationJointIndex: rootJointIndex,
                                       consumeTranslation: true,
                                       consumeRotation: true)
             : sampledLocalPose
-        let globalPose = makeGlobalPose(localPose: outputLocalPose, skeleton: skeleton)
+        let globalPose = makeGlobalPose(localPose: outputLocalPose,
+                                        skeleton: skeleton,
+                                        assets: assets)
         return AnimationPoseRuntimeState(sampleTime: playbackTime,
                                          localPose: outputLocalPose,
                                          globalPose: globalPose,
@@ -1730,44 +2154,40 @@ public final class AnimationSystem {
                                          currentStateName: currentStateName,
                                          rootMotionBoneName: rootBoneName,
                                          rootMotionJointIndex: rootJointIndex,
-                                         rootMotionTrackConsumed: consumedRootTrack)
+                                         rootMotionTrackConsumed: consumedRootTrack,
+                                         rootMotionTranslationBoneName: rootBoneName,
+                                         rootMotionTranslationJointIndex: rootJointIndex,
+                                         rootMotionRotationBoneName: rootBoneName,
+                                         rootMotionRotationJointIndex: rootJointIndex,
+                                         rootMotionConsumeBoneName: rootBoneName,
+                                         rootMotionConsumeJointIndex: rootJointIndex)
     }
 
+    // Ozz SamplingJob is the primary local-pose sampling path.
+    // Legacy keyframe interpolation is retained only as fallback.
     private func evaluateLocalPose(skeleton: SkeletonAsset,
                                    clip: AnimationClipAsset,
-                                   playbackTime: Float) -> [TransformComponent] {
-        let jointCount = skeleton.joints.count
-        guard jointCount > 0 else {
-            return []
+                                   playbackTime: Float,
+                                   assets: AssetManager? = nil) -> [TransformComponent] {
+        if let assets,
+           let skeletonRuntime = assets.ozzSkeletonRuntime(handle: skeleton.handle),
+           let animationRuntime = assets.ozzAnimationRuntime(handle: clip.handle),
+           let samplingContext = animationRuntime.context(maxSoaTracks: skeletonRuntime.maxSoaTracks),
+           let ozzPose = OzzRuntimeBridge.sampleLocalPose(skeletonRuntime: skeletonRuntime,
+                                                          animationRuntime: animationRuntime,
+                                                          samplingContext: samplingContext,
+                                                          timeSeconds: playbackTime,
+                                                          expectedJointCount: skeleton.joints.count),
+           ozzPose.count == skeleton.joints.count {
+            return ozzPose
         }
-
-        var localPose = Array(repeating: TransformComponent(), count: jointCount)
-        for jointIndex in 0..<jointCount {
-            let joint = skeleton.joints[jointIndex]
-            localPose[jointIndex] = TransformComponent(position: joint.bindLocalPosition,
-                                                       rotation: joint.bindLocalRotation,
-                                                       scale: joint.bindLocalScale)
-        }
-        for track in clip.tracks {
-            guard track.jointIndex >= 0, track.jointIndex < jointCount else { continue }
-            var jointLocal = localPose[track.jointIndex]
-            if let translation = sampleTranslation(track.translations, time: playbackTime) {
-                jointLocal.position = translation
-            }
-            if let rotation = sampleRotation(track.rotations, time: playbackTime) {
-                jointLocal.rotation = rotation
-            }
-            if let scale = sampleScale(track.scales, time: playbackTime) {
-                jointLocal.scale = scale
-            }
-            localPose[track.jointIndex] = jointLocal
-        }
-        return localPose
+        return evaluateLocalPoseFallback(skeleton: skeleton, clip: clip, playbackTime: playbackTime)
     }
 
     private func makeGlobalPose(localPose: [TransformComponent],
-                                skeleton: SkeletonAsset) -> [TransformComponent] {
-        let globalMatrices = globalMatrices(from: localPose, skeleton: skeleton)
+                                skeleton: SkeletonAsset,
+                                assets: AssetManager? = nil) -> [TransformComponent] {
+        let globalMatrices = globalMatrices(from: localPose, skeleton: skeleton, assets: assets)
         var globalPose = Array(repeating: TransformComponent(), count: globalMatrices.count)
         for jointIndex in 0..<globalMatrices.count {
             let decomposed = TransformMath.decomposeMatrix(globalMatrices[jointIndex])
@@ -1779,20 +2199,27 @@ public final class AnimationSystem {
     }
 
     private func makeBindPoseState(skeleton: SkeletonAsset,
-                                   playbackTime: Float) -> AnimationPoseRuntimeState {
+                                   playbackTime: Float,
+                                   assets: AssetManager? = nil) -> AnimationPoseRuntimeState {
         let localPose = skeleton.joints.map { joint in
             TransformComponent(position: joint.bindLocalPosition,
                                rotation: joint.bindLocalRotation,
                                scale: joint.bindLocalScale)
         }
-        let globalPose = makeGlobalPose(localPose: localPose, skeleton: skeleton)
+        let globalPose = makeGlobalPose(localPose: localPose, skeleton: skeleton, assets: assets)
         let selection = resolveRootJointSelection(skeleton: skeleton, skinnedMesh: nil)
         return AnimationPoseRuntimeState(sampleTime: playbackTime,
                                          localPose: localPose,
                                          globalPose: globalPose,
                                          rootMotionBoneName: selection.name,
                                          rootMotionJointIndex: selection.index,
-                                         rootMotionTrackConsumed: false)
+                                         rootMotionTrackConsumed: false,
+                                         rootMotionTranslationBoneName: selection.name,
+                                         rootMotionTranslationJointIndex: selection.index,
+                                         rootMotionRotationBoneName: selection.name,
+                                         rootMotionRotationJointIndex: selection.index,
+                                         rootMotionConsumeBoneName: selection.name,
+                                         rootMotionConsumeJointIndex: selection.index)
     }
 
     private func makePoseState(skeleton: SkeletonAsset,
@@ -1803,11 +2230,18 @@ public final class AnimationSystem {
                                currentStateName: String = "",
                                rootMotionBoneName: String = "",
                                rootMotionJointIndex: Int = -1,
-                               rootMotionTrackConsumed: Bool = false) -> AnimationPoseRuntimeState {
+                               rootMotionTrackConsumed: Bool = false,
+                               rootMotionTranslationBoneName: String = "",
+                               rootMotionTranslationJointIndex: Int = -1,
+                               rootMotionRotationBoneName: String = "",
+                               rootMotionRotationJointIndex: Int = -1,
+                               rootMotionConsumeBoneName: String = "",
+                               rootMotionConsumeJointIndex: Int = -1,
+                               assets: AssetManager? = nil) -> AnimationPoseRuntimeState {
         guard !localPose.isEmpty else {
-            return makeBindPoseState(skeleton: skeleton, playbackTime: sampleTime)
+            return makeBindPoseState(skeleton: skeleton, playbackTime: sampleTime, assets: assets)
         }
-        let globalPose = makeGlobalPose(localPose: localPose, skeleton: skeleton)
+        let globalPose = makeGlobalPose(localPose: localPose, skeleton: skeleton, assets: assets)
         return AnimationPoseRuntimeState(sampleTime: sampleTime,
                                          localPose: localPose,
                                          globalPose: globalPose,
@@ -1816,7 +2250,13 @@ public final class AnimationSystem {
                                          currentStateName: currentStateName,
                                          rootMotionBoneName: rootMotionBoneName,
                                          rootMotionJointIndex: rootMotionJointIndex,
-                                         rootMotionTrackConsumed: rootMotionTrackConsumed)
+                                         rootMotionTrackConsumed: rootMotionTrackConsumed,
+                                         rootMotionTranslationBoneName: rootMotionTranslationBoneName,
+                                         rootMotionTranslationJointIndex: rootMotionTranslationJointIndex,
+                                         rootMotionRotationBoneName: rootMotionRotationBoneName,
+                                         rootMotionRotationJointIndex: rootMotionRotationJointIndex,
+                                         rootMotionConsumeBoneName: rootMotionConsumeBoneName,
+                                         rootMotionConsumeJointIndex: rootMotionConsumeJointIndex)
     }
 
     private func sampleTranslation(_ keyframes: [AnimationClipAsset.TranslationKeyframe], time: Float) -> SIMD3<Float>? {
@@ -1864,9 +2304,182 @@ public final class AnimationSystem {
         return keyframes[keyframes.count - 1].1
     }
 
-    private func globalMatrices(from localPose: [TransformComponent], skeleton: SkeletonAsset) -> [matrix_float4x4] {
+    // Ozz LocalToModelJob is the primary hierarchy solve for model-space matrices.
+    // Legacy parent-chain multiplication is retained only as fallback.
+    private func globalMatrices(from localPose: [TransformComponent],
+                                skeleton: SkeletonAsset,
+                                assets: AssetManager? = nil) -> [matrix_float4x4] {
         let jointCount = min(skeleton.joints.count, localPose.count)
         guard jointCount > 0 else { return [] }
+        if let assets,
+           let skeletonRuntime = assets.ozzSkeletonRuntime(handle: skeleton.handle),
+           let localToModelContext = skeletonRuntime.context(),
+           let modelMatrices = OzzRuntimeBridge.localToModelMatrices(skeletonRuntime: skeletonRuntime,
+                                                                     localToModelContext: localToModelContext,
+                                                                     localPose: localPose,
+                                                                     expectedJointCount: jointCount),
+           modelMatrices.count == jointCount {
+            return modelMatrices
+        }
+        return globalMatricesFallback(from: localPose, skeleton: skeleton, jointCount: jointCount)
+    }
+
+    private func blendLocalPosesFallback(_ a: [TransformComponent],
+                                         _ b: [TransformComponent],
+                                         weight: Float,
+                                         count: Int) -> [TransformComponent] {
+        var output = Array(repeating: TransformComponent(), count: count)
+        for i in 0..<count {
+            let pa = a[i]
+            let pb = b[i]
+            let blendedPosition = pa.position + ((pb.position - pa.position) * weight)
+            let blendedScale = pa.scale + ((pb.scale - pa.scale) * weight)
+            let qa = simd_quatf(real: pa.rotation.w, imag: SIMD3<Float>(pa.rotation.x, pa.rotation.y, pa.rotation.z))
+            let qb = simd_quatf(real: pb.rotation.w, imag: SIMD3<Float>(pb.rotation.x, pb.rotation.y, pb.rotation.z))
+            let q = simd_slerp(qa, qb, weight)
+            output[i] = TransformComponent(position: blendedPosition,
+                                           rotation: SIMD4<Float>(q.imag.x, q.imag.y, q.imag.z, q.real),
+                                           scale: blendedScale)
+        }
+        return output
+    }
+
+    private func blendLocalPosesFallback(localPoses: [[TransformComponent]],
+                                         weights: [Float],
+                                         jointCount: Int) -> [TransformComponent] {
+        let weightSum = max(weights.reduce(0, +), 1.0e-6)
+        var normalizedWeights = weights.map { $0 / weightSum }
+        if normalizedWeights.isEmpty {
+            normalizedWeights = Array(repeating: 1.0 / Float(localPoses.count), count: localPoses.count)
+        }
+
+        var output = Array(repeating: TransformComponent(), count: jointCount)
+        for jointIndex in 0..<jointCount {
+            var blendedPosition = SIMD3<Float>(repeating: 0.0)
+            var blendedScale = SIMD3<Float>(repeating: 0.0)
+            let firstRotation = localPoses[0][jointIndex].rotation
+            var accumRotation = SIMD4<Float>(repeating: 0.0)
+            for poseIndex in 0..<localPoses.count {
+                let pose = localPoses[poseIndex][jointIndex]
+                let w = normalizedWeights[poseIndex]
+                blendedPosition += pose.position * w
+                blendedScale += pose.scale * w
+
+                var q = TransformMath.normalizedQuaternion(pose.rotation)
+                if simd_dot(firstRotation, q) < 0.0 {
+                    q = -q
+                }
+                accumRotation += q * w
+            }
+            output[jointIndex] = TransformComponent(position: blendedPosition,
+                                                    rotation: TransformMath.normalizedQuaternion(accumRotation),
+                                                    scale: blendedScale)
+        }
+        return output
+    }
+
+    private func blendRootMotionDeltasFallback(_ a: RootMotionDelta,
+                                               _ b: RootMotionDelta,
+                                               weight: Float) -> RootMotionDelta {
+        let blendedPosition = simd_mix(a.deltaPos, b.deltaPos, SIMD3<Float>(repeating: weight))
+        let qa = simd_quatf(vector: TransformMath.normalizedQuaternion(a.deltaRot))
+        let qb = simd_quatf(vector: TransformMath.normalizedQuaternion(b.deltaRot))
+        let blendedRotation = simd_slerp(qa, qb, weight).vector
+        return RootMotionDelta(deltaPos: blendedPosition, deltaRot: blendedRotation)
+    }
+
+    private func blendRootMotionDeltasFallback(_ deltas: [RootMotionDelta],
+                                               weights: [Float]) -> RootMotionDelta {
+        var result = deltas[0]
+        var consumed = weights[0]
+        if deltas.count == 1 { return result }
+        for i in 1..<deltas.count {
+            let nextWeight = weights[i]
+            let t = nextWeight / max(consumed + nextWeight, 1.0e-6)
+            result = blendRootMotionDeltasFallback(result, deltas[i], weight: t)
+            consumed += nextWeight
+        }
+        return result
+    }
+
+    private func sampleRootMotionDeltaSingleSpanFallback(skeleton: SkeletonAsset,
+                                                         clip: AnimationClipAsset,
+                                                         channels: (translationJointIndex: Int, rotationJointIndex: Int),
+                                                         fromTime: Float,
+                                                         toTime: Float,
+                                                         assets: AssetManager?) -> RootMotionDelta {
+        let fromLocalPose = evaluateLocalPose(skeleton: skeleton, clip: clip, playbackTime: fromTime, assets: assets)
+        let toLocalPose = evaluateLocalPose(skeleton: skeleton, clip: clip, playbackTime: toTime, assets: assets)
+        let fromGlobalPose = makeGlobalPose(localPose: fromLocalPose, skeleton: skeleton, assets: assets)
+        let toGlobalPose = makeGlobalPose(localPose: toLocalPose, skeleton: skeleton, assets: assets)
+        guard channels.translationJointIndex < fromGlobalPose.count,
+              channels.translationJointIndex < toGlobalPose.count,
+              channels.rotationJointIndex < fromGlobalPose.count,
+              channels.rotationJointIndex < toGlobalPose.count else { return .zero }
+
+        let fromTranslationTransform = fromGlobalPose[channels.translationJointIndex]
+        let toTranslationTransform = toGlobalPose[channels.translationJointIndex]
+        let fromRotationTransform = fromGlobalPose[channels.rotationJointIndex]
+        let toRotationTransform = toGlobalPose[channels.rotationJointIndex]
+
+        var previousRotationVector = TransformMath.normalizedQuaternion(fromRotationTransform.rotation)
+        if !simd4IsFinite(previousRotationVector) || simd_length_squared(previousRotationVector) <= 1.0e-8 {
+            previousRotationVector = TransformMath.identityQuaternion
+        }
+        var currentRotationVector = TransformMath.normalizedQuaternion(toRotationTransform.rotation)
+        if !simd4IsFinite(currentRotationVector) || simd_length_squared(currentRotationVector) <= 1.0e-8 {
+            currentRotationVector = TransformMath.identityQuaternion
+        }
+        let previousRotation = simd_quatf(vector: previousRotationVector)
+        let currentRotation = simd_quatf(vector: currentRotationVector)
+        let rawDeltaRotation = simd_normalize(simd_inverse(previousRotation) * currentRotation).vector
+        let deltaRotation = simd4IsFinite(rawDeltaRotation)
+            ? TransformMath.normalizedQuaternion(rawDeltaRotation)
+            : TransformMath.identityQuaternion
+
+        let worldTranslationDelta = toTranslationTransform.position - fromTranslationTransform.position
+        let localTranslationDeltaRaw = previousRotation.inverse.act(worldTranslationDelta)
+        let localTranslationDelta = simd3IsFinite(localTranslationDeltaRaw) ? localTranslationDeltaRaw : .zero
+
+        return RootMotionDelta(deltaPos: localTranslationDelta,
+                               deltaRot: deltaRotation)
+    }
+
+    private func evaluateLocalPoseFallback(skeleton: SkeletonAsset,
+                                           clip: AnimationClipAsset,
+                                           playbackTime: Float) -> [TransformComponent] {
+        let jointCount = skeleton.joints.count
+        guard jointCount > 0 else {
+            return []
+        }
+
+        var localPose = Array(repeating: TransformComponent(), count: jointCount)
+        for jointIndex in 0..<jointCount {
+            let joint = skeleton.joints[jointIndex]
+            localPose[jointIndex] = TransformComponent(position: joint.bindLocalPosition,
+                                                       rotation: joint.bindLocalRotation,
+                                                       scale: joint.bindLocalScale)
+        }
+        for track in clip.tracks {
+            guard track.jointIndex >= 0, track.jointIndex < jointCount else { continue }
+            var jointLocal = localPose[track.jointIndex]
+            if let translation = sampleTranslation(track.translations, time: playbackTime) {
+                jointLocal.position = translation
+            }
+            if let rotation = sampleRotation(track.rotations, time: playbackTime) {
+                jointLocal.rotation = rotation
+            }
+            if let scale = sampleScale(track.scales, time: playbackTime) {
+                jointLocal.scale = scale
+            }
+            localPose[track.jointIndex] = jointLocal
+        }
+        return localPose
+    }
+
+    private func globalMatricesFallback(from localPose: [TransformComponent],
+                                        skeleton: SkeletonAsset,
+                                        jointCount: Int) -> [matrix_float4x4] {
         let localMatrices: [matrix_float4x4] = localPose.prefix(jointCount).map { local in
             TransformMath.makeMatrix(position: local.position,
                                      rotation: local.rotation,

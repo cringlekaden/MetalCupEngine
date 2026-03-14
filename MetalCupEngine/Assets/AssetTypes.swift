@@ -214,7 +214,22 @@ public enum AnimationGraphNodeType: String, Codable {
     case clipPlayer
     case blend1D
     case blend2D
+    case blendList
+    case additiveClip
+    case layeredBlend
     case stateMachine
+    case parameterFloat
+    case parameterBool
+    case parameterTrigger
+    case select
+    case poseCache
+    case aimOffset
+    case lookAt
+    case twoBoneIK
+    case strideWarp
+    case orientationWarp
+    case motionMatch
+    case rootMotionModifier
     case state
     case transition
     case parameter
@@ -264,25 +279,54 @@ public struct AnimationGraphTransitionDefinition: Codable {
 }
 
 public struct AnimationGraphStateDefinition: Codable {
+    public struct RootMotionSettings: Codable {
+        public var translationSourceJointName: String?
+        public var rotationSourceJointName: String?
+        public var consumeJointName: String?
+        public var applyTranslation: Bool?
+        public var applyRotation: Bool?
+        public var consumeTranslation: Bool?
+        public var consumeRotation: Bool?
+
+        public init(translationSourceJointName: String? = nil,
+                    rotationSourceJointName: String? = nil,
+                    consumeJointName: String? = nil,
+                    applyTranslation: Bool? = nil,
+                    applyRotation: Bool? = nil,
+                    consumeTranslation: Bool? = nil,
+                    consumeRotation: Bool? = nil) {
+            self.translationSourceJointName = translationSourceJointName
+            self.rotationSourceJointName = rotationSourceJointName
+            self.consumeJointName = consumeJointName
+            self.applyTranslation = applyTranslation
+            self.applyRotation = applyRotation
+            self.consumeTranslation = consumeTranslation
+            self.consumeRotation = consumeRotation
+        }
+    }
+
     public var id: UUID
     public var name: String
     public var clipHandle: AssetHandle?
     public var nodeID: UUID?
     public var isOneShot: Bool
     public var usesRootMotion: Bool
+    public var rootMotion: RootMotionSettings?
 
     public init(id: UUID = UUID(),
                 name: String,
                 clipHandle: AssetHandle? = nil,
                 nodeID: UUID? = nil,
                 isOneShot: Bool = false,
-                usesRootMotion: Bool = false) {
+                usesRootMotion: Bool = false,
+                rootMotion: RootMotionSettings? = nil) {
         self.id = id
         self.name = name
         self.clipHandle = clipHandle
         self.nodeID = nodeID
         self.isOneShot = isOneShot
         self.usesRootMotion = usesRootMotion
+        self.rootMotion = rootMotion
     }
 }
 
@@ -627,7 +671,22 @@ public enum AnimationGraphCompiler {
                             continue
                         }
                         switch referencedNode.type {
-                        case .clipPlayer, .blend1D, .blend2D, .stateMachine:
+                        case .clipPlayer,
+                             .blend1D,
+                             .blend2D,
+                             .blendList,
+                             .additiveClip,
+                             .layeredBlend,
+                             .stateMachine,
+                             .select,
+                             .poseCache,
+                             .aimOffset,
+                             .lookAt,
+                             .twoBoneIK,
+                             .strideWarp,
+                             .orientationWarp,
+                             .motionMatch,
+                             .rootMotionModifier:
                             break
                         default:
                             diagnostics.append("State '\(state.name)' in StateMachine '\(node.title)' references unsupported node type '\(referencedNode.type.rawValue)'.")
